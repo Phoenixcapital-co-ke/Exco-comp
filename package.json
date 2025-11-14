@@ -1,0 +1,39 @@
+{
+  "name": "exco",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "ingest:disbursments": "node scripts/fetch_disbursments.mjs",
+    "ingest:disbursements": "node scripts/fetch_disbursments.mjs",
+    "migrate:disbursments": "node scripts/migrate_disbursments_from_raw.mjs",
+    "db:drop-raw": "node scripts/drop_raw_from_logbook_disbursement.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.18",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.7"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.6",
+    "axios": "^1.13.2",
+    "better-sqlite3": "^12.4.1",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "i18next": "^25.6.0",
+    "lucide-react": "^0.547.0",
+    "node-fetch": "^3.3.2",
+    "papaparse": "^5.5.3",
+    "react-i18next": "^16.2.4",
+    "react-router-dom": "^7.9.5",
+    "recharts": "^3.3.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.1.12"
+  }
+}
