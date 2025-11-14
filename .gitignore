@@ -6,6 +6,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+logs/pm2-*.log
+logs/caddy.log
 
 node_modules
 dist
@@ -37,3 +39,17 @@ data/*.db-wal
 .env
 .env.local
 .env.*.local
+
+# Build outputs
+dist
+dist-ssr
+*.local
+
+# Backup files
+backups/
+*.backup
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db

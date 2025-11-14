@@ -1,0 +1,25 @@
+# Caddy reverse proxy configuration for HTTPS
+# Replace 'your-domain.com' with your actual domain name
+# Caddy will automatically obtain SSL certificates from Let's Encrypt
+
+your-domain.com {
+    # Reverse proxy to Node.js backend
+    reverse_proxy localhost:3001 {
+        # WebSocket support (if needed for SSE)
+        header_up Connection "keep-alive"
+    }
+    
+    # Optional: Logging
+    log {
+        output file ./logs/caddy.log
+        format json
+    }
+}
+
+# Alternative: If you don't have a domain, use a self-signed certificate
+# Uncomment the section below and comment out the domain section above
+# localhost {
+#     tls internal
+#     reverse_proxy localhost:3001
+# }
+

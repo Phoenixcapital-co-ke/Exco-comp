@@ -4,9 +4,15 @@ import { spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import Database from 'better-sqlite3'
 import crypto from 'crypto'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+import { existsSync } from 'fs'
 
 const app = express()
-const PORT = 3001
+const PORT = process.env.PORT || 3001
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const isProduction = process.env.NODE_ENV === 'production'
 
 const events = new EventEmitter()
 const db = new Database('data/app.db', { readonly: true });
@@ -975,7 +981,32 @@ app.post('/api/par/snapshot', async (req, res) => {
   }
 })
 
+// Serve static files in production (React build) - MUST be after all API routes
+if (isProduction) {
+  const distPath = join(__dirname, 'dist')
+  if (existsSync(distPath)) {
+    app.use(express.static(distPath))
+    console.log('Serving static files from:', distPath)
+    
+    // Serve index.html for all non-API routes (SPA routing)
+    app.get('*', (req, res) => {
+      // Skip API routes (shouldn't reach here for /api/* but just in case)
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Not found' })
+      }
+      res.sendFile(join(distPath, 'index.html'))
+    })
+  } else {
+    console.warn('Production mode enabled but dist/ folder not found. Run "npm run build" first.')
+  }
+}
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`SSE ingest API listening on http://0.0.0.0:${PORT}`)
-  console.log(`Accessible at http://localhost:${PORT} or http://192.168.7.238:${PORT}`)
+  console.log(`Server listening on http://0.0.0.0:${PORT}`)
+  if (isProduction) {
+    console.log(`Production mode: Serving app at http://localhost:${PORT}`)
+  } else {
+    console.log(`Development mode: API at http://localhost:${PORT}`)
+    console.log(`Frontend dev server should run separately on port 5173`)
+  }
 })
