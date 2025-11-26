@@ -57,7 +57,7 @@ function LogbookDashboard() {
   useEffect(() => {
     loadData()
     // Setup SSE for live-updated dashboards
-    const es = new window.EventSource(API_URLS.events)
+    const es = new window.EventSource(API_URLS.events, { withCredentials: true })
     es.onmessage = (e) => {
       if (e.data === 'data_updated') {
         loadData()

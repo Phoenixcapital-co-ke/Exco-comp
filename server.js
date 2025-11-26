@@ -1,5 +1,7 @@
 import express from 'express'
 import cors from 'cors'
+import cookieParser from 'cookie-parser'
+import jwt from 'jsonwebtoken'
 import { spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import Database from 'better-sqlite3'
@@ -7,12 +9,23 @@ import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync } from 'fs'
+import cron from 'node-cron'
 
 const app = express()
 const PORT = process.env.PORT || 3001
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const isProduction = process.env.NODE_ENV === 'production'
+const JWT_SECRET = process.env.JWT_SECRET || 'please-change-me-in-production'
+const JWT_TTL_HOURS = Number(process.env.AUTH_TOKEN_TTL_HOURS || 24)
+const AUTH_COOKIE_NAME = 'pcdash_auth'
+const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: isProduction,
+  maxAge: JWT_TTL_HOURS * 60 * 60 * 1000,
+  path: '/'
+}
 
 const events = new EventEmitter()
 const db = new Database('data/app.db', { readonly: true });
@@ -44,17 +57,169 @@ dbRW.prepare(`
     time TEXT NOT NULL
   )
 `).run();
+// Create table to track PAR snapshot last run time
+dbRW.prepare(`
+  CREATE TABLE IF NOT EXISTS PAR_Snapshot_LastRun (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_run_time TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
+
+// Loan Officers table (LOs)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS LOs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    borrower_access_id TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+const getUserByIdStmt = dbRW.prepare('SELECT * FROM Users WHERE id = ? LIMIT 1')
+
+const PUBLIC_API_PATHS = new Set(['/auth/login', '/auth/logout'])
+
+const signAuthToken = (user) =>
+  jwt.sign(
+    {
+      sub: user.id,
+      role: user.role,
+    },
+    JWT_SECRET,
+    { expiresIn: `${JWT_TTL_HOURS}h` }
+  )
+
+const setAuthCookie = (res, token) => {
+  res.cookie(AUTH_COOKIE_NAME, token, AUTH_COOKIE_OPTIONS)
+}
+
+const clearAuthCookie = (res) => {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    ...AUTH_COOKIE_OPTIONS,
+    maxAge: 0,
+  })
+}
+
+const extractTokenFromRequest = (req) => {
+  const fromCookie = req.cookies?.[AUTH_COOKIE_NAME]
+  if (fromCookie) return fromCookie
+  const authHeader = req.headers?.authorization || ''
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim()
+  }
+  return null
+}
+
+const attachAuthFromToken = (req, res, next) => {
+  const token = extractTokenFromRequest(req)
+  if (!token) return next()
+  try {
+    const payload = jwt.verify(token, JWT_SECRET)
+    const userRow = getUserByIdStmt.get(payload.sub)
+    if (!userRow || !userRow.active) {
+      clearAuthCookie(res)
+      return next()
+    }
+    req.authUser = mapUserRow(userRow)
+  } catch (err) {
+    clearAuthCookie(res)
+  }
+  next()
+}
+
+const requireAuth = (req, res, next) => {
+  if (!req.authUser) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  next()
+}
+
+const setEventStreamHeaders = (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const origin = req.headers.origin
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  }
+}
 
 const LOANDISK_BASE_URL = 'https://api-main.loandisk.com/7125'
 const LOANDISK_AUTH = 'Basic DgPRFGb7VPYrnz7K68b4KqHNkYZkvswVqFGaU7xD'
 const LOANDISK_PAGE_SIZE = 20
+const MAX_PAGE_ATTEMPTS = 4
+const FETCH_TIMEOUT_MS = 60000
+const FETCH_MAX_RETRIES = 5
 
-// Get current time in Nairobi timezone (EAT, UTC+3)
+// Get current time in UTC (stored as ISO string)
+// Note: We store UTC time in the database, and convert to Nairobi time when displaying
 function getNairobiTime() {
-  const now = new Date()
-  // Convert to Nairobi time (UTC+3)
-  const nairobiTime = new Date(now.getTime() + (3 * 60 * 60 * 1000))
-  return nairobiTime.toISOString()
+  // Just return UTC time - conversion to Nairobi time happens on display
+  return new Date().toISOString()
+}
+
+// Helper function to fetch with retry and timeout
+async function fetchWithRetry(url, options, maxRetries = FETCH_MAX_RETRIES, timeoutMs = FETCH_TIMEOUT_MS) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Create AbortController for timeout
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      
+      try {
+        const resp = await fetch(url, {
+          ...options,
+          signal: controller.signal
+        })
+        clearTimeout(timeoutId)
+        
+        if (!resp.ok) {
+          // Retry on 5xx errors, but not on 4xx errors
+          if (resp.status >= 500 && attempt < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000) // Exponential backoff, max 10s
+            console.log(`Retrying fetch (attempt ${attempt}/${maxRetries}) after ${delay}ms for ${url}`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+            continue
+          }
+          throw new Error(`HTTP ${resp.status}: ${resp.statusText}`)
+        }
+        
+        return resp
+      } catch (err) {
+        clearTimeout(timeoutId)
+        if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('terminated')) {
+          throw new Error(`Request timeout after ${timeoutMs}ms`)
+        }
+        throw err
+      }
+    } catch (err) {
+      // Enhanced error logging to diagnose failures
+      const errorDetails = {
+        message: err.message || String(err),
+        name: err.name,
+        code: err.code,
+        cause: err.cause?.message || err.cause,
+        stack: err.stack?.split('\n').slice(0, 3).join(' | ') // First 3 stack lines
+      }
+      const errorSummary = `${errorDetails.message} [type: ${errorDetails.name || 'unknown'}, code: ${errorDetails.code || 'none'}]`
+      
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000) // Exponential backoff
+        console.log(`Retrying fetch (attempt ${attempt}/${maxRetries}) after ${delay}ms: ${errorSummary}`)
+        if (attempt === 1) {
+          // Log full details on first attempt for debugging
+          console.log(`  Error details:`, JSON.stringify(errorDetails, null, 2))
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+      throw err
+    }
+  }
 }
 
 async function fetchLoanPrincipalSum(branchCode, loanStatusId) {
@@ -77,30 +242,66 @@ async function fetchLoanPrincipalSum(branchCode, loanStatusId) {
       loan_status_id: loanStatusId
     }
 
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': LOANDISK_AUTH,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    })
+    let results = []
+    let pageSucceeded = false
 
-    if (!resp.ok) {
-      throw new Error(`Upstream error ${resp.status}`)
+    for (let attempt = 1; attempt <= MAX_PAGE_ATTEMPTS; attempt++) {
+      try {
+        const resp = await fetchWithRetry(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': LOANDISK_AUTH,
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          },
+          FETCH_MAX_RETRIES,
+          FETCH_TIMEOUT_MS
+        )
+
+        const json = await resp.json()
+        if (json && json.error) {
+          const err = typeof json.error === 'string' ? json.error : JSON.stringify(json.error)
+          throw new Error(err)
+        }
+
+        const response = json?.response || {}
+        const rawResults = Array.isArray(response.Results) ? response.Results : []
+        results = Array.isArray(rawResults[0]) ? rawResults.flat() : rawResults
+        if (typeof response.TotalResults === 'number') totalResults = response.TotalResults
+        pageSucceeded = true
+        break
+      } catch (err) {
+        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000)
+        const errorDetails = {
+          message: err.message || String(err),
+          name: err.name,
+          code: err.code,
+          cause: err.cause?.message || err.cause
+        }
+        const errMsg = `${errorDetails.message} [type: ${errorDetails.name || 'unknown'}, code: ${errorDetails.code || 'none'}]`
+        
+        console.error(
+          `Error fetching page ${page} for branch ${branchCodeClean} (attempt ${attempt}/${MAX_PAGE_ATTEMPTS}):`,
+          errMsg
+        )
+        if (attempt === 1) {
+          // Log full error details on first attempt
+          console.error(`  Full error:`, JSON.stringify(errorDetails, null, 2))
+        }
+        if (attempt === MAX_PAGE_ATTEMPTS) {
+          throw new Error(`Failed to fetch page ${page} for branch ${branchCodeClean} after ${MAX_PAGE_ATTEMPTS} attempts: ${errMsg}`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
     }
 
-    const json = await resp.json()
-    if (json && json.error) {
-      const err = typeof json.error === 'string' ? json.error : JSON.stringify(json.error)
-      throw new Error(err)
+    if (!pageSucceeded) {
+      throw new Error(`Failed to fetch page ${page} for branch ${branchCodeClean}`)
     }
-
-    const response = json?.response || {}
-    const rawResults = Array.isArray(response.Results) ? response.Results : []
-    const results = Array.isArray(rawResults[0]) ? rawResults.flat() : rawResults
-    if (typeof response.TotalResults === 'number') totalResults = response.TotalResults
 
     for (const item of results) {
       const rawPrincipal =
@@ -122,6 +323,11 @@ async function fetchLoanPrincipalSum(branchCode, loanStatusId) {
     page += 1
     if (totalResults && fetched >= totalResults) break
     if (page > 500) break // safety cap
+    
+    // Add small delay between pages to avoid rate limiting
+    if (page > 1) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
   }
 
   return { sum: grandTotal, fetched, totalResults, loans: allLoans }
@@ -172,6 +378,81 @@ try {
 } catch (err) {
   console.error('Unable to ensure default admin user:', err)
 }
+
+const DEFAULT_LOAN_OFFICERS = [
+  { borrower_access_id: '40280', name: 'Anne Nekesa' },
+  { borrower_access_id: '97469', name: 'Brian Omondi' },
+  { borrower_access_id: '39213', name: 'Clement Nandunga' },
+  { borrower_access_id: '23914', name: 'Edward Magero' },
+  { borrower_access_id: '103140', name: 'External Debt Collector-Leigh' },
+  { borrower_access_id: '72709', name: 'Joab Simiyu' },
+  { borrower_access_id: '39214', name: 'Julius Kamau' },
+  { borrower_access_id: '82115', name: 'Marine India' },
+  { borrower_access_id: '76895', name: 'Moureen Nyongesa' },
+  { borrower_access_id: '99956', name: 'Nebert Kangwana' },
+  { borrower_access_id: '97555', name: 'Vincent Odede' },
+  { borrower_access_id: '97470', name: 'Caroline Kanini' },
+  { borrower_access_id: '83751', name: 'Clement Onyango' },
+  { borrower_access_id: '95751', name: 'George Edgar Obuyi' },
+  { borrower_access_id: '99603', name: 'Precious Beth' },
+  { borrower_access_id: '86981', name: 'Rhoda Mwende' },
+  { borrower_access_id: '91476', name: 'Victor Kedogo' },
+  { borrower_access_id: '93980', name: 'Armstrong Murungi' },
+  { borrower_access_id: '35863', name: 'Clement Onyango' },
+  { borrower_access_id: '17027', name: 'Diana Sigei' },
+  { borrower_access_id: '98932', name: 'Elsie Odia' },
+  { borrower_access_id: '89478', name: 'Linet Nyanya' },
+  { borrower_access_id: '77749', name: 'Richard Litunya' },
+  { borrower_access_id: '58087', name: 'Vesto Moseti' },
+  { borrower_access_id: '97274', name: 'Clement Onyango' },
+  { borrower_access_id: '102234', name: 'Justin Kaberia' },
+  { borrower_access_id: '97472', name: "Peter King'eru" },
+  { borrower_access_id: '97617', name: 'Sarah Wambui' },
+  { borrower_access_id: '100645', name: 'Clement Onyango' },
+  { borrower_access_id: '102488', name: 'Cosmas Njogu' },
+  { borrower_access_id: '101853', name: 'Macdonald Mwanzia Ndeti' },
+  { borrower_access_id: '102773', name: 'Peter Desmond' },
+  { borrower_access_id: '100737', name: 'Teckla Owino' },
+  { borrower_access_id: '28283', name: 'Beatrice Olwith' },
+  { borrower_access_id: '53625', name: "Clare Magdaline Akong'o" },
+  { borrower_access_id: '101563', name: 'Gedion Omondi' },
+  { borrower_access_id: '99851', name: 'Geoffrey Odhiambo' },
+  { borrower_access_id: '98928', name: 'Gregory Kaiser' },
+  { borrower_access_id: '63325', name: 'Imela Marion' },
+  { borrower_access_id: '65481', name: 'IRENE MUTINDA' },
+  { borrower_access_id: '81423', name: 'Jose Benedict' },
+  { borrower_access_id: '39954', name: 'Kelvin Mise' },
+  { borrower_access_id: '89991', name: 'Kelvin Ndungu' },
+  { borrower_access_id: '90295', name: 'Kennedy Ndunga' },
+  { borrower_access_id: '95480', name: 'Kevin Okuche' },
+  { borrower_access_id: '97091', name: 'Mark William Efumbi' },
+  { borrower_access_id: '79140', name: 'Nelly Mukir' },
+  { borrower_access_id: '101500', name: 'Phinehas Wanjohi' },
+  { borrower_access_id: '98929', name: 'System Phoenix' },
+  { borrower_access_id: '84143', name: 'Tom Mutuku' },
+  { borrower_access_id: '77262', name: 'Valary Mudavadi' }
+]
+
+try {
+  const stmt = dbRW.prepare(`
+    INSERT INTO LOs (borrower_access_id, name, active)
+    VALUES (@borrower_access_id, @name, 1)
+    ON CONFLICT(borrower_access_id) DO UPDATE
+      SET name = excluded.name,
+          active = excluded.active,
+          updated_at = CURRENT_TIMESTAMP
+  `)
+  const seedTx = dbRW.transaction((rows) => {
+    for (const row of rows) {
+      stmt.run(row)
+    }
+  })
+  seedTx(DEFAULT_LOAN_OFFICERS)
+  console.log(`Ensured ${DEFAULT_LOAN_OFFICERS.length} default loan officers are present.`)
+} catch (err) {
+  console.error('Unable to seed loan officers:', err)
+}
+
 // Seed Logbook_Branches from existing data if empty
 try {
   const existingCount = dbRW.prepare('SELECT COUNT(*) as c FROM Logbook_Branches').get().c
@@ -244,11 +525,22 @@ app.use(cors({
   credentials: true 
 }))
 
+app.use(cookieParser())
+app.use(express.json())
+app.use(attachAuthFromToken)
+app.use('/api', (req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    return next()
+  }
+  const path = req.path?.toLowerCase?.() || ''
+  if (PUBLIC_API_PATHS.has(path)) {
+    return next()
+  }
+  return requireAuth(req, res, next)
+})
 // SSE endpoint for dashboard clients to receive live update notifications
 app.get('/api/events', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
+  setEventStreamHeaders(req, res)
 
   const onDataUpdated = () => res.write('data: data_updated\n\n')
   events.on('data_updated', onDataUpdated)
@@ -277,13 +569,17 @@ app.get('/api/logbook/collections', (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/logbook/borrowers', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM Logbook_borrowers').all()
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/ingest', (req, res) => {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-  })
+  setEventStreamHeaders(req, res)
   res.flushHeaders && res.flushHeaders()
 
   const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), shell: true })
@@ -310,9 +606,6 @@ app.get('/api/ingest', (req, res) => {
   })
 })
 
-// Body parser for JSON after SSE route
-app.use(express.json())
-
 // Branches CRUD (Logbook only)
 app.get('/api/logbook/branches', (req, res) => {
   try {
@@ -334,6 +627,15 @@ const mapUserRow = (user) => ({
   updatedAt: user.updated_at
 })
 
+const mapLoanOfficerRow = (row) => ({
+  id: row.id,
+  borrowerAccessId: row.borrower_access_id,
+  name: row.name,
+  active: !!row.active,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+})
+
 app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password } = req.body || {}
@@ -353,10 +655,24 @@ app.post('/api/auth/login', (req, res) => {
     if (passwordHash !== user.password_hash) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
+    const token = signAuthToken(user)
+    setAuthCookie(res, token)
     res.json({ user: mapUserRow(user) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+app.post('/api/auth/logout', (req, res) => {
+  clearAuthCookie(res)
+  res.json({ ok: true })
+})
+
+app.get('/api/auth/me', (req, res) => {
+  if (!req.authUser) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  res.json({ user: req.authUser })
 })
 
 app.get('/api/users', (req, res) => {
@@ -457,6 +773,104 @@ app.delete('/api/users/:id', (req, res) => {
     const result = dbRW.prepare('DELETE FROM Users WHERE id = ?').run(id)
     if (result.changes === 0) {
       return res.status(404).json({ error: 'User not found' })
+    }
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/loan-officers', (req, res) => {
+  try {
+    const rows = dbRW
+      .prepare('SELECT id, borrower_access_id, name, active, created_at, updated_at FROM LOs ORDER BY name COLLATE NOCASE')
+      .all()
+      .map(mapLoanOfficerRow)
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/loan-officers', (req, res) => {
+  try {
+    const { borrowerAccessId, name, active = 1 } = req.body || {}
+    const idValue = String(borrowerAccessId || '').trim()
+    const nameValue = String(name || '').trim()
+    if (!idValue || !nameValue) {
+      return res.status(400).json({ error: 'borrowerAccessId and name are required' })
+    }
+    dbRW.prepare(`
+      INSERT INTO LOs (borrower_access_id, name, active)
+      VALUES (@borrower_access_id, @name, @active)
+    `).run({ borrower_access_id: idValue, name: nameValue, active: active ? 1 : 0 })
+    res.json({ ok: true })
+  } catch (e) {
+    if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'Borrower Access ID already exists' })
+    }
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/loan-officers/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+
+    const existing = dbRW.prepare('SELECT * FROM LOs WHERE id = ?').get(id)
+    if (!existing) {
+      return res.status(404).json({ error: 'Loan Officer not found' })
+    }
+
+    const { borrowerAccessId, name, active } = req.body || {}
+    const fields = []
+    const params = { id }
+
+    if (typeof borrowerAccessId !== 'undefined') {
+      const val = String(borrowerAccessId || '').trim()
+      if (!val) {
+        return res.status(400).json({ error: 'borrowerAccessId cannot be empty' })
+      }
+      fields.push('borrower_access_id = @borrower_access_id')
+      params.borrower_access_id = val
+    }
+    if (typeof name !== 'undefined') {
+      const val = String(name || '').trim()
+      if (!val) {
+        return res.status(400).json({ error: 'name cannot be empty' })
+      }
+      fields.push('name = @name')
+      params.name = val
+    }
+    if (typeof active !== 'undefined') {
+      fields.push('active = @active')
+      params.active = active ? 1 : 0
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: 'No updates provided' })
+    }
+
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    const sql = `UPDATE LOs SET ${fields.join(', ')} WHERE id = @id`
+    dbRW.prepare(sql).run(params)
+    res.json({ ok: true })
+  } catch (e) {
+    if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'Borrower Access ID already exists' })
+    }
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/loan-officers/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const result = dbRW.prepare('DELETE FROM LOs WHERE id = ?').run(id)
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Loan Officer not found' })
     }
     res.json({ ok: true })
   } catch (e) {
@@ -816,9 +1230,7 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
 // SSE endpoint for PAR snapshot progress
 app.get('/api/par/progress', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
+  setEventStreamHeaders(req, res)
 
   const onProgress = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`)
   events.on('par_snapshot_progress', onProgress)
@@ -827,13 +1239,14 @@ app.get('/api/par/progress', (req, res) => {
   })
 })
 
-app.post('/api/par/snapshot', async (req, res) => {
+// Function to execute PAR snapshot (reusable for cron and manual trigger)
+async function executePARSnapshot() {
   try {
     // Get all active branches
     const activeBranches = dbRW.prepare('SELECT code FROM Logbook_Branches WHERE active = 1').all()
     
     if (activeBranches.length === 0) {
-      return res.status(400).json({ error: 'No active branches found' })
+      throw new Error('No active branches found')
     }
 
     const totalBranches = activeBranches.length
@@ -858,6 +1271,11 @@ app.post('/api/par/snapshot', async (req, res) => {
       const branch = activeBranches[i]
       const branchCode = String(branch.code ?? '').trim()
       if (!branchCode) continue
+      
+      // Add delay between branches to avoid rate limiting
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
       
       try {
         // Emit progress: starting branch
@@ -910,16 +1328,19 @@ app.post('/api/par/snapshot', async (req, res) => {
           status: 'completed'
         })
       } catch (e) {
-        console.error(`Error fetching data for branch ${branchCode}:`, e.message)
+        const errorMsg = e.message || String(e)
+        console.error(`Error fetching data for branch ${branchCode}:`, errorMsg)
         // Emit progress: branch failed
         events.emit('par_snapshot_progress', {
           current: i + 1,
           total: totalBranches,
           branch: branchCode,
           status: 'failed',
-          error: e.message
+          error: errorMsg
         })
         // Continue with other branches even if one fails
+        // Add a delay before processing next branch to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 2000))
       }
     }
 
@@ -953,6 +1374,14 @@ app.post('/api/par/snapshot', async (req, res) => {
       insertPastMissed.run(loanRecord.branch_code, loanRecord.loan_data, ts)
     }
     
+    // Update last run time
+    const upsertLastRun = dbRW.prepare(`
+      INSERT INTO PAR_Snapshot_LastRun (id, last_run_time, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET last_run_time = excluded.last_run_time, updated_at = excluded.updated_at
+    `)
+    upsertLastRun.run(ts, getNairobiTime())
+    
     // Emit progress: completed
     events.emit('par_snapshot_progress', {
       current: totalBranches,
@@ -961,7 +1390,7 @@ app.post('/api/par/snapshot', async (req, res) => {
       status: 'completed'
     })
     
-    res.json({
+    return {
       time: ts,
       past_arrears_missed: totalPastMissed,
       open_loans: totalOpenLoans,
@@ -971,14 +1400,51 @@ app.post('/api/par/snapshot', async (req, res) => {
         openLoans: { sum: totalOpenLoans, fetched: totalFetchedOpenLoans },
         branchStats
       }
-    })
+    }
   } catch (e) {
     events.emit('par_snapshot_progress', {
       status: 'error',
       error: e.message
     })
+    throw e
+  }
+}
+
+app.post('/api/par/snapshot', async (req, res) => {
+  try {
+    const result = await executePARSnapshot()
+    res.json(result)
+  } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// Get last run time for PAR snapshot
+app.get('/api/par/last-run', (req, res) => {
+  try {
+    const row = dbRW.prepare('SELECT last_run_time FROM PAR_Snapshot_LastRun WHERE id = 1').get()
+    if (row) {
+      res.json({ last_run_time: row.last_run_time })
+    } else {
+      res.json({ last_run_time: null })
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Set up cron job to run PAR snapshot every hour
+cron.schedule('0 * * * *', async () => {
+  console.log(`[CRON] Running scheduled PAR snapshot at ${new Date().toISOString()}`)
+  try {
+    await executePARSnapshot()
+    console.log(`[CRON] PAR snapshot completed successfully`)
+  } catch (e) {
+    console.error(`[CRON] PAR snapshot failed:`, e.message)
+  }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
 })
 
 // Serve static files in production (React build) - MUST be after all API routes
@@ -989,11 +1455,13 @@ if (isProduction) {
     console.log('Serving static files from:', distPath)
     
     // Serve index.html for all non-API routes (SPA routing)
-    app.get('*', (req, res) => {
-      // Skip API routes (shouldn't reach here for /api/* but just in case)
+    // Use app.use() instead of app.get('*') for Express 5 compatibility
+    app.use((req, res, next) => {
+      // Skip API routes
       if (req.path.startsWith('/api/')) {
-        return res.status(404).json({ error: 'Not found' })
+        return next()
       }
+      // Serve index.html for all other routes (SPA fallback)
       res.sendFile(join(distPath, 'index.html'))
     })
   } else {

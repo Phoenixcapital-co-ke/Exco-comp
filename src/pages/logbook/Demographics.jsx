@@ -16,7 +16,6 @@ import {
   Area
 } from 'recharts'
 import { API_URLS } from '../../utils/api.js'
-import { formatKES } from '../../utils/format.js'
 
 const GENDER_COLORS = {
   Female: '#ec4899',
@@ -45,11 +44,42 @@ function normalizeGender(value) {
   return 'Other'
 }
 
-function parseAge(ageStr) {
-  if (!ageStr) return null
-  const age = Number(String(ageStr).trim())
-  if (isNaN(age) || age < 0 || age > 120) return null
+function calculateAgeFromDob(dobStr) {
+  if (!dobStr) return null
+  const value = String(dobStr).trim()
+  let dob = null
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) {
+    const [day, month, year] = value.split('/').map((part) => Number(part))
+    dob = new Date(year, month - 1, day)
+  } else {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) {
+      dob = parsed
+    }
+  }
+  if (!dob) return null
+  const today = new Date()
+  let age = today.getFullYear() - dob.getFullYear()
+  const monthDiff = today.getMonth() - dob.getMonth()
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
+    age -= 1
+  }
+  if (age < 0 || age > 120) return null
   return age
+}
+
+function extractCityFromAddress(address) {
+  const normalized = normalizeString(address)
+  if (!normalized || normalized === 'Unknown') return 'Unknown'
+  const parts = normalized.split(/[,|-]/).map((part) => part.trim()).filter(Boolean)
+  if (!parts.length) return normalized
+  return parts[parts.length - 1]
+}
+
+function normalizeBranchCode(value) {
+  if (value === undefined || value === null) return 'Unknown'
+  const code = String(value).trim()
+  return code || 'Unknown'
 }
 
 export default function LogbookDemographics() {
@@ -57,15 +87,29 @@ export default function LogbookDemographics() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedBranch, setSelectedBranch] = useState('All')
+  const [branchNames, setBranchNames] = useState({})
 
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.logbook.disbursements)
-        if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
+        setLoading(true)
+        const [borrowerRes, branchRes] = await Promise.all([
+          fetch(API_URLS.logbook.borrowers, { credentials: 'include' }),
+          fetch(API_URLS.branches.list, { credentials: 'include' }).catch(() => null)
+        ])
+        if (!borrowerRes.ok) throw new Error(`Failed to load data (${borrowerRes.status})`)
+        const borrowerData = await borrowerRes.json()
+        const all = Array.isArray(borrowerData) ? borrowerData : []
         setRows(all)
+        if (branchRes && branchRes.ok) {
+          const branchJson = await branchRes.json()
+          const map = {}
+          for (const branch of Array.isArray(branchJson) ? branchJson : []) {
+            const code = normalizeBranchCode(branch.code)
+            map[code] = normalizeString(branch.name || code)
+          }
+          setBranchNames(map)
+        }
         setLoading(false)
       } catch (e) {
         setError(e.message)
@@ -76,53 +120,42 @@ export default function LogbookDemographics() {
   }, [])
 
   const branches = useMemo(() => {
-    const set = new Set()
+    const codes = new Set()
     for (const row of rows) {
-      const b = normalizeString(row.branch || row.Branch)
-      if (b && b !== 'Unknown') {
-        // Try to get branch name if available
-        const branchName = row.branch_name || row['Branch Name'] || b
-        set.add(normalizeString(branchName))
+      const branchCode = normalizeBranchCode(row.branch)
+      if (branchCode && branchCode !== 'Unknown') {
+        codes.add(branchCode)
       }
     }
-    return ['All', ...Array.from(set).sort()]
+    return ['All', ...Array.from(codes).sort()]
   }, [rows])
 
   const filteredRows = useMemo(() => {
     if (selectedBranch === 'All') return rows
-    return rows.filter((row) => {
-      const b = normalizeString(row.branch || row.Branch)
-      const branchName = normalizeString(row.branch_name || row['Branch Name'] || b)
-      return branchName === selectedBranch
-    })
+    return rows.filter((row) => normalizeBranchCode(row.branch) === selectedBranch)
   }, [rows, selectedBranch])
 
   const uniqueClients = useMemo(() => {
-    const nationalIdSet = new Set()
+    const idSet = new Set()
     for (const row of filteredRows) {
-      const nationalId = row.national_id || row['National ID'] || row.nationalId
-      if (nationalId && String(nationalId).trim()) {
-        nationalIdSet.add(String(nationalId).trim())
+      const preferredId = row.borrower_id ?? row.national_id
+      if (preferredId && String(preferredId).trim()) {
+        idSet.add(String(preferredId).trim())
       }
     }
-    return nationalIdSet.size
+    return idSet.size
   }, [filteredRows])
 
   const enriched = useMemo(() => {
     return filteredRows.map((row) => {
-      const ageRaw = row.age || row.Age
-      const genderRaw = row.gender || row.Gender
-      const cityRaw = row.city || row.City
-      const disbursed = Number(row.disbursed || row.Disbursed || 0)
-      const outstanding = Number(row.outstanding || row.Outstanding || 0)
+      const genderRaw = row.borrower_gender || row.gender
+      const cityRaw = row.borrower_address || row.borrower_city || row.city
 
       return {
-        age: parseAge(ageRaw),
+        age: calculateAgeFromDob(row.borrower_dob || row.dob),
         gender: normalizeGender(genderRaw),
         genderRaw: normalizeString(genderRaw),
-        city: normalizeString(cityRaw),
-        disbursed,
-        outstanding
+        city: extractCityFromAddress(cityRaw)
       }
     })
   }, [filteredRows])
@@ -189,23 +222,12 @@ export default function LogbookDemographics() {
   const topCity = cityCounts[0]?.name || 'N/A'
   const uniqueCityCount = cityCounts.length
 
-  const { maleAvgLoan, femaleAvgLoan } = useMemo(() => {
-    let maleSum = 0, maleCount = 0
-    let femaleSum = 0, femaleCount = 0
-    for (const c of enriched) {
-      if (c.gender === 'Male') {
-        maleSum += Number(c.disbursed) || 0
-        maleCount += 1
-      } else if (c.gender === 'Female') {
-        femaleSum += Number(c.disbursed) || 0
-        femaleCount += 1
-      }
-    }
-    return {
-      maleAvgLoan: maleCount > 0 ? (maleSum / maleCount) : 0,
-      femaleAvgLoan: femaleCount > 0 ? (femaleSum / femaleCount) : 0,
-    }
-  }, [enriched])
+  const femaleBorrowers = genderCounts.Female || 0
+  const maleBorrowers = genderCounts.Male || 0
+  const femalePercentValue = totalClients > 0 ? (femaleBorrowers / totalClients) * 100 : 0
+  const malePercentValue = totalClients > 0 ? (maleBorrowers / totalClients) * 100 : 0
+  const femalePercentLabel = `${femalePercentValue.toFixed(1)}%`
+  const malePercentLabel = `${malePercentValue.toFixed(1)}%`
 
   const genderChartData = useMemo(() => {
     return Object.entries(genderCounts)
@@ -218,20 +240,15 @@ export default function LogbookDemographics() {
 
   const topCityChart = cityCounts.slice(0, 10)
 
-  const ageDisbursementSeries = useMemo(() => {
+  const ageCountSeries = useMemo(() => {
     const map = new Map()
     for (const c of enriched) {
       if (c.age === null) continue
-      if (!map.has(c.age)) {
-        map.set(c.age, { age: c.age, disbursed: 0, outstanding: 0 })
-      }
-      const entry = map.get(c.age)
-      entry.disbursed += c.disbursed
-      entry.outstanding += c.outstanding
+      map.set(c.age, (map.get(c.age) || 0) + 1)
     }
-    return Array.from(map.values())
+    return Array.from(map.entries())
+      .map(([age, count]) => ({ age, count }))
       .sort((a, b) => a.age - b.age)
-      .slice(0, 120)
   }, [enriched])
 
   if (loading) {
@@ -283,7 +300,11 @@ export default function LogbookDemographics() {
             >
               {branches.map((branch) => (
                 <option key={branch} value={branch}>
-                  {branch}
+                  {branch === 'All'
+                    ? 'All'
+                    : branchNames[branch]
+                      ? `${branchNames[branch]} (${branch})`
+                      : branch}
                 </option>
               ))}
             </select>
@@ -322,9 +343,9 @@ export default function LogbookDemographics() {
         <div className="bg-white rounded-xl shadow-lg border-2 border-rose-200 p-6 hover:shadow-xl transition-all duration-300 hover:border-rose-300">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Avg Loan (Female)</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">{formatKES(femaleAvgLoan)}</p>
-              <p className="text-xs text-gray-500 mt-1">Average loan to females</p>
+              <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Female Borrowers</p>
+              <p className="text-3xl font-bold text-gray-900 mt-2">{femaleBorrowers.toLocaleString()}</p>
+              <p className="text-xs text-gray-500 mt-1">{femalePercentLabel} of total clients</p>
             </div>
             <div className="p-4 bg-gradient-to-br from-rose-500 to-pink-600 text-white rounded-xl shadow-md">
               <UserPlus size={28} />
@@ -334,9 +355,9 @@ export default function LogbookDemographics() {
         <div className="bg-white rounded-xl shadow-lg border-2 border-emerald-200 p-6 hover:shadow-xl transition-all duration-300 hover:border-emerald-300">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Avg Loan (Male)</p>
-              <p className="text-3xl font-bold text-gray-900 mt-2">{formatKES(maleAvgLoan)}</p>
-              <p className="text-xs text-gray-500 mt-1">Average loan to males</p>
+              <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Male Borrowers</p>
+              <p className="text-3xl font-bold text-gray-900 mt-2">{maleBorrowers.toLocaleString()}</p>
+              <p className="text-xs text-gray-500 mt-1">{malePercentLabel} of total clients</p>
             </div>
             <div className="p-4 bg-gradient-to-br from-emerald-500 to-teal-600 text-white rounded-xl shadow-md">
               <TrendingUp size={28} />
@@ -373,7 +394,7 @@ export default function LogbookDemographics() {
                       <Cell key={entry.name} fill={GENDER_COLORS[entry.name] || '#6b7280'} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Loans']} />
+                  <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Borrowers']} />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
@@ -439,7 +460,7 @@ export default function LogbookDemographics() {
               <div className="p-2 bg-emerald-100 rounded-lg">
                 <MapPin size={20} className="text-emerald-600" />
               </div>
-              <h3 className="text-lg font-bold text-gray-900">Top Cities by Loan Count</h3>
+              <h3 className="text-lg font-bold text-gray-900">Top Cities by Borrower Count</h3>
             </div>
           </div>
           <div className="p-6">
@@ -450,7 +471,7 @@ export default function LogbookDemographics() {
                   <XAxis dataKey="name" interval={0} angle={-20} textAnchor="end" height={90} stroke="#6b7280" />
                   <YAxis allowDecimals={false} stroke="#6b7280" />
                   <Tooltip 
-                    formatter={(value) => [`${value.toLocaleString()}`, 'Loans']}
+                    formatter={(value) => [`${value.toLocaleString()}`, 'Borrowers']}
                     contentStyle={{ 
                       backgroundColor: 'white', 
                       border: '2px solid #e5e7eb', 
@@ -499,7 +520,7 @@ export default function LogbookDemographics() {
                         <p className="text-sm font-semibold text-gray-900">
                           {item.name}
                         </p>
-                        <p className="text-xs text-gray-500">Loans: {item.count.toLocaleString()}</p>
+                        <p className="text-xs text-gray-500">Borrowers: {item.count.toLocaleString()}</p>
                       </div>
                     </div>
                     <div className="px-3 py-1 bg-amber-100 rounded-full">
@@ -513,7 +534,7 @@ export default function LogbookDemographics() {
         </div>
       </div>
 
-      {/* Age vs Disbursement/Outstanding area chart */}
+        {/* Age vs Borrower Count area chart */}
       <div className="bg-white rounded-xl shadow-lg border-2 border-indigo-200 overflow-hidden">
         <div className="px-6 py-4 bg-gradient-to-r from-indigo-50 to-blue-50 border-b-2 border-indigo-200">
           <div className="flex items-center justify-between">
@@ -521,41 +542,51 @@ export default function LogbookDemographics() {
               <div className="p-2 bg-indigo-100 rounded-lg">
                 <TrendingUp size={20} className="text-indigo-600" />
               </div>
-              <h3 className="text-lg font-bold text-gray-900">Disbursement vs Outstanding by Age</h3>
+                <h3 className="text-lg font-bold text-gray-900">Borrower Count by Age</h3>
             </div>
             <div className="px-4 py-2 bg-white rounded-lg border-2 border-indigo-200">
-              <span className="text-sm font-semibold text-indigo-700">
-                {selectedBranch === 'All' ? 'All branches' : selectedBranch}
-              </span>
+                <span className="text-sm font-semibold text-indigo-700">
+                  {selectedBranch === 'All'
+                    ? 'All branches'
+                    : branchNames[selectedBranch]
+                      ? `${branchNames[selectedBranch]} (${selectedBranch})`
+                      : selectedBranch}
+                </span>
             </div>
           </div>
         </div>
         <div className="p-6">
-          {ageDisbursementSeries.length ? (
+            {ageCountSeries.length ? (
             <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={ageDisbursementSeries}>
+                <AreaChart data={ageCountSeries}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="age" stroke="#6b7280" />
-                <YAxis tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} stroke="#6b7280" />
-                <Tooltip 
-                  formatter={(value, name) => [formatKES(value), name === 'disbursed' ? 'Disbursed' : 'Outstanding']}
-                  contentStyle={{ 
-                    backgroundColor: 'white', 
-                    border: '2px solid #e5e7eb', 
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                  }}
-                />
-                <Legend />
-                <Area type="monotone" dataKey="disbursed" name="Disbursed" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} strokeWidth={2} />
-                <Area type="monotone" dataKey="outstanding" name="Outstanding" stroke="#f97316" fill="#f97316" fillOpacity={0.25} strokeWidth={2} />
+                  <YAxis allowDecimals={false} stroke="#6b7280" />
+                  <Tooltip
+                    formatter={(value) => [`${value.toLocaleString()}`, 'Borrowers']}
+                    contentStyle={{
+                      backgroundColor: 'white',
+                      border: '2px solid #e5e7eb',
+                      borderRadius: '8px',
+                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="count"
+                    name="Borrowers"
+                    stroke="#3b82f6"
+                    fill="#3b82f6"
+                    fillOpacity={0.3}
+                    strokeWidth={2}
+                  />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
             <div className="h-80 flex items-center justify-center">
               <div className="text-center">
-                <TrendingUp size={48} className="text-gray-300 mx-auto mb-2" />
-                <p className="text-sm text-gray-500">No disbursement data by age available.</p>
+                  <TrendingUp size={48} className="text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No borrower data by age available.</p>
               </div>
             </div>
           )}

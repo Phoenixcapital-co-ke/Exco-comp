@@ -1,15 +1,28 @@
 // API configuration - prefer explicit env override, then smart fallback
 const envApiBase = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE
-const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+const hasWindow = typeof window !== 'undefined'
+const hostname = hasWindow ? window.location.hostname : 'localhost'
+const origin = hasWindow ? window.location.origin : null
+const protocol = hasWindow ? window.location.protocol : 'http:'
 const isNgrok = /\bngrok\b/.test(hostname)
-export const API_BASE = envApiBase
-  ? envApiBase
-  : (isNgrok ? 'http://localhost:3001' : `http://${hostname}:3001`)
+
+function resolveDefaultBase() {
+  if (envApiBase) return envApiBase
+  if (isNgrok) return 'http://localhost:3001'
+  if (hasWindow && protocol === 'https:') {
+    // When served via HTTPS (Cloudflare Tunnel, production), reuse same origin to avoid mixed content
+    return origin
+  }
+  return `http://${hostname}:3001`
+}
+
+export const API_BASE = resolveDefaultBase()
 
 export const API_URLS = {
   logbook: {
     disbursements: `${API_BASE}/api/logbook/disbursements`,
     collections: `${API_BASE}/api/logbook/collections`,
+    borrowers: `${API_BASE}/api/logbook/borrowers`,
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,
@@ -24,6 +37,7 @@ export const API_URLS = {
     branches: `${API_BASE}/api/par/branches`,
     progress: `${API_BASE}/api/par/progress`,
     borrowerAccess: `${API_BASE}/api/par/borrower-access`,
+    lastRun: `${API_BASE}/api/par/last-run`,
   },
   branches: {
     list: `${API_BASE}/api/logbook/branches`,
@@ -32,12 +46,20 @@ export const API_URLS = {
   },
   auth: {
     login: `${API_BASE}/api/auth/login`,
+    logout: `${API_BASE}/api/auth/logout`,
+    me: `${API_BASE}/api/auth/me`,
   },
   users: {
     list: `${API_BASE}/api/users`,
     create: `${API_BASE}/api/users`,
     update: (id) => `${API_BASE}/api/users/${id}`,
     delete: (id) => `${API_BASE}/api/users/${id}`,
-  }
+  },
+  loanOfficers: {
+    list: `${API_BASE}/api/loan-officers`,
+    create: `${API_BASE}/api/loan-officers`,
+    update: (id) => `${API_BASE}/api/loan-officers/${id}`,
+    delete: (id) => `${API_BASE}/api/loan-officers/${id}`,
+  },
 }
 

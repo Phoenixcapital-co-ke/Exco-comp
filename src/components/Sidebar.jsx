@@ -14,9 +14,12 @@ import {
   AlertTriangle,
   Activity
 } from 'lucide-react'
+import phoenixLogo from '../assets/phoenix-logo.png'
+import { useAuth } from '../context/AuthContext.jsx'
 
 function Sidebar({ isOpen, onToggle }) {
   const location = useLocation()
+  const { user } = useAuth()
   const [expandedSection, setExpandedSection] = useState('logbook')
 
   const toggleSection = (section) => {
@@ -86,21 +89,40 @@ function Sidebar({ isOpen, onToggle }) {
       items: [
         { path: '/data/overview', label: 'Overview', icon: BarChart3 },
         { path: '/data/branches', label: 'Branches', icon: Building2 },
-        { path: '/data/users', label: 'Users', icon: Users }
+        { path: '/data/users', label: 'Users', icon: Users },
+        { path: '/data/loan-officers', label: 'Loan Officers', icon: Users }
       ]
     }
   ]
 
+  const roleKey = String(user?.role || '').toLowerCase()
+  const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
+  const ROLE_SECTIONS = {
+    admin: navigationItems.map((item) => item.id),
+    manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
+    logbook: ['logbook'],
+    zidisha: ['zidisha'],
+    advans: ['advans'],
+  }
+  const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
+  const filteredNavigation = navigationItems.filter((item) => allowedSectionIds.includes(item.id))
+  const visibleExpandedSection = filteredNavigation.some((item) => item.id === expandedSection)
+    ? expandedSection
+    : filteredNavigation[0]?.id ?? null
+
   if (!isOpen) {
     return (
       <div className="w-16 bg-white shadow-lg border-r border-gray-200 flex flex-col">
-        <div className="p-4">
-          <div className="w-8 h-8 bg-primary-500 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">PC</span>
-          </div>
+        <div className="p-4 flex justify-center">
+          <img
+            src={phoenixLogo}
+            alt="Phoenix Capital"
+            className="h-12 w-auto object-contain"
+            draggable="false"
+          />
         </div>
         <div className="flex-1 py-4">
-          {navigationItems.map((item) => (
+          {filteredNavigation.map((item) => (
             <div key={item.id} className="px-3 py-2">
               <div className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200">
                 <item.icon size={20} />
@@ -116,17 +138,19 @@ function Sidebar({ isOpen, onToggle }) {
     <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
       {/* Logo */}
       <div className="p-6 border-b border-gray-200">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-primary-500 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">PC</span>
-          </div>
-          <span className="text-lg font-semibold text-gray-900">Phoenix Capital</span>
+        <div className="flex justify-center">
+          <img
+            src={phoenixLogo}
+            alt="Phoenix Capital"
+            className="h-16 w-auto object-contain"
+            draggable="false"
+          />
         </div>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 py-4 overflow-y-auto">
-        {navigationItems.map((section) => (
+        {filteredNavigation.map((section) => (
           <div key={section.id} className="mb-2">
             {/* Section Header */}
             <button
@@ -137,7 +161,7 @@ function Sidebar({ isOpen, onToggle }) {
                 <section.icon size={20} />
                 <span className="font-medium">{section.label}</span>
               </div>
-              {expandedSection === section.id ? (
+              {visibleExpandedSection === section.id ? (
                 <ChevronDown size={16} />
               ) : (
                 <ChevronRight size={16} />
@@ -145,7 +169,7 @@ function Sidebar({ isOpen, onToggle }) {
             </button>
 
             {/* Section Items */}
-            {expandedSection === section.id && (
+            {visibleExpandedSection === section.id && (
               <div className="ml-4 space-y-1">
                 {section.items.map((item) => {
                   const isActive = location.pathname === item.path

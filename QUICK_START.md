@@ -35,20 +35,23 @@ This creates the `dist/` folder with production files.
 
 ### 3. Set Up Auto-Start
 
-```powershell
-# Open PowerShell as Administrator
-# Install PM2 startup
-pm2 startup
+**Note**: PM2's `startup` command doesn't work on Windows. Use Windows Task Scheduler instead.
 
-# Follow the instructions - PM2 will give you a command to run
-# Copy and paste that command, then press Enter
+```powershell
+# Open PowerShell as Administrator (Right-click → Run as Administrator)
+cd C:\path\to\Exco
+
+# Run the Windows startup setup script
+.\scripts\setup-windows-startup.ps1
 
 # Start the app
 npm run pm2:start
 
-# Save the process list (so it auto-starts on reboot)
+# Save the process list
 npm run pm2:save
 ```
+
+This creates a Windows Task Scheduler task that will auto-start PM2 on system boot.
 
 ### 4. Configure HTTPS (Choose One)
 

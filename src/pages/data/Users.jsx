@@ -22,7 +22,7 @@ function UsersPage() {
   const loadUsers = async () => {
     try {
       setLoading(true)
-      const res = await fetch(API_URLS.users.list)
+      const res = await fetch(API_URLS.users.list, { credentials: 'include' })
       if (!res.ok) throw new Error(`Failed to load users (${res.status})`)
       const data = await res.json()
       setUsers(Array.isArray(data) ? data : [])
@@ -53,7 +53,10 @@ function UsersPage() {
     if (!window.confirm(`Delete ${user.username}? This cannot be undone.`)) return
     try {
       setSaving(true)
-      const res = await fetch(API_URLS.users.delete(user.id), { method: 'DELETE' })
+      const res = await fetch(API_URLS.users.delete(user.id), {
+        method: 'DELETE',
+        credentials: 'include',
+      })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Delete failed')
@@ -104,7 +107,8 @@ function UsersPage() {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        credentials: 'include',
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -124,7 +128,8 @@ function UsersPage() {
       const res = await fetch(API_URLS.users.update(user.id), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: !user.active })
+        body: JSON.stringify({ active: !user.active }),
+        credentials: 'include',
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -212,8 +217,9 @@ function UsersPage() {
             >
               <option value="admin">Admin</option>
               <option value="manager">Manager</option>
-              <option value="analyst">Analyst</option>
-              <option value="user">User</option>
+              <option value="logbook">Logbook</option>
+              <option value="zidisha">Zidisha</option>
+              <option value="advans">Advans</option>
             </select>
           </div>
           <div>

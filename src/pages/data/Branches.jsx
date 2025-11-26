@@ -11,7 +11,7 @@ export default function DataBranches() {
 
   const load = async () => {
     try {
-      const res = await fetch(API_URLS.branches.list)
+      const res = await fetch(API_URLS.branches.list, { credentials: 'include' })
       const data = await res.json()
       setRows(Array.isArray(data) ? data : [])
       setLoading(false)
@@ -36,7 +36,8 @@ export default function DataBranches() {
           code: draft.code.trim(),
           name: draft.name.trim(),
           active: draft.active ? 1 : 0
-        })
+        }),
+        credentials: 'include',
       })
       setDraft({ code: '', name: '', active: true })
       await load()
@@ -52,7 +53,10 @@ export default function DataBranches() {
     const ok = window.confirm('Delete this branch? This cannot be undone.')
     if (!ok) return
     try {
-      const res = await fetch(API_URLS.branches.delete(code), { method: 'DELETE' })
+      const res = await fetch(API_URLS.branches.delete(code), {
+        method: 'DELETE',
+        credentials: 'include',
+      })
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}))
         throw new Error(errorData.error || `Delete failed: ${res.status}`)

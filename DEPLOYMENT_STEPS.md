@@ -147,23 +147,49 @@ dir dist
 
 ## Phase 5: Set Up Auto-Start with PM2
 
-### Step 5.1: Configure PM2 Startup
+**Important**: PM2's `startup` command doesn't work on Windows. We'll use Windows Task Scheduler instead.
+
+### Step 5.1: Set Up Windows Auto-Start (Using Task Scheduler)
 
 ```powershell
 # Open PowerShell as Administrator (Right-click PowerShell → Run as Administrator)
-cd C:\Apps\Exco
+cd C:\Users\Dev\Documents\Exco  # Or wherever your project is
 
-# Set up PM2 to start on Windows boot
-pm2 startup
+# Run the Windows startup setup script
+.\scripts\setup-windows-startup.ps1
 ```
 
-**Important**: PM2 will output a command like:
+**What this does**:
+- Creates a startup batch script
+- Sets up a Windows Task Scheduler task
+- Configures it to run on system boot
+
+**Expected output**: You should see:
 ```
-[PM2] To setup the Startup Script, copy/paste the following command:
-pm2 startup
+Setting up PM2 auto-start for Windows...
+Project path: C:\Users\Dev\Documents\Exco
+Task created successfully!
 ```
 
-**Actually, it will give you a specific command** - copy and paste that exact command, then press Enter.
+**Alternative: Manual Setup** (if the script doesn't work):
+
+1. **Create a batch file** `scripts\pm2-startup.bat`:
+   ```batch
+   @echo off
+   cd /d "C:\Users\Dev\Documents\Exco"
+   call npm run pm2:start
+   call npm run pm2:save
+   ```
+
+2. **Open Task Scheduler** (search for it in Windows)
+
+3. **Create Basic Task**:
+   - Name: "PM2-Exco-Dashboard"
+   - Trigger: "When the computer starts"
+   - Action: "Start a program"
+   - Program: `cmd.exe`
+   - Arguments: `/c "C:\Users\Dev\Documents\Exco\scripts\pm2-startup.bat"`
+   - Check "Run with highest privileges"
 
 ### Step 5.2: Start the Application with PM2
 

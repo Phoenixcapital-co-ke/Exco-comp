@@ -68,7 +68,7 @@ export default function ZidishaDemographics() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data)
+        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
         if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
         const data = await res.json()
         const all = Array.isArray(data) ? data : []

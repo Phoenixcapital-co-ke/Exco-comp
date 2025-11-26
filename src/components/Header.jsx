@@ -23,7 +23,7 @@ function Header({ onMenuClick }) {
             <Menu size={20} />
           </button>
           <h1 className="text-2xl font-semibold text-gray-900">
-            Phoenix Capital Executive Dashboard
+            Executive Dashboard
           </h1>
         </div>
         

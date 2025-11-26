@@ -15,7 +15,7 @@ function AdvansCollection() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data)
+        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
         const data = await res.json()
         const all = Array.isArray(data) ? data : []
         // Filter for Advans Branch only

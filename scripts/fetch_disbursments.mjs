@@ -12,6 +12,7 @@ const TABLE = 'Logbook_Disbursement'
 const COLLECTIONS_BASE = 'https://api-main.loandisk.com/7125'
 const COLLECTIONS_TABLE = 'Logbook_collection'
 const COLLECTION_BRANCH_CODES = ['12936','27504','63796','27133','8678','75092','59535','75350','8550','55886']
+const DEFAULT_COLLECTION_START_DATE = '01/01/2024'
 function buildCollectionsUrl(branchCode){
   return `${COLLECTIONS_BASE}/${branchCode}/advanced_search_repayments`
 }
@@ -23,7 +24,7 @@ function buildBorrowersUrl(branchCode){
 // Base payload (pagination handled by from/count)
 const basePayload = {
   from: 1,
-  count: 20,
+  count: 1000,
   start_date: '01/01/2024',
   end_date: getTodayDMY(),
   do_not_include_restructured_loans: 1,
@@ -233,6 +234,18 @@ function getTodayDMY() {
   return `${dd}/${mm}/${yyyy}`
 }
 
+function getLatestCollectionDate(db) {
+  const row = db.prepare(`
+    SELECT repayment_collected_date as date
+    FROM ${COLLECTIONS_TABLE}
+    WHERE repayment_collected_date IS NOT NULL
+      AND TRIM(repayment_collected_date) <> ''
+    ORDER BY substr(repayment_collected_date,7,4) || substr(repayment_collected_date,4,2) || substr(repayment_collected_date,1,2) DESC
+    LIMIT 1
+  `).get()
+  return row?.date ? String(row.date) : null
+}
+
 // === Collections helpers ===
 function initCollectionsTable(db) {
   db.exec(`
@@ -329,7 +342,7 @@ async function fetchAllBorrowers(db) {
   const payloadBase = {
     from: 1,
     count,
-    borrower_type: 'Noloans||Notactive||8||1||18||10||5||16||6||2||3||9||17',
+    borrower_type: 'Noloans||Notactive||8||1||18||10||5||16||6||2||3||55222||55219||55220||55224||55223||55225||55226||55221||248404||490046||9||17',
   }
   const insert = db.prepare(`
     INSERT INTO ${BORROWERS_TABLE} (
@@ -361,11 +374,25 @@ async function fetchAllBorrowers(db) {
       national_id=excluded.national_id
   `)
   // Load branch codes from DB if present; fallback to constant list
-  const branchRows = db.prepare(`SELECT code FROM Logbook_Branches WHERE active = 1`).all()
-  const branchList = branchRows.length ? branchRows.map(r => String(r.code)) : COLLECTION_BRANCH_CODES
-  for (const branchCode of branchList) {
+  const branchRows = db.prepare(`SELECT code, name FROM Logbook_Branches WHERE active = 1`).all()
+  const branchList = branchRows.length
+    ? branchRows.map(r => ({
+        code: String(r.code).trim(),
+        name: (r.name || String(r.code)).trim(),
+      }))
+    : COLLECTION_BRANCH_CODES.map(code => ({ code, name: code }))
+
+  console.info(
+    `[Borrowers] Active branches to fetch: ${branchList
+      .map(b => `${b.code}${b.name ? ` (${b.name})` : ''}`)
+      .join(', ')}`
+  )
+
+  for (const { code: branchCode, name: branchName } of branchList) {
+    console.info(`[Borrowers] Fetching borrowers for branch ${branchCode} (${branchName})`)
     let page = 1
     let total = null
+    let branchInserted = 0
     while (true) {
       const payload = { ...payloadBase, from: page }
       const { meta, results } = await fetchBorrowersOnce(branchCode, payload)
@@ -393,10 +420,15 @@ async function fetchAllBorrowers(db) {
       db.transaction((rows) => {
         for (const row of rows) insert.run(row)
       })(mapped)
+      branchInserted += mapped.length
       page += 1
-      if (total != null && (page - 1) * count >= total) break
-      if (results.length < count) break
+      if (total != null && branchInserted >= total) break
     }
+    console.info(
+      `[Borrowers] Branch ${branchCode} (${branchName}) saved ${branchInserted}${
+        total != null ? ` / ${total}` : ''
+      } records`
+    )
   }
 }
 
@@ -453,48 +485,28 @@ async function fetchAllCollections() {
 async function fetchAllCollectionsWithDb(db) {
   const all = []
   let grandTotal = 0
-  const count = 100
+  const count = 1000
   const today = getTodayDMY()
-
-  // helpers from closure
-  const parseLoandiskDate = (s) => {
-    if (!s) return null
-    const m = String(s).trim().match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})(am|pm)$/i)
-    if (!m) return null
-    let [ , dd, mm, yyyy, hh, mi, ap ] = m
-    dd = parseInt(dd,10); mm = parseInt(mm,10); yyyy = parseInt(yyyy,10)
-    hh = parseInt(hh,10); mi = parseInt(mi,10)
-    if (/pm/i.test(ap) && hh < 12) hh += 12
-    if (/am/i.test(ap) && hh === 12) hh = 0
-    return new Date(yyyy, mm-1, dd, hh, mi)
+  const latestDate = getLatestCollectionDate(db)
+  let startDate = latestDate || DEFAULT_COLLECTION_START_DATE
+  if (latestDate) {
+    db.prepare(`DELETE FROM ${COLLECTIONS_TABLE} WHERE repayment_collected_date = ?`).run(latestDate)
   }
-  const getBranchIncrementalStart = (branchCode) => {
-    const rows = db.prepare(`SELECT loandisk_system_date, repayment_collected_date FROM ${COLLECTIONS_TABLE} WHERE branch = ? AND loandisk_system_date IS NOT NULL AND loandisk_system_date <> ''`).all(branchCode)
-    if (!rows.length) return '01/01/2024'
-    let best = null, bestRepay = '01/01/2024'
-    for (const r of rows) {
-      const d = parseLoandiskDate(r.loandisk_system_date)
-      if (!d) continue
-      if (!best || d > best) { best = d; bestRepay = String(r.repayment_collected_date || '01/01/2024') }
-    }
-    return bestRepay || '01/01/2024'
-  }
+  console.info(`[Collections] Fetching records from ${startDate} to ${today}`)
 
   // Load branch codes from DB if present; fallback to constant list
   const branchRows = db.prepare(`SELECT code FROM Logbook_Branches WHERE active = 1`).all()
   const branchList = branchRows.length ? branchRows.map(r => String(r.code)) : COLLECTION_BRANCH_CODES
   for (const branchCode of branchList) {
-    const start = getBranchIncrementalStart(branchCode)
-    // delete overlapping date for this branch to avoid duplicates
-    db.prepare(`DELETE FROM ${COLLECTIONS_TABLE} WHERE branch = ? AND repayment_collected_date = ?`).run(branchCode, start)
-
+    console.info(`[Collections] Fetching repayments for branch ${branchCode} (from ${startDate} to ${today})`)
+    let branchInserted = 0
     let page = 1
     let total = null
     while (true) {
       const payload = {
         from: page,
         count,
-        repayment_search_from_date: start,
+        repayment_search_from_date: startDate,
         repayment_search_to_date: today,
       }
       const { meta, results } = await fetchCollectionsOnce(branchCode, payload)
@@ -502,10 +514,11 @@ async function fetchAllCollectionsWithDb(db) {
       if (!results.length) break
       for (const r of results) r._branch_code = branchCode
       all.push(...results)
+      branchInserted += results.length
       page += 1
-      const returned = Number(meta?.ReturnResults ?? results.length)
-      if ((total != null && (page-1)*count >= total) || returned < count) break
+      if (total != null && branchInserted >= total) break
     }
+    console.info(`[Collections] Branch ${branchCode} fetched ${branchInserted}${total != null ? ` / ${total}` : ''} records`)
     if (total != null) grandTotal += total
   }
   return { total: grandTotal || null, results: all }

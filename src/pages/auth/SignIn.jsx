@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { API_URLS } from '../../utils/api.js'
+import phoenixLogo from '../../assets/phoenix-logo.png'
 
 function SignIn() {
   const { login } = useAuth()
@@ -23,7 +24,8 @@ function SignIn() {
       const res = await fetch(API_URLS.auth.login, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify(form),
+        credentials: 'include',
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -44,10 +46,12 @@ function SignIn() {
     <div className="min-h-screen flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-200 p-8 space-y-6">
         <div className="text-center space-y-2">
-          <div className="mx-auto w-14 h-14 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center text-2xl font-bold">
-            PC
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900">Phoenix Capital</h1>
+          <img
+            src={phoenixLogo}
+            alt="Phoenix Capital"
+            className="mx-auto w-28 h-28 object-contain drop-shadow-sm"
+            draggable="false"
+          />
           <p className="text-sm text-gray-500">Sign in to access the executive dashboard</p>
         </div>
 

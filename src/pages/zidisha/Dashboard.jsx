@@ -41,7 +41,7 @@ function ZidishaDashboard() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data)
+        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
         const data = await res.json()
         const all = Array.isArray(data) ? data : []
         const filtered = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')

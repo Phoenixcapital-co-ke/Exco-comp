@@ -119,7 +119,7 @@ export class LogbookDataProcessor {
   // Load disbursements data from backend API
   async loadDisbursementsData() {
     try {
-        const response = await fetch(API_URLS.logbook.disbursements)
+      const response = await fetch(API_URLS.logbook.disbursements, { credentials: 'include' })
       this.disbursementsData = await response.json()
       return this.disbursementsData
     } catch (error) {
@@ -131,7 +131,7 @@ export class LogbookDataProcessor {
   // Load repayments data from backend API
   async loadRepaymentsData() {
     try {
-        const response = await fetch(API_URLS.logbook.collections)
+      const response = await fetch(API_URLS.logbook.collections, { credentials: 'include' })
       this.repaymentsData = await response.json()
       return this.repaymentsData
     } catch (error) {

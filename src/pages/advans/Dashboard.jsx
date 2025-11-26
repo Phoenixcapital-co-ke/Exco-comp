@@ -12,7 +12,7 @@ function AdvansDashboard() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data)
+        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
         const data = await res.json()
         const all = Array.isArray(data) ? data : []
         const advans = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
@@ -63,7 +63,7 @@ function AdvansDashboard() {
     { title: 'Total loaned', value: formatKES(totalLoaned), change: '', icon: DollarSign, color: 'text-green-600' },
     { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
     { title: 'Current Year Collection Rate', value: currentYearCollectionRate, change: '', icon: TrendingUp, color: 'text-purple-600' },
-    { title: 'PAR 30+', value: '—', change: '', icon: AlertTriangle, color: 'text-orange-600' }
+    { title: 'PAR', value: '—', change: '', icon: AlertTriangle, color: 'text-orange-600' }
   ]
 
   return (
