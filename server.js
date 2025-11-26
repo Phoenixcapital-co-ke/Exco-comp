@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import compression from 'compression'
 import cookieParser from 'cookie-parser'
 import jwt from 'jsonwebtoken'
 import { spawn } from 'child_process'
@@ -527,6 +528,7 @@ app.use(cors({
 
 app.use(cookieParser())
 app.use(express.json())
+app.use(compression())
 app.use(attachAuthFromToken)
 app.use('/api', (req, res, next) => {
   if (req.method === 'OPTIONS') {
@@ -552,10 +554,26 @@ app.get('/api/events', (req, res) => {
 // Zidisha data endpoint
 app.get('/api/zidisha/data', (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM zidisha_data').all();
-    res.json(rows);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
+    const pageSizeRaw = parseInt(req.query.pageSize, 10)
+    const pageSize = Math.min(Math.max(pageSizeRaw || 2000, 100), 10000)
+    const offset = (page - 1) * pageSize
+
+    const totalRow = db.prepare('SELECT COUNT(*) as count FROM zidisha_data').get()
+    const total = totalRow?.count || 0
+    const rows = db.prepare('SELECT * FROM zidisha_data ORDER BY rowid DESC LIMIT ? OFFSET ?').all(pageSize, offset)
+
+    res.json({
+      meta: {
+        page,
+        pageSize,
+        total,
+        totalPages: pageSize > 0 ? Math.ceil(total / pageSize) : 0
+      },
+      results: rows
+    })
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message })
   }
 })
 

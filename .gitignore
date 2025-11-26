@@ -56,3 +56,4 @@ Thumbs.db
 
 # Original/backup directories
 original/
+*.zip

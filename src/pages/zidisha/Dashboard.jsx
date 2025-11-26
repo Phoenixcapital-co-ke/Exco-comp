@@ -34,26 +34,61 @@ import { formatKES } from '../../utils/format.js'
 import { API_URLS } from '../../utils/api.js'
 
 function ZidishaDashboard() {
+  const PAGE_SIZE = 3000
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(null)
+  const [page, setPage] = useState(1)
+  const [meta, setMeta] = useState(null)
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
-        const filtered = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
-        setRows(filtered)
+  const filterRows = (data) =>
+    data.filter((r) => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
+
+  const loadPage = async (targetPage = 1) => {
+    if (targetPage === 1) {
+      setLoading(true)
+    } else {
+      setLoadingMore(true)
+    }
+    try {
+      const params = new URLSearchParams({
+        page: String(targetPage),
+        pageSize: String(PAGE_SIZE),
+      })
+      const res = await fetch(`${API_URLS.zidisha.data}?${params.toString()}`, { credentials: 'include' })
+      const payload = await res.json()
+      const pageRows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload.results)
+          ? payload.results
+          : []
+      const filtered = filterRows(pageRows)
+
+      setRows((prev) => (targetPage === 1 ? filtered : [...prev, ...filtered]))
+      setMeta(payload.meta || null)
+      setPage(targetPage)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      if (targetPage === 1) {
         setLoading(false)
-      } catch (e) {
-        setError(e.message)
-        setLoading(false)
+      } else {
+        setLoadingMore(false)
       }
     }
-    load()
+  }
+
+  useEffect(() => {
+    loadPage(1)
   }, [])
+
+  const canLoadMore = meta && rows.length < (meta.total || rows.length)
+  const handleLoadMore = () => {
+    if (meta) {
+      loadPage(page + 1)
+    }
+  }
   // Compute Active Loans: Expected Matured On Date is today or in the future
   const today = new Date()
   const isActive = (row) => {
@@ -377,14 +412,20 @@ function ZidishaDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {['Month', 'Quarter', 'Year', 'Branch'].map((label) => (
+          {meta && (
+            <span className="text-sm text-gray-500">
+              Showing {rows.length.toLocaleString()} of {(meta.total || rows.length).toLocaleString()} records
+            </span>
+          )}
+          {canLoadMore && (
             <button
-              key={label}
-              className="px-3 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:border-gray-300 hover:text-gray-900 transition-colors"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              className="px-3 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:border-gray-300 hover:text-gray-900 transition-colors disabled:opacity-60"
             >
-              {label}
+              {loadingMore ? 'Loading…' : 'Load more data'}
             </button>
-          ))}
+          )}
         </div>
       </header>
 
