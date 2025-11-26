@@ -600,7 +600,13 @@ app.get('/api/ingest', (req, res) => {
   setEventStreamHeaders(req, res)
   res.flushHeaders && res.flushHeaders()
 
-  const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), shell: true })
+  // For manual refresh from the Overview page, skip heavy borrowers ingestion.
+  const env = {
+    ...process.env,
+    SKIP_BORROWERS: '1',
+  }
+
+  const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), shell: true, env })
   const send = (data) => {
     res.write(`data: ${data.replace(/\r?\n/g, '\ndata: ')}\n\n`)
   }
@@ -1460,6 +1466,34 @@ cron.schedule('0 * * * *', async () => {
   } catch (e) {
     console.error(`[CRON] PAR snapshot failed:`, e.message)
   }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Daily borrowers ingestion at 00:00 (Africa/Nairobi) - runs borrowers only
+cron.schedule('0 0 * * *', () => {
+  console.log(`[CRON] Running scheduled borrowers ingestion at ${new Date().toISOString()}`)
+  const env = {
+    ...process.env,
+    SKIP_DISBURSEMENTS: '1',
+    SKIP_COLLECTIONS: '1',
+    SKIP_ZIDISHA: '1',
+    SKIP_BORROWERS: '0',
+  }
+  const proc = spawn('node', ['scripts/fetch_disbursments.mjs'], { cwd: process.cwd(), env, shell: true })
+  proc.stdout.on('data', (chunk) => {
+    console.log(`[BORROWERS-CRON-OUT] ${chunk.toString().trimEnd()}`)
+  })
+  proc.stderr.on('data', (chunk) => {
+    console.error(`[BORROWERS-CRON-ERR] ${chunk.toString().trimEnd()}`)
+  })
+  proc.on('close', (code) => {
+    console.log(`[CRON] Borrowers ingestion completed with code ${code}`)
+  })
+  proc.on('error', (err) => {
+    console.error('[CRON] Borrowers ingestion failed to start:', err.message)
+  })
 }, {
   scheduled: true,
   timezone: 'Africa/Nairobi'

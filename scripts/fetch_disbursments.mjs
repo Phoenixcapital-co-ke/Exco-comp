@@ -1,5 +1,10 @@
 // Fetch disbursement_report from Loandisk and persist into SQLite (table: disbursments)
 // Usage: node scripts/fetch_disbursments.mjs
+// Behaviour can be controlled with environment flags:
+//   SKIP_DISBURSEMENTS=1  -> skip disbursement ingestion
+//   SKIP_COLLECTIONS=1    -> skip collections ingestion
+//   SKIP_BORROWERS=1      -> skip borrowers ingestion
+//   SKIP_ZIDISHA=1        -> skip Zidisha ingestion
 
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
@@ -20,6 +25,12 @@ const BORROWERS_TABLE = 'Logbook_borrowers'
 function buildBorrowersUrl(branchCode){
   return `${COLLECTIONS_BASE}/${branchCode}/advanced_search_borrowers`
 }
+
+// Control flags from environment
+const SKIP_DISBURSEMENTS = process.env.SKIP_DISBURSEMENTS === '1'
+const SKIP_COLLECTIONS = process.env.SKIP_COLLECTIONS === '1'
+const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
+const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
 
 // Base payload (pagination handled by from/count)
 const basePayload = {
@@ -772,54 +783,69 @@ function insertZidisha(db, row) {
 
 (async () => {
   try {
-    // Determine latest date in table; if present, delete that date to avoid duplicates
     const db = initDb()
     migrateDropRawIfPresent(db)
-    const latest = getLatestDisbursedDate(db)
-    if (latest) {
-      // delete existing rows of the latest date to allow clean re-fetch of that day
-      db.prepare(`DELETE FROM ${TABLE} WHERE disbursed_date = ?`).run(latest)
-      // use latest as new start_date for incremental fetch
-      basePayload.start_date = latest
+
+    // === Disbursements ingestion ===
+    if (!SKIP_DISBURSEMENTS) {
+      const latest = getLatestDisbursedDate(db)
+      if (latest) {
+        // delete existing rows of the latest date to allow clean re-fetch of that day
+        db.prepare(`DELETE FROM ${TABLE} WHERE disbursed_date = ?`).run(latest)
+        // use latest as new start_date for incremental fetch
+        basePayload.start_date = latest
+      }
+
+      const { total, results } = await fetchAll()
+      const tx = db.transaction((rows) => {
+        for (const r of rows) upsert(db, mapResult(r))
+      })
+      tx(results)
+      console.log(`Saved ${results.length} rows into ${TABLE} (of total ${total ?? 'unknown'})`)
+    } else {
+      console.log('Skipping disbursements ingestion due to SKIP_DISBURSEMENTS=1')
     }
 
-    const { total, results } = await fetchAll()
-    const tx = db.transaction((rows) => {
-      for (const r of rows) upsert(db, mapResult(r))
-    })
-    tx(results)
-    // No legacy backfill; ingestion writes structured columns only
-    console.log(`Saved ${results.length} rows into ${TABLE} (of total ${total ?? 'unknown'})`)
-
     // === Collections ingestion ===
-    initCollectionsTable(db)
-    const { total: collTotal, results: collResults } = await fetchAllCollectionsWithDb(db)
-    const tx2 = db.transaction((rows) => {
-      for (const r of rows) upsertCollection(db, r)
-    })
-    tx2(collResults)
-    // Verify actual row count present in DB after insert
-    const collCount = db.prepare(`SELECT COUNT(*) as c FROM ${COLLECTIONS_TABLE}`).get().c
-    console.log(`Saved ${collResults.length} rows into ${COLLECTIONS_TABLE} (of total ${collTotal ?? 'unknown'}). Table now has ${collCount} rows.`)
+    if (!SKIP_COLLECTIONS) {
+      initCollectionsTable(db)
+      const { total: collTotal, results: collResults } = await fetchAllCollectionsWithDb(db)
+      const tx2 = db.transaction((rows) => {
+        for (const r of rows) upsertCollection(db, r)
+      })
+      tx2(collResults)
+      const collCount = db.prepare(`SELECT COUNT(*) as c FROM ${COLLECTIONS_TABLE}`).get().c
+      console.log(`Saved ${collResults.length} rows into ${COLLECTIONS_TABLE} (of total ${collTotal ?? 'unknown'}). Table now has ${collCount} rows.`)
+    } else {
+      console.log('Skipping collections ingestion due to SKIP_COLLECTIONS=1')
+    }
 
     // === Borrowers ingestion ===
-    await fetchAllBorrowers(db)
-    const borrowersCount = db.prepare(`SELECT COUNT(*) as c FROM ${BORROWERS_TABLE}`).get().c
-    console.log(`Borrowers table ${BORROWERS_TABLE} now has ${borrowersCount} rows across branches.`)
+    if (!SKIP_BORROWERS) {
+      await fetchAllBorrowers(db)
+      const borrowersCount = db.prepare(`SELECT COUNT(*) as c FROM ${BORROWERS_TABLE}`).get().c
+      console.log(`Borrowers table ${BORROWERS_TABLE} now has ${borrowersCount} rows across branches.`)
+    } else {
+      console.log('Skipping borrowers ingestion due to SKIP_BORROWERS=1')
+    }
 
     // === Zidisha ingestion ===
-    const dbZ = initDb()
-    initZidishaTable(dbZ)
-    migrateZidishaDropUniqueIfPresent(dbZ)
-    // Truncate the table before new insert
-    dbZ.exec(`DELETE FROM ${ZIDISHA_TABLE}`)
-    const zidishaRows = await fetchZidishaCsv()
-    const txZ = dbZ.transaction((rows) => {
-      for(const r of rows) insertZidisha(dbZ, r)
-    })
-    txZ(zidishaRows)
-    const zidishaCount = dbZ.prepare(`SELECT COUNT(*) as c FROM ${ZIDISHA_TABLE}`).get().c
-    console.log(`Saved ${zidishaRows.length} rows into ${ZIDISHA_TABLE}. Table now has ${zidishaCount} rows.`)
+    if (!SKIP_ZIDISHA) {
+      const dbZ = initDb()
+      initZidishaTable(dbZ)
+      migrateZidishaDropUniqueIfPresent(dbZ)
+      // Truncate the table before new insert
+      dbZ.exec(`DELETE FROM ${ZIDISHA_TABLE}`)
+      const zidishaRows = await fetchZidishaCsv()
+      const txZ = dbZ.transaction((rows) => {
+        for (const r of rows) insertZidisha(dbZ, r)
+      })
+      txZ(zidishaRows)
+      const zidishaCount = dbZ.prepare(`SELECT COUNT(*) as c FROM ${ZIDISHA_TABLE}`).get().c
+      console.log(`Saved ${zidishaRows.length} rows into ${ZIDISHA_TABLE}. Table now has ${zidishaCount} rows.`)
+    } else {
+      console.log('Skipping Zidisha ingestion due to SKIP_ZIDISHA=1')
+    }
 
     db.close()
   } catch (err) {
