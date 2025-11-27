@@ -146,20 +146,6 @@ const requireAuth = (req, res, next) => {
 }
 
 const setEventStreamHeaders = (req, res) => {
-const updateDataRefreshTime = (time = getNairobiTime()) => {
-  try {
-    dbRW
-      .prepare(`
-        INSERT INTO DataRefresh_Status (id, last_run_time, updated_at)
-        VALUES (1, @time, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET last_run_time = excluded.last_run_time, updated_at = CURRENT_TIMESTAMP
-      `)
-      .run({ time })
-  } catch (err) {
-    console.error('Failed to update DataRefresh_Status:', err.message)
-  }
-  return time
-}
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -168,6 +154,23 @@ const updateDataRefreshTime = (time = getNairobiTime()) => {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Access-Control-Allow-Credentials', 'true')
   }
+}
+
+const updateDataRefreshTime = (time = getNairobiTime()) => {
+  try {
+    dbRW
+      .prepare(`
+        INSERT INTO DataRefresh_Status (id, last_run_time, updated_at)
+        VALUES (1, @time, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+          last_run_time = excluded.last_run_time,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run({ time })
+  } catch (err) {
+    console.error('Failed to update DataRefresh_Status:', err.message)
+  }
+  return time
 }
 
 const LOANDISK_BASE_URL = 'https://api-main.loandisk.com/7125'
