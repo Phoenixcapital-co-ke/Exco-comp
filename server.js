@@ -66,6 +66,13 @@ dbRW.prepare(`
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )
 `).run();
+dbRW.prepare(`
+  CREATE TABLE IF NOT EXISTS DataRefresh_Status (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_run_time TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
 
 // Loan Officers table (LOs)
 dbRW.exec(`
@@ -139,6 +146,20 @@ const requireAuth = (req, res, next) => {
 }
 
 const setEventStreamHeaders = (req, res) => {
+const updateDataRefreshTime = (time = getNairobiTime()) => {
+  try {
+    dbRW
+      .prepare(`
+        INSERT INTO DataRefresh_Status (id, last_run_time, updated_at)
+        VALUES (1, @time, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET last_run_time = excluded.last_run_time, updated_at = CURRENT_TIMESTAMP
+      `)
+      .run({ time })
+  } catch (err) {
+    console.error('Failed to update DataRefresh_Status:', err.message)
+  }
+  return time
+}
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -619,6 +640,7 @@ app.get('/api/ingest', (req, res) => {
   proc.on('close', (code) => {
     send(`<completed with code ${code}>`)
     res.end()
+    updateDataRefreshTime()
     events.emit('data_updated') // <-- notify all dashboards after ingestion
   })
   proc.on('error', (err) => {
@@ -1457,6 +1479,15 @@ app.get('/api/par/last-run', (req, res) => {
   }
 })
 
+app.get('/api/data/last-refresh', (req, res) => {
+  try {
+    const row = dbRW.prepare('SELECT last_run_time FROM DataRefresh_Status WHERE id = 1').get()
+    res.json({ last_run_time: row?.last_run_time || null })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Set up cron job to run PAR snapshot every hour
 cron.schedule('0 * * * *', async () => {
   console.log(`[CRON] Running scheduled PAR snapshot at ${new Date().toISOString()}`)
@@ -1466,6 +1497,26 @@ cron.schedule('0 * * * *', async () => {
   } catch (e) {
     console.error(`[CRON] PAR snapshot failed:`, e.message)
   }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Every 10 minutes: run ingestion without borrowers (fast refresh)
+cron.schedule('*/10 * * * *', () => {
+  console.log(`[CRON] Running scheduled data refresh (no borrowers) at ${new Date().toISOString()}`)
+  const env = {
+    ...process.env,
+    SKIP_BORROWERS: '1',
+  }
+  const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), env, shell: true })
+  proc.stdout.on('data', (chunk) => console.log(`[DATA-CRON-OUT] ${chunk.toString().trimEnd()}`))
+  proc.stderr.on('data', (chunk) => console.error(`[DATA-CRON-ERR] ${chunk.toString().trimEnd()}`))
+  proc.on('close', (code) => {
+    console.log(`[CRON] Data refresh completed with code ${code}`)
+    updateDataRefreshTime()
+  })
+  proc.on('error', (err) => console.error('[CRON] Data refresh failed to start:', err.message))
 }, {
   scheduled: true,
   timezone: 'Africa/Nairobi'
@@ -1490,6 +1541,7 @@ cron.schedule('0 0 * * *', () => {
   })
   proc.on('close', (code) => {
     console.log(`[CRON] Borrowers ingestion completed with code ${code}`)
+    updateDataRefreshTime()
   })
   proc.on('error', (err) => {
     console.error('[CRON] Borrowers ingestion failed to start:', err.message)
