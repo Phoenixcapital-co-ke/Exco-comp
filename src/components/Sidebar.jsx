@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { 
   ChevronDown, 
   ChevronRight, 
@@ -12,14 +12,16 @@ import {
   DollarSign,
   TrendingUp,
   AlertTriangle,
-  Activity
+  Activity,
+  LogOut
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
 
-function Sidebar({ isOpen, onToggle }) {
+function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const location = useLocation()
-  const { user } = useAuth()
+  const navigate = useNavigate()
+  const { user, logout } = useAuth()
   const [expandedSection, setExpandedSection] = useState('logbook')
 
   const toggleSection = (section) => {
@@ -134,10 +136,16 @@ function Sidebar({ isOpen, onToggle }) {
     )
   }
 
+  const handleMobileLogout = () => {
+    logout()
+    onNavigate?.()
+    navigate('/login')
+  }
+
   return (
     <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
       {/* Logo */}
-      <div className="p-6 border-b border-gray-200">
+      <div className="p-6 border-b border-gray-200 space-y-4">
         <div className="flex justify-center">
           <img
             src={phoenixLogo}
@@ -146,6 +154,21 @@ function Sidebar({ isOpen, onToggle }) {
             draggable="false"
           />
         </div>
+        {showUserInfo && user && (
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 text-center space-y-2">
+            <div>
+              <p className="text-base font-semibold text-gray-900">{user.fullName || user.username}</p>
+              <p className="mt-1 text-xs uppercase tracking-wide text-gray-500">{user.role}</p>
+            </div>
+            <button
+              onClick={handleMobileLogout}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 transition-colors duration-200"
+            >
+              <LogOut size={16} />
+              Logout
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Navigation */}
@@ -174,7 +197,7 @@ function Sidebar({ isOpen, onToggle }) {
                 {section.items.map((item) => {
                   const isActive = location.pathname === item.path
                   return (
-                    <Link
+                <Link
                       key={item.path}
                       to={item.path}
                       className={`flex items-center space-x-3 px-4 py-2 text-sm rounded-lg transition-colors duration-200 ${
@@ -182,6 +205,7 @@ function Sidebar({ isOpen, onToggle }) {
                           ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
                           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
                       }`}
+                  onClick={() => onNavigate?.()}
                     >
                       <item.icon size={16} />
                       <span>{item.label}</span>

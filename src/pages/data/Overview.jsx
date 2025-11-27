@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
+import { useLastRefresh } from '../../hooks/useLastRefresh.js'
 
 function DataOverview() {
   const [logs, setLogs] = useState([
@@ -9,6 +10,11 @@ function DataOverview() {
   const [error, setError] = useState(null)
   const [showSuccess, setShowSuccess] = useState(false)
   const esRef = useRef()
+  const {
+    formattedLastRefresh,
+    error: lastRefreshError,
+    refresh: reloadLastRefresh
+  } = useLastRefresh()
 
   const handleRefresh = () => {
     setLogs(['Ready for ingestion...', 'Starting data refresh...'])
@@ -26,6 +32,7 @@ function DataOverview() {
       if (e.data.startsWith('<completed')) {
         setLoading(false)
         setShowSuccess(true)
+        reloadLastRefresh()
         es.close()
       }
     }
@@ -77,6 +84,13 @@ function DataOverview() {
         <button onClick={handleRefresh} disabled={loading} className="bg-primary-600 text-white font-semibold px-6 py-2 rounded shadow hover:bg-primary-700 disabled:opacity-70">
           {loading ? 'Refreshing...' : 'Refresh All Data'}
         </button>
+        <div className="mt-3 text-sm text-gray-600">
+          Last refresh:{' '}
+          {formattedLastRefresh || 'Not recorded yet'}
+        </div>
+        {lastRefreshError && (
+          <div className="mt-1 text-xs text-red-500">{lastRefreshError}</div>
+        )}
         <div className="mt-8 mb-2 font-semibold">Logs:</div>
         <div className="h-52 overflow-y-auto bg-gray-50 border border-gray-200 rounded p-3 text-sm font-mono">
           {logs.map((line, idx) => (

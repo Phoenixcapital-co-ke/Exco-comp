@@ -61,5 +61,8 @@ export const API_URLS = {
     update: (id) => `${API_BASE}/api/loan-officers/${id}`,
     delete: (id) => `${API_BASE}/api/loan-officers/${id}`,
   },
+  data: {
+    lastRefresh: `${API_BASE}/api/data/last-refresh`,
+  },
 }
 

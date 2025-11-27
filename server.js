@@ -1518,6 +1518,7 @@ cron.schedule('*/10 * * * *', () => {
   proc.on('close', (code) => {
     console.log(`[CRON] Data refresh completed with code ${code}`)
     updateDataRefreshTime()
+    events.emit('data_updated')
   })
   proc.on('error', (err) => console.error('[CRON] Data refresh failed to start:', err.message))
 }, {
@@ -1545,6 +1546,7 @@ cron.schedule('0 0 * * *', () => {
   proc.on('close', (code) => {
     console.log(`[CRON] Borrowers ingestion completed with code ${code}`)
     updateDataRefreshTime()
+    events.emit('data_updated')
   })
   proc.on('error', (err) => {
     console.error('[CRON] Borrowers ingestion failed to start:', err.message)
