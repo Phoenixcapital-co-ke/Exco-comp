@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar.jsx'
 import Header from './Header.jsx'
 import { useBreakpoint } from '../hooks/useBreakpoint.js'
+import { useInactivityLogout } from '../hooks/useInactivityLogout.js'
 
 const NO_CHROME_ROUTES = ['/login']
 const DESKTOP_BREAKPOINT = 1024
@@ -11,6 +12,8 @@ function Layout({ children }) {
   const isDesktop = useBreakpoint(DESKTOP_BREAKPOINT)
   const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop)
   const location = useLocation()
+
+  useInactivityLogout()
 
   useEffect(() => {
     setSidebarOpen(isDesktop)
