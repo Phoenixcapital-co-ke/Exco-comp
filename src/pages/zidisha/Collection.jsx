@@ -412,7 +412,10 @@ function ZidishaCollection() {
             }
             const rowsTbl = Array.from(agg.entries()).map(([branch, v]) => ({ branch, ...v }))
               .map(it => ({ ...it, rate: it.expected > 0 ? (it.collected / it.expected) * 100 : 0 }))
-              .sort((a, b) => b.collected - a.collected)
+              .sort((a, b) => {
+                if (b.rate === a.rate) return b.collected - a.collected
+                return b.rate - a.rate
+              })
             return (
               <>
                 <div className="overflow-x-auto">
