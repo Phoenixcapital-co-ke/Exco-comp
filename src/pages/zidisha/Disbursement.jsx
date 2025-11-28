@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { DollarSign, Calendar, TrendingUp, ChevronDown, ChevronRight, Building2 } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { API_URLS } from '../../utils/api.js'
-import { normalizeZidishaResponse } from '../../utils/normalizeZidishaResponse.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 function ZidishaDisbursement() {
   const [rows, setRows] = useState([])
@@ -16,21 +15,21 @@ function ZidishaDisbursement() {
   const [expandedBranch, setExpandedBranch] = useState(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
-        const payload = await res.json()
-        const all = normalizeZidishaResponse(payload)
+        const all = await fetchAllZidishaRows({ signal: controller.signal })
         const filtered = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
         setRows(filtered)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   // Helpers

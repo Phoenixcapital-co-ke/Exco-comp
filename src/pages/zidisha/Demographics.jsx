@@ -15,9 +15,8 @@ import {
   AreaChart,
   Area
 } from 'recharts'
-import { API_URLS } from '../../utils/api.js'
-import { normalizeZidishaResponse } from '../../utils/normalizeZidishaResponse.js'
 import { formatKES } from '../../utils/format.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 const GENDER_COLORS = {
   Female: '#ec4899',
@@ -67,23 +66,23 @@ export default function ZidishaDemographics() {
   const [selectedBranch, setSelectedBranch] = useState('All')
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
-        const payload = await res.json()
-        const all = normalizeZidishaResponse(payload)
+        const all = await fetchAllZidishaRows({ signal: controller.signal })
         const filtered = all.filter(
           (row) => (row['Branch Name'] || row.branch_name || '').trim().toLowerCase() !== 'advans branch'
         )
         setRows(filtered)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   const branches = useMemo(() => {

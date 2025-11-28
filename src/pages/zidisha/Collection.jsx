@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, Clock, CheckCircle, AlertCircle } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts'
-import { API_URLS } from '../../utils/api.js'
-import { normalizeZidishaResponse } from '../../utils/normalizeZidishaResponse.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 function ZidishaCollection() {
   const now = new Date()
@@ -21,21 +20,21 @@ function ZidishaCollection() {
   })
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
-        const payload = await res.json()
-        const all = normalizeZidishaResponse(payload)
-        const filtered = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
-        setRows(filtered)
+        const all = await fetchAllZidishaRows({ signal: controller.signal })
+        const filteredRows = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
+        setRows(filteredRows)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   const filtered = useMemo(() => {
