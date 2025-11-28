@@ -59,8 +59,8 @@ function Layout({ children }) {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
-        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6">
-          <div className="mx-auto w-full max-w-6xl">{children}</div>
+        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 md:px-5 lg:px-6 lg:py-6 xl:px-8">
+          <div className="mx-auto w-full max-w-[1400px] lg:max-w-none">{children}</div>
         </main>
       </div>
     </div>
