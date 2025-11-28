@@ -32,6 +32,7 @@ import {
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { API_URLS } from '../../utils/api.js'
+import { normalizeZidishaResponse } from '../../utils/normalizeZidishaResponse.js'
 
 function ZidishaDashboard() {
   const PAGE_SIZE = 3000
@@ -57,12 +58,9 @@ function ZidishaDashboard() {
         pageSize: String(PAGE_SIZE),
       })
       const res = await fetch(`${API_URLS.zidisha.data}?${params.toString()}`, { credentials: 'include' })
+      if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
       const payload = await res.json()
-      const pageRows = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload.results)
-          ? payload.results
-          : []
+      const pageRows = normalizeZidishaResponse(payload)
       const filtered = filterRows(pageRows)
 
       setRows((prev) => (targetPage === 1 ? filtered : [...prev, ...filtered]))

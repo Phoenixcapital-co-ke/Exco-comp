@@ -16,6 +16,7 @@ import {
   Area
 } from 'recharts'
 import { API_URLS } from '../../utils/api.js'
+import { normalizeZidishaResponse } from '../../utils/normalizeZidishaResponse.js'
 import { formatKES } from '../../utils/format.js'
 
 const GENDER_COLORS = {
@@ -70,8 +71,8 @@ export default function ZidishaDemographics() {
       try {
         const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
         if (!res.ok) throw new Error(`Failed to load data (${res.status})`)
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
+        const payload = await res.json()
+        const all = normalizeZidishaResponse(payload)
         const filtered = all.filter(
           (row) => (row['Branch Name'] || row.branch_name || '').trim().toLowerCase() !== 'advans branch'
         )
