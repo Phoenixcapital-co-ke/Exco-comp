@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
-import { Plus, Save, XCircle, Trash2, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Plus, Save, XCircle, Trash2, ToggleLeft, ToggleRight, X, Users, Edit2 } from 'lucide-react'
 
 const defaultDraft = {
   id: null,
@@ -18,6 +18,7 @@ function UsersPage() {
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState(defaultDraft)
   const [saving, setSaving] = useState(false)
+  const [showForm, setShowForm] = useState(false)
 
   const loadUsers = async () => {
     try {
@@ -47,6 +48,7 @@ function UsersPage() {
       password: '',
       active: !!user.active
     })
+    setShowForm(true)
   }
 
   const handleDelete = async (user) => {
@@ -75,6 +77,13 @@ function UsersPage() {
   const resetForm = () => {
     setDraft(defaultDraft)
     setError(null)
+    setShowForm(false)
+  }
+
+  const handleCreateClick = () => {
+    setDraft(defaultDraft)
+    setError(null)
+    setShowForm(true)
   }
 
   const handleSubmit = async (e) => {
@@ -116,6 +125,7 @@ function UsersPage() {
       }
       await loadUsers()
       setDraft(defaultDraft)
+      setShowForm(false)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -143,211 +153,268 @@ function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-        <p className="text-gray-600 mt-2">Add, edit, deactivate, or remove dashboard users.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+            <Users className="text-primary-600" size={32} />
+            User Management
+          </h1>
+          <p className="text-gray-600 mt-2">Add, edit, deactivate, or remove dashboard users.</p>
+        </div>
+        {!showForm && (
+          <button
+            onClick={handleCreateClick}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white font-semibold hover:bg-primary-700 transition-colors duration-200 shadow-sm hover:shadow-md"
+          >
+            <Plus size={18} />
+            Create User
+          </button>
+        )}
       </div>
 
       {error && (
         <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-red-600 hover:text-red-800">
+          <button onClick={() => setError(null)} className="text-red-600 hover:text-red-800 transition-colors">
             <XCircle size={18} />
           </button>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {draft.id ? 'Edit User' : 'Add New User'}
-            </h2>
-            <p className="text-sm text-gray-500">Provide user credentials and role.</p>
-          </div>
-          <button
-            type="button"
-            onClick={resetForm}
-            className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900"
-          >
-            <Plus size={16} className="mr-1" />
-            New User
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-            <input
-              type="text"
-              value={draft.username}
-              onChange={(e) => setDraft((prev) => ({ ...prev, username: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Username"
-              required
-              disabled={Boolean(draft.id)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-            <input
-              type="text"
-              value={draft.fullName}
-              onChange={(e) => setDraft((prev) => ({ ...prev, fullName: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Full name"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              value={draft.email}
-              onChange={(e) => setDraft((prev) => ({ ...prev, email: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="email@example.com"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-            <select
-              value={draft.role}
-              onChange={(e) => setDraft((prev) => ({ ...prev, role: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              <option value="admin">Admin</option>
-              <option value="manager">Manager</option>
-              <option value="logbook">Logbook</option>
-              <option value="zidisha">Zidisha</option>
-              <option value="advans">Advans</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Password {draft.id ? '(leave blank to keep existing)' : ''}
-            </label>
-            <input
-              type="password"
-              value={draft.password}
-              onChange={(e) => setDraft((prev) => ({ ...prev, password: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="******"
-              autoComplete="new-password"
-            />
-          </div>
-          <div className="flex items-center space-x-2 mt-6">
-            <input
-              id="user-active"
-              type="checkbox"
-              className="rounded border-gray-300"
-              checked={draft.active}
-              onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
-            />
-            <label htmlFor="user-active" className="text-sm text-gray-700">Active</label>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-3">
-          {draft.id && (
+      {showForm && (
+        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-md border border-gray-200 p-6 space-y-5">
+          <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                {draft.id ? (
+                  <>
+                    <Edit2 size={20} className="text-primary-600" />
+                    Edit User
+                  </>
+                ) : (
+                  <>
+                    <Plus size={20} className="text-primary-600" />
+                    Add New User
+                  </>
+                )}
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">Provide user credentials and role.</p>
+            </div>
             <button
               type="button"
               onClick={resetForm}
-              className="inline-flex items-center px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50"
+              className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              title="Close form"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Username <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={draft.username}
+                onChange={(e) => setDraft((prev) => ({ ...prev, username: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="Enter username"
+                required
+                disabled={Boolean(draft.id)}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
+              <input
+                type="text"
+                value={draft.fullName}
+                onChange={(e) => setDraft((prev) => ({ ...prev, fullName: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="Enter full name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+              <input
+                type="email"
+                value={draft.email}
+                onChange={(e) => setDraft((prev) => ({ ...prev, email: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="email@example.com"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Role</label>
+              <select
+                value={draft.role}
+                onChange={(e) => setDraft((prev) => ({ ...prev, role: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
+              >
+                <option value="admin">Admin</option>
+                <option value="manager">Manager</option>
+                <option value="logbook">Logbook</option>
+                <option value="zidisha">Zidisha</option>
+                <option value="advans">Advans</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Password {draft.id && <span className="text-gray-500 font-normal">(leave blank to keep existing)</span>}
+                {!draft.id && <span className="text-red-500">*</span>}
+              </label>
+              <input
+                type="password"
+                value={draft.password}
+                onChange={(e) => setDraft((prev) => ({ ...prev, password: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="Enter password"
+                autoComplete="new-password"
+                required={!draft.id}
+              />
+            </div>
+            <div className="flex items-center">
+              <div className="flex items-center space-x-3 mt-8">
+                <input
+                  id="user-active"
+                  type="checkbox"
+                  className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  checked={draft.active}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
+                />
+                <label htmlFor="user-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                  Active User
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={resetForm}
+              className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
             >
               Cancel
             </button>
-          )}
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60"
-          >
-            <Save size={16} className="mr-2" />
-            {draft.id ? 'Update User' : 'Create User'}
-          </button>
-        </div>
-      </form>
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+            >
+              <Save size={16} />
+              {saving ? 'Saving...' : draft.id ? 'Update User' : 'Create User'}
+            </button>
+          </div>
+        </form>
+      )}
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-2 text-left font-medium text-gray-600">Name</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-600">Username</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-600">Email</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-600">Role</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-600">Status</th>
-              <th className="px-4 py-2 text-right font-medium text-gray-600">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-100">
-            {loading ? (
+      <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+          <h3 className="text-lg font-semibold text-gray-900">All Users ({users.length})</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
-                  Loading users...
-                </td>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Username</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Email</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
               </tr>
-            ) : users.length ? (
-              users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{user.fullName || '—'}</td>
-                  <td className="px-4 py-3 text-gray-700">{user.username}</td>
-                  <td className="px-4 py-3 text-gray-700">{user.email || '—'}</td>
-                  <td className="px-4 py-3 capitalize text-gray-700">{user.role || 'user'}</td>
-                  <td className="px-4 py-3">
-                    {user.active ? (
-                      <span className="inline-flex items-center px-2 py-1 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-700">
-                        Active
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
-                        Deactivated
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right space-x-2">
-                    <button
-                      onClick={() => toggleActive(user)}
-                      className="inline-flex items-center px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 text-xs font-semibold"
-                      title={user.active ? 'Deactivate user' : 'Activate user'}
-                    >
-                      {user.active ? (
-                        <>
-                          <ToggleLeft size={16} className="mr-1 text-red-500" />
-                          Deactivate
-                        </>
-                      ) : (
-                        <>
-                          <ToggleRight size={16} className="mr-1 text-emerald-500" />
-                          Activate
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleEdit(user)}
-                      className="inline-flex items-center px-3 py-1.5 rounded-lg border border-primary-200 text-primary-600 hover:bg-primary-50 text-xs font-semibold"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => handleDelete(user)}
-                      className="inline-flex items-center px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold"
-                    >
-                      <Trash2 size={14} className="mr-1" />
-                      Delete
-                    </button>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center justify-center">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mb-3"></div>
+                      <p className="text-sm text-gray-500">Loading users...</p>
+                    </div>
                   </td>
                 </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
-                  No users available. Create a new user to get started.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              ) : users.length ? (
+                users.map((user) => (
+                  <tr key={user.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="font-semibold text-gray-900">{user.fullName || '—'}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-700 font-medium">{user.username}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-600">{user.email || '—'}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-100 text-blue-800 capitalize">
+                        {user.role || 'user'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {user.active ? (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
+                          Active
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">
+                          Inactive
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => toggleActive(user)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 text-xs font-semibold transition-colors"
+                          title={user.active ? 'Deactivate user' : 'Activate user'}
+                        >
+                          {user.active ? (
+                            <>
+                              <ToggleLeft size={14} className="text-red-500" />
+                              Deactivate
+                            </>
+                          ) : (
+                            <>
+                              <ToggleRight size={14} className="text-emerald-500" />
+                              Activate
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleEdit(user)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-primary-300 text-primary-700 hover:bg-primary-50 text-xs font-semibold transition-colors"
+                        >
+                          <Edit2 size={14} />
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(user)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-300 text-red-700 hover:bg-red-50 text-xs font-semibold transition-colors"
+                        >
+                          <Trash2 size={14} />
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center justify-center">
+                      <Users size={48} className="text-gray-300 mb-3" />
+                      <p className="text-sm font-medium text-gray-500">No users available</p>
+                      <p className="text-xs text-gray-400 mt-1">Create a new user to get started</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )
