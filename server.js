@@ -174,7 +174,7 @@ const updateDataRefreshTime = (time = getNairobiTime()) => {
 }
 
 const LOANDISK_BASE_URL = 'https://api-main.loandisk.com/7125'
-const LOANDISK_AUTH = 'Basic DgPRFGb7VPYrnz7K68b4KqHNkYZkvswVqFGaU7xD'
+const LOANDISK_AUTH = 'Basic hM2PPcacbMJPKsE4mAM3hbYNqbY5vSJtjrKYHRad'
 const LOANDISK_PAGE_SIZE = 20
 const MAX_PAGE_ATTEMPTS = 4
 const FETCH_TIMEOUT_MS = 60000

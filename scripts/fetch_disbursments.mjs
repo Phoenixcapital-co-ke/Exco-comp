@@ -12,7 +12,7 @@ import * as fs from 'fs'
 const PAPAPARSE = (() => { try { return require('papaparse') } catch { return null } })()
 
 const LOANDISK_URL = 'https://api-main.loandisk.com/7125/55886/disbursement_report'
-const AUTH = 'Basic DgPRFGb7VPYrnz7K68b4KqHNkYZkvswVqFGaU7xD'
+const AUTH = 'Basic hM2PPcacbMJPKsE4mAM3hbYNqbY5vSJtjrKYHRad'
 const TABLE = 'Logbook_Disbursement'
 const COLLECTIONS_BASE = 'https://api-main.loandisk.com/7125'
 const COLLECTIONS_TABLE = 'Logbook_collection'
