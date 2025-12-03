@@ -621,6 +621,9 @@ const ZIDISHA_HEADERS = {
   'User-Agent': 'DAP/1.0',
   'Accept': 'application/json',
 }
+// Only persist the original core financial fields from the Zidisha export.
+// We intentionally skip Business Profile fields to avoid issues with occasional
+// malformed / structurally different rows in the source export.
 const ZIDISHA_COLUMNS = [
   'Branch Name',
   'Client Id',
@@ -638,9 +641,6 @@ const ZIDISHA_COLUMNS = [
   'Total Expected Repayment Derived',
   'Total Outstanding Derived',
   'Total Repayment Derived',
-  'Business Profile - Business Name',
-  'Business Profile - Business Type',
-  'Business Profile - Business Category',
 ]
 function initZidishaTable(db) {
   db.exec(`
