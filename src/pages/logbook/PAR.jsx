@@ -16,6 +16,7 @@ function LogbookPAR() {
   const [progress, setProgress] = useState(null)
   const [lastRunTime, setLastRunTime] = useState(null)
   const [loanOfficers, setLoanOfficers] = useState([])
+  const [selectedMonth, setSelectedMonth] = useState('')
 
   const loadLoanOfficers = async () => {
     try {
@@ -200,28 +201,58 @@ function LogbookPAR() {
     return map
   }, [loanOfficers])
 
+  // Extract available months from PAR history
+  const monthOptions = useMemo(() => {
+    if (!history.length) return []
+
+    const map = new Map()
+
+    for (const entry of history) {
+      const timeStr = entry.time || entry.Time
+      if (!timeStr) continue
+      const d = new Date(timeStr)
+      if (isNaN(d.getTime())) continue
+
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      if (!map.has(key)) {
+        const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+        map.set(key, { value: key, label, sortKey: key })
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => (a.sortKey < b.sortKey ? 1 : -1))
+  }, [history])
+
+  // Auto-select the latest month when options change
+  useEffect(() => {
+    if (!selectedMonth && monthOptions.length) {
+      setSelectedMonth(monthOptions[0].value)
+    }
+  }, [monthOptions, selectedMonth])
+
   // Process history data for current month daily PAR chart
   const dailyParData = useMemo(() => {
-    if (!history.length) return []
-    
-    const now = new Date()
-    const currentYear = now.getFullYear()
-    const currentMonth = now.getMonth()
-    
-    // Filter history to current month
-    const currentMonthData = history.filter((entry) => {
+    if (!history.length || !selectedMonth) return []
+
+    const [yearStr, monthStr] = selectedMonth.split('-')
+    const targetYear = Number(yearStr)
+    const targetMonthIndex = Number(monthStr) - 1
+    if (!Number.isFinite(targetYear) || !Number.isFinite(targetMonthIndex)) return []
+
+    // Filter history to selected month
+    const monthData = history.filter((entry) => {
       const timeStr = entry.time || entry.Time
       if (!timeStr) return false
       const entryDate = new Date(timeStr)
       if (isNaN(entryDate.getTime())) return false
-      return entryDate.getFullYear() === currentYear && entryDate.getMonth() === currentMonth
+      return entryDate.getFullYear() === targetYear && entryDate.getMonth() === targetMonthIndex
     })
     
-    if (!currentMonthData.length) return []
+    if (!monthData.length) return []
     
     // Group by day and get latest entry for each day
     const dayMap = new Map()
-    for (const entry of currentMonthData) {
+    for (const entry of monthData) {
       const timeStr = entry.time || entry.Time
       const entryDate = new Date(timeStr)
       const dayKey = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}-${String(entryDate.getDate()).padStart(2, '0')}`
@@ -578,9 +609,31 @@ function LogbookPAR() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend (Current Month)</h3>
-              <p className="text-sm text-gray-500">Latest daily snapshot of PAR 30+ throughout the current month.</p>
+              <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend</h3>
+              <p className="text-sm text-gray-500">Latest daily snapshot of PAR 30+ for the selected month.</p>
             </div>
+            {monthOptions.length > 0 && (
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="par-month-filter"
+                  className="text-xs font-medium text-gray-500 uppercase tracking-wide"
+                >
+                  Month
+                </label>
+                <select
+                  id="par-month-filter"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                >
+                  {monthOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">

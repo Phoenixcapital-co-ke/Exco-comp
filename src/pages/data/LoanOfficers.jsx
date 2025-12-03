@@ -15,6 +15,7 @@ function LoanOfficersPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState(emptyDraft)
+  const [showForm, setShowForm] = useState(false)
 
   const loadOfficers = async () => {
     try {
@@ -37,9 +38,11 @@ function LoanOfficersPage() {
   const resetForm = () => {
     setDraft(emptyDraft)
     setError(null)
+    setShowForm(false)
   }
 
   const handleEdit = (officer) => {
+    setShowForm(true)
     setDraft({
       id: officer.id,
       borrowerAccessId: officer.borrowerAccessId || '',
@@ -78,6 +81,7 @@ function LoanOfficersPage() {
       }
       await loadOfficers()
       resetForm()
+      setShowForm(false)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -130,6 +134,29 @@ function LoanOfficersPage() {
         </p>
       </div>
 
+      {!showForm && (
+        <div className="bg-white rounded-xl shadow-sm border border-dashed border-gray-300 p-6 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Add Loan Officer</h2>
+            <p className="text-sm text-gray-500">
+              Provide the borrower access ID and the officer&apos;s full name.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(emptyDraft)
+              setError(null)
+              setShowForm(true)
+            }}
+            className="inline-flex items-center px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700"
+          >
+            <Plus size={16} className="mr-2" />
+            Add Loan Officer
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{error}</span>
@@ -139,61 +166,64 @@ function LoanOfficersPage() {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {draft.id ? 'Edit Loan Officer' : 'Add Loan Officer'}
-            </h2>
-            <p className="text-sm text-gray-500">Provide the borrower access ID and the officer&apos;s full name.</p>
+      {showForm && (
+        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                {draft.id ? 'Edit Loan Officer' : 'Add Loan Officer'}
+              </h2>
+              <p className="text-sm text-gray-500">Provide the borrower access ID and the officer&apos;s full name.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(emptyDraft)
+                setError(null)
+              }}
+              className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900"
+            >
+              <Plus size={16} className="mr-1" />
+              New Officer
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={resetForm}
-            className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900"
-          >
-            <Plus size={16} className="mr-1" />
-            New Officer
-          </button>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Borrower Access ID</label>
-            <input
-              type="text"
-              value={draft.borrowerAccessId}
-              onChange={(e) => setDraft((prev) => ({ ...prev, borrowerAccessId: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="e.g. 97469"
-              required
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Borrower Access ID</label>
+              <input
+                type="text"
+                value={draft.borrowerAccessId}
+                onChange={(e) => setDraft((prev) => ({ ...prev, borrowerAccessId: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                placeholder="e.g. 97469"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+              <input
+                type="text"
+                value={draft.name}
+                onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                placeholder="Officer name"
+                required
+              />
+            </div>
+            <div className="flex items-center space-x-2 mt-2">
+              <input
+                id="lo-active"
+                type="checkbox"
+                className="rounded border-gray-300"
+                checked={draft.active}
+                onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
+              />
+              <label htmlFor="lo-active" className="text-sm text-gray-700">Active</label>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-            <input
-              type="text"
-              value={draft.name}
-              onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Officer name"
-              required
-            />
-          </div>
-          <div className="flex items-center space-x-2 mt-2">
-            <input
-              id="lo-active"
-              type="checkbox"
-              className="rounded border-gray-300"
-              checked={draft.active}
-              onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
-            />
-            <label htmlFor="lo-active" className="text-sm text-gray-700">Active</label>
-          </div>
-        </div>
 
-        <div className="flex items-center justify-end gap-3">
-          {draft.id && (
+          <div className="flex items-center justify-end gap-3">
             <button
               type="button"
               onClick={resetForm}
@@ -201,17 +231,17 @@ function LoanOfficersPage() {
             >
               Cancel
             </button>
-          )}
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60"
-          >
-            <Save size={16} className="mr-2" />
-            {draft.id ? 'Update Officer' : 'Add Officer'}
-          </button>
-        </div>
-      </form>
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60"
+            >
+              <Save size={16} className="mr-2" />
+              {draft.id ? 'Update Officer' : 'Add Officer'}
+            </button>
+          </div>
+        </form>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200 text-sm">

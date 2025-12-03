@@ -86,8 +86,6 @@ dbRW.exec(`
   );
 `);
 
-const getUserByIdStmt = dbRW.prepare('SELECT * FROM Users WHERE id = ? LIMIT 1')
-
 const PUBLIC_API_PATHS = new Set(['/auth/login', '/auth/logout'])
 
 const signAuthToken = (user) =>
@@ -366,6 +364,7 @@ dbRW.exec(`
   );
 `);
 
+// Users table (dashboard users)
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS Users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -403,6 +402,9 @@ try {
 } catch (err) {
   console.error('Unable to ensure default admin user:', err)
 }
+
+// Prepared statement to fetch user by id (after Users table exists)
+const getUserByIdStmt = dbRW.prepare('SELECT * FROM Users WHERE id = ? LIMIT 1')
 
 const DEFAULT_LOAN_OFFICERS = [
   { borrower_access_id: '40280', name: 'Anne Nekesa' },
