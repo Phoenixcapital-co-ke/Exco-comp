@@ -605,73 +605,77 @@ function LogbookPAR() {
         </div>
       </div>
 
-      {dailyParData.length > 0 && (
+      {monthOptions.length > 0 && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend</h3>
               <p className="text-sm text-gray-500">Latest daily snapshot of PAR 30+ for the selected month.</p>
             </div>
-            {monthOptions.length > 0 && (
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="par-month-filter"
-                  className="text-xs font-medium text-gray-500 uppercase tracking-wide"
-                >
-                  Month
-                </label>
-                <select
-                  id="par-month-filter"
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                >
-                  {monthOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="par-month-filter"
+                className="text-xs font-medium text-gray-500 uppercase tracking-wide"
+              >
+                Month
+              </label>
+              <select
+                id="par-month-filter"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+              >
+                {monthOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={dailyParData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
-                <YAxis
-                  stroke="#6b7280"
-                  tick={{ fontSize: 12 }}
-                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
-                />
-                <Tooltip
-                  formatter={(value, name) => {
-                    if (name === 'parRate') {
-                      return [`${value.toFixed(2)}%`, 'PAR %']
-                    }
-                    return [value, name]
-                  }}
-                  contentStyle={{
-                    backgroundColor: 'white',
-                    border: '2px solid #e5e7eb',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                  }}
-                />
-                <Legend />
-                <Area
-                  type="monotone"
-                  dataKey="parRate"
-                  name="PAR %"
-                  stroke="#ef4444"
-                  fill="#fee2e2"
-                  fillOpacity={0.6}
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          {dailyParData.length > 0 ? (
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyParData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                  <YAxis
+                    stroke="#6b7280"
+                    tick={{ fontSize: 12 }}
+                    label={{ value: 'PAR %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
+                  />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      if (name === 'parRate') {
+                        return [`${value.toFixed(2)}%`, 'PAR %']
+                      }
+                      return [value, name]
+                    }}
+                    contentStyle={{
+                      backgroundColor: 'white',
+                      border: '2px solid #e5e7eb',
+                      borderRadius: '8px',
+                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                    }}
+                  />
+                  <Legend />
+                  <Area
+                    type="monotone"
+                    dataKey="parRate"
+                    name="PAR %"
+                    stroke="#ef4444"
+                    fill="#fee2e2"
+                    fillOpacity={0.6}
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="h-72 flex items-center justify-center text-gray-500">
+              <p>No data available for the selected month.</p>
+            </div>
+          )}
         </div>
       )}
     </div>
