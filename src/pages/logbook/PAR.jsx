@@ -288,7 +288,7 @@ function LogbookPAR() {
         openLoans
       }))
       .sort((a, b) => a.day - b.day)
-  }, [history])
+  }, [history, selectedMonth])
 
   return (
     <div className="space-y-6">

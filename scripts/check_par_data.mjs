@@ -9,8 +9,8 @@ try {
   console.log(`\nPAR table has ${parCount.count} rows`)
   
   if (parCount.count > 0) {
-    const latest = db.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC LIMIT 5').all()
-    console.log('\nLatest 5 PAR entries:')
+    const latest = db.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC LIMIT 2000').all()
+    console.log('\nLatest ll PAR entries:')
     latest.forEach((row, idx) => {
       console.log(`${idx + 1}. Time: ${row.time}, Past Missed: ${row.Past_Arrears_missed || 0}, Open Loans: ${row.Open_loans || 0}`)
     })
