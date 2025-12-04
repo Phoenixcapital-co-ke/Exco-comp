@@ -201,21 +201,27 @@ function LogbookPAR() {
     return map
   }, [loanOfficers])
 
-  // Extract available months from PAR history
+  // Extract available months from PAR history (use string month key derived from time column)
   const monthOptions = useMemo(() => {
     if (!history.length) return []
 
     const map = new Map()
 
     for (const entry of history) {
-      const timeStr = entry.time || entry.Time
-      if (!timeStr) continue
-      const d = new Date(timeStr)
-      if (isNaN(d.getTime())) continue
+      const rawTime = entry.time || entry.Time
+      if (!rawTime) continue
+      const timeStr = String(rawTime)
+      // Expect ISO-like time, e.g. 2025-12-04T...
+      const key = timeStr.slice(0, 7) // YYYY-MM
+      if (!/^\d{4}-\d{2}$/.test(key)) continue
 
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
       if (!map.has(key)) {
-        const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+        // Use Date only for label formatting; fall back gracefully if invalid
+        let label = key
+        const d = new Date(timeStr)
+        if (!isNaN(d.getTime())) {
+          label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+        }
         map.set(key, { value: key, label, sortKey: key })
       }
     }
@@ -230,22 +236,19 @@ function LogbookPAR() {
     }
   }, [monthOptions, selectedMonth])
 
-  // Process history data for current month daily PAR chart
+  // Process history data for selected month daily PAR chart
   const dailyParData = useMemo(() => {
     if (!history.length || !selectedMonth) return []
 
-    const [yearStr, monthStr] = selectedMonth.split('-')
-    const targetYear = Number(yearStr)
-    const targetMonthIndex = Number(monthStr) - 1
-    if (!Number.isFinite(targetYear) || !Number.isFinite(targetMonthIndex)) return []
+    const monthKey = String(selectedMonth).trim()
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return []
 
-    // Filter history to selected month
+    // Filter history to selected month using the month substring from the time column
     const monthData = history.filter((entry) => {
-      const timeStr = entry.time || entry.Time
-      if (!timeStr) return false
-      const entryDate = new Date(timeStr)
-      if (isNaN(entryDate.getTime())) return false
-      return entryDate.getFullYear() === targetYear && entryDate.getMonth() === targetMonthIndex
+      const rawTime = entry.time || entry.Time
+      if (!rawTime) return false
+      const timeStr = String(rawTime)
+      return timeStr.slice(0, 7) === monthKey
     })
     
     if (!monthData.length) return []
