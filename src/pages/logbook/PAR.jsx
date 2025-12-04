@@ -314,9 +314,9 @@ function LogbookPAR() {
             Trigger Snapshot Fetch
           </button>
           {lastRunTime && (() => {
-            // Display time from DB as-is (UTC) - no timezone conversion
             const date = new Date(lastRunTime)
             const formatted = date.toLocaleString('en-US', {
+              timeZone: 'Africa/Nairobi',
               year: 'numeric',
               month: 'short',
               day: 'numeric',
@@ -324,11 +324,10 @@ function LogbookPAR() {
               minute: '2-digit',
               second: '2-digit',
               hour12: true,
-              timeZone: 'UTC'
             })
             return (
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-blue-50 border border-blue-200">
-                <span className="text-xs font-medium text-blue-700">Last Run:</span>
+                <span className="text-xs font-medium text-blue-700">Last Run (Africa/Nairobi):</span>
                 <span className="text-xs text-blue-600">
                   {formatted}
                 </span>

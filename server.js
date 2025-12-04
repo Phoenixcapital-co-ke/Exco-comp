@@ -1493,9 +1493,9 @@ app.get('/api/data/last-refresh', (req, res) => {
   }
 })
 
-// Set up cron job to run PAR snapshot every hour
-cron.schedule('0 * * * *', async () => {
-  console.log(`[CRON] Running scheduled PAR snapshot at ${new Date().toISOString()}`)
+// Set up cron job to run PAR snapshot every 30 minutes
+cron.schedule('*/30 * * * *', async () => {
+  console.log(`[CRON] Running scheduled PAR snapshot (every 30 min) at ${new Date().toISOString()}`)
   try {
     await executePARSnapshot()
     console.log(`[CRON] PAR snapshot completed successfully`)
