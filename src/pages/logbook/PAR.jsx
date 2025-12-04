@@ -216,10 +216,13 @@ function LogbookPAR() {
       if (!/^\d{4}-\d{2}$/.test(key)) continue
 
       if (!map.has(key)) {
-        // Use Date only for label formatting; fall back gracefully if invalid
+        // Build label strictly from the YYYY-MM key to avoid timezone shifts
+        const [yearStr, monthStr] = key.split('-')
+        const year = Number(yearStr)
+        const monthIndex = Number(monthStr) - 1
         let label = key
-        const d = new Date(timeStr)
-        if (!isNaN(d.getTime())) {
+        if (Number.isFinite(year) && Number.isFinite(monthIndex) && monthIndex >= 0 && monthIndex <= 11) {
+          const d = new Date(Date.UTC(year, monthIndex, 1))
           label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
         }
         map.set(key, { value: key, label, sortKey: key })
