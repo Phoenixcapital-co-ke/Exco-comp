@@ -98,16 +98,35 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   ]
 
   const roleKey = String(user?.role || '').toLowerCase()
-  const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
-  const ROLE_SECTIONS = {
-    admin: navigationItems.map((item) => item.id),
-    manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
-    logbook: ['logbook'],
-    zidisha: ['zidisha'],
-    advans: ['advans'],
+  const isCustom = roleKey === 'custom'
+  const allowedPages = Array.isArray(user?.allowedPages) ? user.allowedPages : []
+  
+  let filteredNavigation = []
+  
+  if (isCustom) {
+    // For custom role, filter based on allowedPages
+    filteredNavigation = navigationItems.map(section => {
+      const allowedItems = section.items.filter(item => allowedPages.includes(item.path))
+      if (allowedItems.length === 0) return null
+      return {
+        ...section,
+        items: allowedItems
+      }
+    }).filter(Boolean)
+  } else {
+    // For other roles, use existing role-based filtering
+    const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
+    const ROLE_SECTIONS = {
+      admin: navigationItems.map((item) => item.id),
+      manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
+      logbook: ['logbook'],
+      zidisha: ['zidisha'],
+      advans: ['advans'],
+    }
+    const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
+    filteredNavigation = navigationItems.filter((item) => allowedSectionIds.includes(item.id))
   }
-  const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
-  const filteredNavigation = navigationItems.filter((item) => allowedSectionIds.includes(item.id))
+  
   const visibleExpandedSection = filteredNavigation.some((item) => item.id === expandedSection)
     ? expandedSection
     : filteredNavigation[0]?.id ?? null

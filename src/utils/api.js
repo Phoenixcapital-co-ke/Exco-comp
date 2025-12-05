@@ -64,5 +64,8 @@ export const API_URLS = {
   data: {
     lastRefresh: `${API_BASE}/api/data/last-refresh`,
   },
+  pages: {
+    list: `${API_BASE}/api/pages`,
+  },
 }
 

@@ -379,6 +379,18 @@ dbRW.exec(`
   );
 `);
 
+// Table to store page permissions for custom role users
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS User_Pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    page_path TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, page_path)
+  );
+`);
+
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
 
@@ -667,16 +679,27 @@ app.get('/api/logbook/branches', (req, res) => {
   }
 })
 
-const mapUserRow = (user) => ({
-  id: user.id,
-  username: user.username,
-  fullName: user.full_name,
-  email: user.email,
-  role: user.role,
-  active: !!user.active,
-  createdAt: user.created_at,
-  updatedAt: user.updated_at
-})
+const mapUserRow = (user) => {
+  const base = {
+    id: user.id,
+    username: user.username,
+    fullName: user.full_name,
+    email: user.email,
+    role: user.role,
+    active: !!user.active,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at
+  }
+  // For custom role users, include their allowed pages
+  if (String(user.role || '').toLowerCase() === 'custom') {
+    const pages = dbRW
+      .prepare('SELECT page_path FROM User_Pages WHERE user_id = ? ORDER BY page_path')
+      .all(user.id)
+      .map(row => row.page_path)
+    base.allowedPages = pages
+  }
+  return base
+}
 
 const mapLoanOfficerRow = (row) => ({
   id: row.id,
@@ -740,11 +763,14 @@ app.get('/api/users', (req, res) => {
 
 app.post('/api/users', (req, res) => {
   try {
-    const { username, fullName, email, role = 'user', password, active = 1 } = req.body || {}
+    const { username, fullName, email, role = 'user', password, active = 1, allowedPages = [] } = req.body || {}
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' })
     }
-    dbRW
+    const roleStr = String(role || 'user').trim().toLowerCase()
+    
+    // Insert user
+    const result = dbRW
       .prepare(
         `INSERT INTO Users (username, full_name, email, role, active, password_hash)
          VALUES (@username, @full_name, @email, @role, @active, @password_hash)`
@@ -753,10 +779,29 @@ app.post('/api/users', (req, res) => {
         username: String(username).trim(),
         full_name: fullName ? String(fullName).trim() : '',
         email: email ? String(email).trim() : '',
-        role: role ? String(role).trim() : 'user',
+        role: roleStr,
         active: active ? 1 : 0,
         password_hash: hashPassword(password)
       })
+    
+    const userId = result.lastInsertRowid
+    
+    // If custom role, save page permissions
+    if (roleStr === 'custom' && Array.isArray(allowedPages)) {
+      const insertPage = dbRW.prepare('INSERT INTO User_Pages (user_id, page_path) VALUES (?, ?)')
+      for (const pagePath of allowedPages) {
+        const path = String(pagePath || '').trim()
+        if (path) {
+          try {
+            insertPage.run(userId, path)
+          } catch (e) {
+            // Ignore duplicates
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+    }
+    
     res.json({ ok: true })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -776,7 +821,7 @@ app.put('/api/users/:id', (req, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    const { fullName, email, role, active, password } = req.body || {}
+    const { fullName, email, role, active, password, allowedPages } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -801,13 +846,40 @@ app.put('/api/users/:id', (req, res) => {
       params.password_hash = hashPassword(password)
     }
 
-    if (!fields.length) {
+    if (!fields.length && typeof allowedPages === 'undefined') {
       return res.status(400).json({ error: 'No updates provided' })
     }
 
-    fields.push('updated_at = CURRENT_TIMESTAMP')
-    const sql = `UPDATE Users SET ${fields.join(', ')} WHERE id = @id`
-    dbRW.prepare(sql).run(params)
+    if (fields.length > 0) {
+      fields.push('updated_at = CURRENT_TIMESTAMP')
+      const sql = `UPDATE Users SET ${fields.join(', ')} WHERE id = @id`
+      dbRW.prepare(sql).run(params)
+    }
+    
+    // Handle page permissions for custom role
+    const roleStr = String(role !== undefined ? role : existing.role || 'user').trim().toLowerCase()
+    if (roleStr === 'custom' && typeof allowedPages !== 'undefined') {
+      // Delete existing pages
+      dbRW.prepare('DELETE FROM User_Pages WHERE user_id = ?').run(id)
+      // Insert new pages
+      if (Array.isArray(allowedPages)) {
+        const insertPage = dbRW.prepare('INSERT INTO User_Pages (user_id, page_path) VALUES (?, ?)')
+        for (const pagePath of allowedPages) {
+          const path = String(pagePath || '').trim()
+          if (path) {
+            try {
+              insertPage.run(id, path)
+            } catch (e) {
+              if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+            }
+          }
+        }
+      }
+    } else if (roleStr !== 'custom') {
+      // If role changed from custom to something else, remove page permissions
+      dbRW.prepare('DELETE FROM User_Pages WHERE user_id = ?').run(id)
+    }
+    
     res.json({ ok: true })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -821,11 +893,51 @@ app.delete('/api/users/:id', (req, res) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid user id' })
+    // User_Pages will be deleted automatically due to CASCADE
     const result = dbRW.prepare('DELETE FROM Users WHERE id = ?').run(id)
     if (result.changes === 0) {
       return res.status(404).json({ error: 'User not found' })
     }
     res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Get all available pages for custom role selection
+app.get('/api/pages', (req, res) => {
+  try {
+    const pages = [
+      // Logbook pages
+      { path: '/logbook/dashboard', label: 'Logbook - Dashboard', category: 'Logbook' },
+      { path: '/logbook/disbursement', label: 'Logbook - Disbursement', category: 'Logbook' },
+      { path: '/logbook/collection', label: 'Logbook - Collection', category: 'Logbook' },
+      { path: '/logbook/par', label: 'Logbook - PAR', category: 'Logbook' },
+      { path: '/logbook/productivity', label: 'Logbook - Productivity', category: 'Logbook' },
+      { path: '/logbook/demographics', label: 'Logbook - Demographics', category: 'Logbook' },
+      // Zidisha pages
+      { path: '/zidisha/dashboard', label: 'Zidisha - Dashboard', category: 'Zidisha' },
+      { path: '/zidisha/disbursement', label: 'Zidisha - Disbursement', category: 'Zidisha' },
+      { path: '/zidisha/collection', label: 'Zidisha - Collection', category: 'Zidisha' },
+      { path: '/zidisha/par', label: 'Zidisha - PAR', category: 'Zidisha' },
+      { path: '/zidisha/productivity', label: 'Zidisha - Productivity', category: 'Zidisha' },
+      { path: '/zidisha/demographics', label: 'Zidisha - Demographics', category: 'Zidisha' },
+      // Advans pages
+      { path: '/advans/dashboard', label: 'Advans - Dashboard', category: 'Advans' },
+      { path: '/advans/disbursement', label: 'Advans - Disbursement', category: 'Advans' },
+      { path: '/advans/collection', label: 'Advans - Collection', category: 'Advans' },
+      { path: '/advans/par', label: 'Advans - PAR', category: 'Advans' },
+      { path: '/advans/productivity', label: 'Advans - Productivity', category: 'Advans' },
+      // Other pages
+      { path: '/kajea/clients', label: 'Kajea - Clients', category: 'Other' },
+      { path: '/insurance/dashboard', label: 'Insurance - Dashboard', category: 'Other' },
+      // Data pages (admin only, but can be assigned to custom users)
+      { path: '/data/overview', label: 'Data - Overview', category: 'Data' },
+      { path: '/data/branches', label: 'Data - Branches', category: 'Data' },
+      { path: '/data/users', label: 'Data - Users', category: 'Data' },
+      { path: '/data/loan-officers', label: 'Data - Loan Officers', category: 'Data' },
+    ]
+    res.json(pages)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

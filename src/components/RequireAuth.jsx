@@ -8,6 +8,7 @@ const ROLE_DEFAULT_ROUTE = {
   logbook: '/logbook/dashboard',
   zidisha: '/zidisha/dashboard',
   advans: '/advans/dashboard',
+  custom: '/login', // Custom users will be redirected to their first allowed page
 }
 
 function RequireAuth({ children, allowedRoles }) {
@@ -26,10 +27,28 @@ function RequireAuth({ children, allowedRoles }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-  if (Array.isArray(allowedRoles) && allowedRoles.length) {
-    const normalizedUserRole = String(user.role || '').toLowerCase()
+  const normalizedUserRole = String(user.role || '').toLowerCase()
+  const isAdmin = normalizedUserRole === 'admin'
+  const isCustom = normalizedUserRole === 'custom'
+
+  // Check page-level permissions for custom role users
+  if (isCustom) {
+    const allowedPages = Array.isArray(user.allowedPages) ? user.allowedPages : []
+    const currentPath = location.pathname
+    const hasPageAccess = allowedPages.includes(currentPath)
+    
+    if (!hasPageAccess) {
+      // Redirect to first allowed page, or login if no pages
+      if (allowedPages.length > 0) {
+        return <Navigate to={allowedPages[0]} replace />
+      }
+      return <Navigate to="/login" replace />
+    }
+  }
+
+  // Check role-based access for non-custom roles
+  if (Array.isArray(allowedRoles) && allowedRoles.length && !isCustom) {
     const normalizedAllowed = allowedRoles.map((role) => role.toLowerCase())
-    const isAdmin = normalizedUserRole === 'admin'
     const hasAccess = isAdmin || normalizedAllowed.includes(normalizedUserRole)
 
     if (!hasAccess) {

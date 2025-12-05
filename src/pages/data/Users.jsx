@@ -9,7 +9,8 @@ const defaultDraft = {
   email: '',
   role: 'user',
   password: '',
-  active: true
+  active: true,
+  allowedPages: []
 }
 
 function UsersPage() {
@@ -19,6 +20,7 @@ function UsersPage() {
   const [draft, setDraft] = useState(defaultDraft)
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
+  const [availablePages, setAvailablePages] = useState([])
 
   const loadUsers = async () => {
     try {
@@ -36,7 +38,20 @@ function UsersPage() {
 
   useEffect(() => {
     loadUsers()
+    loadAvailablePages()
   }, [])
+
+  const loadAvailablePages = async () => {
+    try {
+      const res = await fetch(API_URLS.pages.list, { credentials: 'include' })
+      if (res.ok) {
+        const data = await res.json()
+        setAvailablePages(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Failed to load pages:', e)
+    }
+  }
 
   const handleEdit = (user) => {
     setDraft({
@@ -46,7 +61,8 @@ function UsersPage() {
       email: user.email || '',
       role: user.role || 'user',
       password: '',
-      active: !!user.active
+      active: !!user.active,
+      allowedPages: Array.isArray(user.allowedPages) ? user.allowedPages : []
     })
     setShowForm(true)
   }
@@ -97,6 +113,10 @@ function UsersPage() {
       setError('Password is required for new users')
       return
     }
+    if (draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0)) {
+      setError('At least one page must be selected for custom role users')
+      return
+    }
 
     try {
       setSaving(true)
@@ -109,6 +129,9 @@ function UsersPage() {
       }
       if (draft.password.trim()) {
         payload.password = draft.password
+      }
+      if (draft.role === 'custom') {
+        payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
       }
 
       const url = draft.id ? API_URLS.users.update(draft.id) : API_URLS.users.create
@@ -249,7 +272,14 @@ function UsersPage() {
               <label className="block text-sm font-semibold text-gray-700 mb-2">Role</label>
               <select
                 value={draft.role}
-                onChange={(e) => setDraft((prev) => ({ ...prev, role: e.target.value }))}
+                onChange={(e) => {
+                  const newRole = e.target.value
+                  setDraft((prev) => ({ 
+                    ...prev, 
+                    role: newRole,
+                    allowedPages: newRole === 'custom' ? (prev.allowedPages || []) : []
+                  }))
+                }}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
               >
                 <option value="admin">Admin</option>
@@ -257,6 +287,7 @@ function UsersPage() {
                 <option value="logbook">Logbook</option>
                 <option value="zidisha">Zidisha</option>
                 <option value="advans">Advans</option>
+                <option value="custom">Custom</option>
               </select>
             </div>
             <div>
@@ -289,6 +320,63 @@ function UsersPage() {
               </div>
             </div>
           </div>
+
+          {draft.role === 'custom' && (
+            <div className="border-t border-gray-200 pt-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-3">
+                Allowed Pages <span className="text-red-500">*</span>
+              </label>
+              <p className="text-xs text-gray-500 mb-4">Select which pages this user can access</p>
+              <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                {availablePages.length === 0 ? (
+                  <p className="text-sm text-gray-500">Loading pages...</p>
+                ) : (
+                  (() => {
+                    const grouped = availablePages.reduce((acc, page) => {
+                      const cat = page.category || 'Other'
+                      if (!acc[cat]) acc[cat] = []
+                      acc[cat].push(page)
+                      return acc
+                    }, {})
+                    return Object.entries(grouped).map(([category, pages]) => (
+                      <div key={category} className="mb-4">
+                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">{category}</h4>
+                        <div className="space-y-2 pl-2">
+                          {pages.map((page) => {
+                            const isChecked = Array.isArray(draft.allowedPages) && draft.allowedPages.includes(page.path)
+                            return (
+                              <label
+                                key={page.path}
+                                className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    const current = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+                                    if (e.target.checked) {
+                                      setDraft((prev) => ({ ...prev, allowedPages: [...current, page.path] }))
+                                    } else {
+                                      setDraft((prev) => ({ ...prev, allowedPages: current.filter(p => p !== page.path) }))
+                                    }
+                                  }}
+                                  className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                />
+                                <span className="text-sm text-gray-700">{page.label}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))
+                  })()
+                )}
+              </div>
+              {draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0) && (
+                <p className="text-xs text-red-600 mt-2">At least one page must be selected for custom role users</p>
+              )}
+            </div>
+          )}
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
             <button
