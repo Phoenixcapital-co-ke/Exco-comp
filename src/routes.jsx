@@ -29,6 +29,8 @@ import DataOverview from './pages/data/Overview.jsx'
 import DataBranches from './pages/data/Branches.jsx'
 import DataUsers from './pages/data/Users.jsx'
 import DataLoanOfficers from './pages/data/LoanOfficers.jsx'
+import LogbookTargets from './pages/data/LogbookTargets.jsx'
+import ZidishaTargets from './pages/data/ZidishaTargets.jsx'
 import SignIn from './pages/auth/SignIn.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 
@@ -74,10 +76,17 @@ function Routes() {
       {/* Insurance routes */}
       <Route path="/insurance/dashboard" element={<RequireAuth><InsuranceDashboard /></RequireAuth>} />
       <Route path="/data/overview" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataOverview /></RequireAuth>} />
-      <Route path="/data/branches" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataBranches /></RequireAuth>} />
       <Route path="/data/users" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataUsers /></RequireAuth>} />
+      {/* Legacy routes - redirect to new paths */}
+      <Route path="/data/branches" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataBranches /></RequireAuth>} />
       <Route path="/data/loan-officers" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataLoanOfficers /></RequireAuth>} />
       <Route path="/data/LoanOfficers" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataLoanOfficers /></RequireAuth>} />
+      {/* Logbook Data routes */}
+      <Route path="/data/logbook/branches" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataBranches /></RequireAuth>} />
+      <Route path="/data/logbook/loan-officers" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataLoanOfficers /></RequireAuth>} />
+      <Route path="/data/logbook/targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><LogbookTargets /></RequireAuth>} />
+      {/* Zidisha Data routes */}
+      <Route path="/data/zidisha/targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><ZidishaTargets /></RequireAuth>} />
     </RouterRoutes>
   )
 }

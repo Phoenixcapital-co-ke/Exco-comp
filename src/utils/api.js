@@ -23,9 +23,11 @@ export const API_URLS = {
     disbursements: `${API_BASE}/api/logbook/disbursements`,
     collections: `${API_BASE}/api/logbook/collections`,
     borrowers: `${API_BASE}/api/logbook/borrowers`,
+    branches: `${API_BASE}/api/logbook/branches`,
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,
+    branches: `${API_BASE}/api/zidisha/branches`,
   },
   events: `${API_BASE}/api/events`,
   ingest: `${API_BASE}/api/ingest`,
@@ -60,6 +62,20 @@ export const API_URLS = {
     create: `${API_BASE}/api/loan-officers`,
     update: (id) => `${API_BASE}/api/loan-officers/${id}`,
     delete: (id) => `${API_BASE}/api/loan-officers/${id}`,
+  },
+  targets: {
+    logbook: {
+      list: `${API_BASE}/api/targets/logbook`,
+      create: `${API_BASE}/api/targets/logbook`,
+      update: (id) => `${API_BASE}/api/targets/logbook/${id}`,
+      delete: (id) => `${API_BASE}/api/targets/logbook/${id}`,
+    },
+    zidisha: {
+      list: `${API_BASE}/api/targets/zidisha`,
+      create: `${API_BASE}/api/targets/zidisha`,
+      update: (id) => `${API_BASE}/api/targets/zidisha/${id}`,
+      delete: (id) => `${API_BASE}/api/targets/zidisha/${id}`,
+    }
   },
   data: {
     lastRefresh: `${API_BASE}/api/data/last-refresh`,

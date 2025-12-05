@@ -391,6 +391,35 @@ dbRW.exec(`
   );
 `);
 
+// Targets tables
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Logbook_Targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch TEXT NOT NULL,
+    month INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    disbursement_target REAL NOT NULL DEFAULT 0,
+    collection_target REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Zidisha_Targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch TEXT NOT NULL,
+    month INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    disbursement_target REAL NOT NULL DEFAULT 0,
+    collection_target REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
 
@@ -710,6 +739,23 @@ const mapLoanOfficerRow = (row) => ({
   updatedAt: row.updated_at
 })
 
+const mapTargetRow = (row) => ({
+  id: row.id,
+  branch: row.branch,
+  month: Number(row.month),
+  year: Number(row.year),
+  disbursementTarget: Number(row.disbursement_target) || 0,
+  collectionTarget: Number(row.collection_target) || 0,
+  active: !!row.active,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+})
+
+const normalizeZidishaBranchRow = (row) => {
+  const name = String(row?.name || '').trim()
+  return name
+}
+
 app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password } = req.body || {}
@@ -933,9 +979,16 @@ app.get('/api/pages', (req, res) => {
       { path: '/insurance/dashboard', label: 'Insurance - Dashboard', category: 'Other' },
       // Data pages (admin only, but can be assigned to custom users)
       { path: '/data/overview', label: 'Data - Overview', category: 'Data' },
-      { path: '/data/branches', label: 'Data - Branches', category: 'Data' },
       { path: '/data/users', label: 'Data - Users', category: 'Data' },
+      // Legacy routes
+      { path: '/data/branches', label: 'Data - Branches', category: 'Data' },
       { path: '/data/loan-officers', label: 'Data - Loan Officers', category: 'Data' },
+      // Logbook Data pages
+      { path: '/data/logbook/branches', label: 'Logbook Data - Branches', category: 'Data' },
+      { path: '/data/logbook/loan-officers', label: 'Logbook Data - Loan Officers', category: 'Data' },
+      { path: '/data/logbook/targets', label: 'Logbook Data - Targets', category: 'Data' },
+      // Zidisha Data pages
+      { path: '/data/zidisha/targets', label: 'Zidisha Data - Targets', category: 'Data' },
     ]
     res.json(pages)
   } catch (e) {
@@ -1035,6 +1088,236 @@ app.delete('/api/loan-officers/:id', (req, res) => {
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Loan Officer not found' })
     }
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Zidisha branches (distinct from zidisha_data)
+app.get('/api/zidisha/branches', (req, res) => {
+  try {
+    const rows = db
+      .prepare(`
+        SELECT DISTINCT
+          TRIM("Branch Name") AS name
+        FROM zidisha_data
+        WHERE "Branch Name" IS NOT NULL
+          AND TRIM("Branch Name") <> ''
+          AND LOWER(TRIM("Branch Name")) <> 'advans branch'
+        ORDER BY name COLLATE NOCASE
+      `)
+      .all()
+      .map(normalizeZidishaBranchRow)
+      .filter(Boolean)
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Logbook Targets
+app.get('/api/targets/logbook', (req, res) => {
+  try {
+    const rows = dbRW
+      .prepare('SELECT * FROM Logbook_Targets ORDER BY year DESC, month DESC, branch COLLATE NOCASE')
+      .all()
+      .map(mapTargetRow)
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/targets/logbook', (req, res) => {
+  try {
+    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, active = 1 } = req.body || {}
+    const branchVal = String(branch || '').trim()
+    const monthVal = Number(month)
+    const yearVal = Number(year)
+    if (!branchVal || !Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'branch, month (1-12), and year are required' })
+    }
+    dbRW.prepare(`
+      INSERT INTO Logbook_Targets (branch, month, year, disbursement_target, collection_target, active)
+      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @active)
+    `).run({
+      branch: branchVal,
+      month: monthVal,
+      year: yearVal,
+      disbursement_target: Number(disbursementTarget) || 0,
+      collection_target: Number(collectionTarget) || 0,
+      active: active ? 1 : 0,
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/targets/logbook/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT * FROM Logbook_Targets WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Target not found' })
+
+    const { branch, month, year, disbursementTarget, collectionTarget, active } = req.body || {}
+    const fields = []
+    const params = { id }
+
+    if (typeof branch !== 'undefined') {
+      const val = String(branch || '').trim()
+      if (!val) return res.status(400).json({ error: 'branch cannot be empty' })
+      fields.push('branch = @branch')
+      params.branch = val
+    }
+    if (typeof month !== 'undefined') {
+      const val = Number(month)
+      if (!Number.isInteger(val) || val < 1 || val > 12) return res.status(400).json({ error: 'month must be 1-12' })
+      fields.push('month = @month')
+      params.month = val
+    }
+    if (typeof year !== 'undefined') {
+      const val = Number(year)
+      if (!Number.isInteger(val)) return res.status(400).json({ error: 'year must be an integer' })
+      fields.push('year = @year')
+      params.year = val
+    }
+    if (typeof disbursementTarget !== 'undefined') {
+      fields.push('disbursement_target = @disbursement_target')
+      params.disbursement_target = Number(disbursementTarget) || 0
+    }
+    if (typeof collectionTarget !== 'undefined') {
+      fields.push('collection_target = @collection_target')
+      params.collection_target = Number(collectionTarget) || 0
+    }
+    if (typeof active !== 'undefined') {
+      fields.push('active = @active')
+      params.active = active ? 1 : 0
+    }
+
+    if (!fields.length) return res.status(400).json({ error: 'No updates provided' })
+
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    const sql = `UPDATE Logbook_Targets SET ${fields.join(', ')} WHERE id = @id`
+    dbRW.prepare(sql).run(params)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/targets/logbook/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const result = dbRW.prepare('DELETE FROM Logbook_Targets WHERE id = ?').run(id)
+    if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Zidisha Targets
+app.get('/api/targets/zidisha', (req, res) => {
+  try {
+    const rows = dbRW
+      .prepare('SELECT * FROM Zidisha_Targets ORDER BY year DESC, month DESC, branch COLLATE NOCASE')
+      .all()
+      .map(mapTargetRow)
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/targets/zidisha', (req, res) => {
+  try {
+    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, active = 1 } = req.body || {}
+    const branchVal = String(branch || '').trim()
+    const monthVal = Number(month)
+    const yearVal = Number(year)
+    if (!branchVal || !Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'branch, month (1-12), and year are required' })
+    }
+    dbRW.prepare(`
+      INSERT INTO Zidisha_Targets (branch, month, year, disbursement_target, collection_target, active)
+      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @active)
+    `).run({
+      branch: branchVal,
+      month: monthVal,
+      year: yearVal,
+      disbursement_target: Number(disbursementTarget) || 0,
+      collection_target: Number(collectionTarget) || 0,
+      active: active ? 1 : 0,
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/targets/zidisha/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT * FROM Zidisha_Targets WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Target not found' })
+
+    const { branch, month, year, disbursementTarget, collectionTarget, active } = req.body || {}
+    const fields = []
+    const params = { id }
+
+    if (typeof branch !== 'undefined') {
+      const val = String(branch || '').trim()
+      if (!val) return res.status(400).json({ error: 'branch cannot be empty' })
+      fields.push('branch = @branch')
+      params.branch = val
+    }
+    if (typeof month !== 'undefined') {
+      const val = Number(month)
+      if (!Number.isInteger(val) || val < 1 || val > 12) return res.status(400).json({ error: 'month must be 1-12' })
+      fields.push('month = @month')
+      params.month = val
+    }
+    if (typeof year !== 'undefined') {
+      const val = Number(year)
+      if (!Number.isInteger(val)) return res.status(400).json({ error: 'year must be an integer' })
+      fields.push('year = @year')
+      params.year = val
+    }
+    if (typeof disbursementTarget !== 'undefined') {
+      fields.push('disbursement_target = @disbursement_target')
+      params.disbursement_target = Number(disbursementTarget) || 0
+    }
+    if (typeof collectionTarget !== 'undefined') {
+      fields.push('collection_target = @collection_target')
+      params.collection_target = Number(collectionTarget) || 0
+    }
+    if (typeof active !== 'undefined') {
+      fields.push('active = @active')
+      params.active = active ? 1 : 0
+    }
+
+    if (!fields.length) return res.status(400).json({ error: 'No updates provided' })
+
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    const sql = `UPDATE Zidisha_Targets SET ${fields.join(', ')} WHERE id = @id`
+    dbRW.prepare(sql).run(params)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/targets/zidisha/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const result = dbRW.prepare('DELETE FROM Zidisha_Targets WHERE id = ?').run(id)
+    if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })

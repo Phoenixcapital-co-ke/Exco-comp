@@ -13,7 +13,8 @@ import {
   TrendingUp,
   AlertTriangle,
   Activity,
-  LogOut
+  LogOut,
+  Target
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -23,9 +24,18 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const [expandedSection, setExpandedSection] = useState('logbook')
+  const [expandedSubSection, setExpandedSubSection] = useState(null)
 
   const toggleSection = (section) => {
     setExpandedSection(prev => (prev === section ? null : section))
+    // Reset sub-section when collapsing parent
+    if (expandedSection === section) {
+      setExpandedSubSection(null)
+    }
+  }
+
+  const toggleSubSection = (subSection) => {
+    setExpandedSubSection(prev => (prev === subSection ? null : subSection))
   }
 
   const navigationItems = [
@@ -83,16 +93,34 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
         { path: '/insurance/dashboard', label: 'Dashboard', icon: BarChart3 }
       ]
     },
-    // --- new Data nav ---
+    // --- Data nav ---
     {
       id: 'data',
       label: 'Data',
       icon: BarChart3,
       items: [
         { path: '/data/overview', label: 'Overview', icon: BarChart3 },
-        { path: '/data/branches', label: 'Branches', icon: Building2 },
         { path: '/data/users', label: 'Users', icon: Users },
-        { path: '/data/loan-officers', label: 'Loan Officers', icon: Users }
+        {
+          type: 'subsection',
+          id: 'logbook-data',
+          label: 'Logbook Data',
+          icon: BookOpen,
+          items: [
+            { path: '/data/logbook/branches', label: 'Branches', icon: Building2 },
+            { path: '/data/logbook/loan-officers', label: 'Loan Officers', icon: Users },
+            { path: '/data/logbook/targets', label: 'Targets', icon: Target }
+          ]
+        },
+        {
+          type: 'subsection',
+          id: 'zidisha-data',
+          label: 'Zidisha Data',
+          icon: Users,
+          items: [
+            { path: '/data/zidisha/targets', label: 'Targets', icon: Target }
+          ]
+        }
       ]
     }
   ]
@@ -106,11 +134,25 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   if (isCustom) {
     // For custom role, filter based on allowedPages
     filteredNavigation = navigationItems.map(section => {
-      const allowedItems = section.items.filter(item => allowedPages.includes(item.path))
-      if (allowedItems.length === 0) return null
+      const filteredItems = section.items.map(item => {
+        if (item.type === 'subsection') {
+          // Filter subsection items
+          const allowedSubItems = item.items.filter(subItem => allowedPages.includes(subItem.path))
+          if (allowedSubItems.length === 0) return null
+          return {
+            ...item,
+            items: allowedSubItems
+          }
+        } else {
+          // Regular item - check if allowed
+          return allowedPages.includes(item.path) ? item : null
+        }
+      }).filter(Boolean)
+      
+      if (filteredItems.length === 0) return null
       return {
         ...section,
-        items: allowedItems
+        items: filteredItems
       }
     }).filter(Boolean)
   } else {
@@ -124,6 +166,12 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       advans: ['advans'],
     }
     const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
+    // Always include data section for admin and manager/logbook roles
+    if (roleKey === 'admin') {
+      allowedSectionIds.push('data')
+    } else if (roleKey === 'manager' || roleKey === 'logbook') {
+      allowedSectionIds.push('data')
+    }
     filteredNavigation = navigationItems.filter((item) => allowedSectionIds.includes(item.id))
   }
   
@@ -214,9 +262,54 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
             {visibleExpandedSection === section.id && (
               <div className="ml-4 space-y-1">
                 {section.items.map((item) => {
+                  // Handle nested subsections
+                  if (item.type === 'subsection') {
+                    const isSubExpanded = expandedSubSection === item.id
+                    return (
+                      <div key={item.id} className="mb-1">
+                        <button
+                          onClick={() => toggleSubSection(item.id)}
+                          className="w-full flex items-center justify-between px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 hover:text-gray-800 rounded-lg transition-colors duration-200"
+                        >
+                          <div className="flex items-center space-x-3">
+                            <item.icon size={16} />
+                            <span>{item.label}</span>
+                          </div>
+                          {isSubExpanded ? (
+                            <ChevronDown size={14} />
+                          ) : (
+                            <ChevronRight size={14} />
+                          )}
+                        </button>
+                        {isSubExpanded && (
+                          <div className="ml-6 mt-1 space-y-1">
+                            {item.items.map((subItem) => {
+                              const isActive = location.pathname === subItem.path
+                              return (
+                                <Link
+                                  key={subItem.path}
+                                  to={subItem.path}
+                                  className={`flex items-center space-x-3 px-4 py-2 text-sm rounded-lg transition-colors duration-200 ${
+                                    isActive
+                                      ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
+                                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
+                                  }`}
+                                  onClick={() => onNavigate?.()}
+                                >
+                                  <subItem.icon size={16} />
+                                  <span>{subItem.label}</span>
+                                </Link>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                  // Regular items
                   const isActive = location.pathname === item.path
                   return (
-                <Link
+                    <Link
                       key={item.path}
                       to={item.path}
                       className={`flex items-center space-x-3 px-4 py-2 text-sm rounded-lg transition-colors duration-200 ${
@@ -224,7 +317,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
                           ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
                           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
                       }`}
-                  onClick={() => onNavigate?.()}
+                      onClick={() => onNavigate?.()}
                     >
                       <item.icon size={16} />
                       <span>{item.label}</span>
