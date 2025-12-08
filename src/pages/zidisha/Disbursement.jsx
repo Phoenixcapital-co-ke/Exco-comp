@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { DollarSign, Calendar, TrendingUp, ChevronDown, ChevronRight, Building2, Target } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { API_URLS } from '../../utils/api.js'
 
 function ZidishaDisbursement() {
+  const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#6366f1']
   const [rows, setRows] = useState([])
   const [targets, setTargets] = useState([])
   const [loading, setLoading] = useState(true)
@@ -127,6 +128,19 @@ function ZidishaDisbursement() {
   const overallTarget = disbursementVsTarget.reduce((sum, r) => sum + r.target, 0)
   const overallVariance = overallActual - overallTarget
   const overallPercentage = overallTarget > 0 ? (overallActual / overallTarget) * 100 : 0
+
+  const productBreakdown = useMemo(() => {
+    const agg = new Map()
+    for (const r of monthRows) {
+      const product = (r['Product Name'] || r.product_name || 'Unknown').trim() || 'Unknown'
+      const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
+      if (!agg.has(product)) agg.set(product, 0)
+      agg.set(product, agg.get(product) + principal)
+    }
+    return Array.from(agg.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+  }, [monthRows])
 
   const branchSummaryTable = useMemo(() => {
     const map = new Map()
@@ -348,7 +362,8 @@ function ZidishaDisbursement() {
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row lg:gap-6">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex flex-col lg:flex-row lg:gap-6">
         {/* Daily Disbursements for Selected Month with Branch Comparison */}
         {(() => {
           const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
@@ -374,7 +389,7 @@ function ZidishaDisbursement() {
           for (let i = 1; i <= daysIn; i++) dailySeries.push({ day: String(i), overall: overallByDay[i], branch: branchByDay[i] })
           if (!dailySeries.length) return null
           return (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 w-full lg:w-1/2">
+            <div className="w-full lg:w-2/3">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
                 <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
@@ -422,7 +437,7 @@ function ZidishaDisbursement() {
             .sort((a, b) => b.amount - a.amount)
 
           return (
-            <div className="w-full lg:w-1/2 bg-white rounded-lg shadow-sm border border-gray-200 p-6 flex flex-col">
+            <div className="w-full lg:w-1/3 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">Daily Branch Breakdown</h3>
                 <div className="flex items-center space-x-2">
@@ -464,6 +479,7 @@ function ZidishaDisbursement() {
             </div>
           )
         })()}
+        </div>
       </div>
 
       {/* Disbursement vs Target by Branch */}
@@ -473,59 +489,88 @@ function ZidishaDisbursement() {
             <Target className="text-orange-600" size={20} />
             <h3 className="text-lg font-semibold text-gray-900">Disbursement vs Target by Branch ({monthLabel} {selectedYear})</h3>
           </div>
-          <div className="w-full h-[520px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={disbursementVsTarget.map(item => ({
-                  branch: item.branch.length > 12 ? item.branch.substring(0, 12) + '...' : item.branch,
-                  fullBranch: item.branch,
-                  actual: item.actual,
-                  target: item.target > 0 ? item.target : 0,
-                  percentage: item.target > 0 ? item.percentage : 0
-                }))}
-                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis 
-                  dataKey="branch" 
-                  angle={-45}
-                  textAnchor="end"
-                  height={100}
-                  interval={0}
-                />
-                <YAxis />
-                <Tooltip
-                  formatter={(value, name) => {
-                    if (name === 'actual') return [formatKES(value), 'Actual Disbursement']
-                    if (name === 'target') return [formatKES(value), 'Target']
-                    return [value, name]
-                  }}
-                  labelFormatter={(label) => {
-                    const item = disbursementVsTarget.find(i => i.branch.startsWith(label) || label.startsWith(i.branch))
-                    return item ? item.branch : label
-                  }}
-                  contentStyle={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    padding: '8px'
-                  }}
-                />
-                <Legend />
-                <Bar 
-                  dataKey="actual" 
-                  name="Actual Disbursement" 
-                  fill="#3b82f6" 
-                  radius={[4, 4, 0, 0]}
-                />
-                <Bar 
-                  dataKey="target" 
-                  name="Target" 
-                  fill="#f59e0b" 
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+            <div className="lg:col-span-2 w-full h-[520px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={disbursementVsTarget.map(item => ({
+                    branch: item.branch.length > 12 ? item.branch.substring(0, 12) + '...' : item.branch,
+                    fullBranch: item.branch,
+                    actual: item.actual,
+                    target: item.target > 0 ? item.target : 0,
+                    percentage: item.target > 0 ? item.percentage : 0
+                  }))}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis 
+                    dataKey="branch" 
+                    angle={-45}
+                    textAnchor="end"
+                    height={100}
+                    interval={0}
+                  />
+                  <YAxis />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      if (name === 'actual') return [formatKES(value), 'Actual Disbursement']
+                      if (name === 'target') return [formatKES(value), 'Target']
+                      return [value, name]
+                    }}
+                    labelFormatter={(label) => {
+                      const item = disbursementVsTarget.find(i => i.branch.startsWith(label) || label.startsWith(i.branch))
+                      return item ? item.branch : label
+                    }}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      padding: '8px'
+                    }}
+                  />
+                  <Legend />
+                  <Bar 
+                    dataKey="actual" 
+                    name="Actual Disbursement" 
+                    fill="#3b82f6" 
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar 
+                    dataKey="target" 
+                    name="Target" 
+                    fill="#f59e0b" 
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {productBreakdown.length > 0 && (
+              <div className="w-full h-[520px] bg-gray-50 rounded-lg border border-gray-200 p-4">
+                <h4 className="text-sm font-semibold text-gray-800 mb-3">Disbursement by Product</h4>
+                <ResponsiveContainer width="100%" height="90%">
+                  <PieChart>
+                    <Pie
+                      data={productBreakdown}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={100}
+                      paddingAngle={2}
+                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                    >
+                      {productBreakdown.map((entry, index) => (
+                        <Cell key={`cell-${entry.name}-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(v, n) => [formatKES(v), n]} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -536,29 +581,29 @@ function ZidishaDisbursement() {
           <h3 className="text-xl font-bold text-gray-900">Branch Summary ({monthLabel} {selectedYear})</h3>
           <p className="text-sm text-gray-600 mt-1">Click on a branch to view loan officer details</p>
         </div>
-        <div>
-          <table className="w-full table-auto">
+        <div className="overflow-x-auto">
+          <table className="min-w-full table-auto text-sm">
             <thead>
               <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-300">
-                <th rowSpan={2} className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider align-bottom border-r border-gray-300 whitespace-normal break-words w-40">
+                <th rowSpan={2} className="px-3 py-3 text-left text-xs font-bold text-gray-700 uppercase tracking-wider align-bottom border-r border-gray-300 whitespace-normal break-words w-40">
                   <div className="flex items-center gap-2">
                     <Building2 size={16} className="text-indigo-600" />
                     <span>Branch</span>
                   </div>
                 </th>
-                <th colSpan={3} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">
+                <th colSpan={3} className="px-3 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">
                   <div className="flex items-center justify-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-green-500"></span>
                     <span>New (Zidisha Simba)</span>
                   </div>
                 </th>
-                <th colSpan={2} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-amber-50">
+                <th colSpan={2} className="px-3 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-amber-50">
                   <div className="flex items-center justify-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-amber-500"></span>
                     <span>Repeat</span>
                   </div>
                 </th>
-                <th colSpan={4} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-blue-50 border-l border-gray-300">
+                <th colSpan={4} className="px-3 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-blue-50 border-l border-gray-300">
                   <div className="flex items-center justify-center gap-1">
                     <TrendingUp size={14} className="text-blue-600" />
                     <span>Total</span>
@@ -566,15 +611,15 @@ function ZidishaDisbursement() {
                 </th>
               </tr>
               <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-300">
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Amount</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Loans</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">New Clients Amount / Month</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50 border-r border-gray-300">Amount</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50">Loans</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-l border-gray-300">Amount</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Loans</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Target</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">%</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Amount</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Loans</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Target</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50 border-r border-gray-300">Amount</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50">Loans</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-l border-gray-300">Amount</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Loans</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Target</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">%</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -585,7 +630,7 @@ function ZidishaDisbursement() {
                 return (
                   <React.Fragment key={row.branch}>
                   <tr className={`transition-all duration-200 ${expandedBranch === row.branch ? 'bg-indigo-50' : 'hover:bg-gray-50'} ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'}`}>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-3 whitespace-normal break-words">
                       <button
                         type="button"
                         onClick={() => setExpandedBranch(expandedBranch === row.branch ? null : row.branch)}
@@ -601,19 +646,19 @@ function ZidishaDisbursement() {
                         <span className="font-semibold">{row.branch}</span>
                       </button>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-700 text-right">{formatKES(row.newAmount)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{row.newCount.toLocaleString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">
-                      {targetInfo?.newClientsAmountPerMonth ? formatKES(targetInfo.newClientsAmountPerMonth) : <span className="text-gray-400">-</span>}
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-bold text-green-700 text-right">{formatKES(row.newAmount)}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{row.newCount.toLocaleString()}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">
+                      {targetInfo?.disbursementTarget ? formatKES(targetInfo.disbursementTarget) : <span className="text-gray-400">-</span>}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-amber-700 text-right">{formatKES(row.repeatAmount)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-amber-600 text-right">{row.repeatCount.toLocaleString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 text-right">{formatKES(row.totalAmount)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">{row.totalCount.toLocaleString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-bold text-amber-700 text-right">{formatKES(row.repeatAmount)}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-amber-600 text-right">{row.repeatCount.toLocaleString()}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-bold text-gray-900 text-right">{formatKES(row.totalAmount)}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">{row.totalCount.toLocaleString()}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-700 text-right">
                       {targetAmount > 0 ? formatKES(targetAmount) : <span className="text-gray-400">-</span>}
                     </td>
-                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold text-right ${percentage >= 100 ? 'text-green-700' : percentage >= 80 ? 'text-yellow-700' : 'text-red-700'}`}>
+                    <td className={`px-3 py-3 whitespace-nowrap text-sm font-semibold text-right ${percentage >= 100 ? 'text-green-700' : percentage >= 80 ? 'text-yellow-700' : 'text-red-700'}`}>
                       {targetAmount > 0 ? `${percentage.toFixed(1)}%` : <span className="text-gray-400">-</span>}
                     </td>
                   </tr>
