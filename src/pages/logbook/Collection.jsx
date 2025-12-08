@@ -19,6 +19,7 @@ import {
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { formatKES } from '../../utils/format.js'
+import { API_URLS } from '../../utils/api.js'
 
 function LogbookCollection() {
   const [data, setData] = useState(null)
@@ -27,6 +28,7 @@ function LogbookCollection() {
   const nowInit = new Date()
   const [selectedMonth, setSelectedMonth] = useState(nowInit.getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
+  const [targets, setTargets] = useState([])
 
   useEffect(() => {
     const loadData = async () => {
@@ -44,6 +46,21 @@ function LogbookCollection() {
     }
 
     loadData()
+  }, [])
+
+  useEffect(() => {
+    const loadTargets = async () => {
+      try {
+        const res = await fetch(API_URLS.targets.logbook.list, { credentials: 'include' })
+        if (res.ok) {
+          const t = await res.json()
+          setTargets(Array.isArray(t) ? t : [])
+        }
+      } catch (e) {
+        console.error('Failed to load logbook targets', e)
+      }
+    }
+    loadTargets()
   }, [])
 
   // Listen to global month/year changes from header
@@ -621,14 +638,20 @@ function LogbookCollection() {
             </PieChart>
           </ResponsiveContainer>
 
-          {/* Gauge: Collection By Branch (Current Month) */}
+          {/* Collection By Branch (Selected Month) with Targets */}
           <div className="mt-8">
-          <h4 className="text-md font-semibold mb-3 text-gray-900">Collection By Branch (Selected Month)</h4>
+            <h4 className="text-md font-semibold mb-3 text-gray-900">Collection By Branch (Selected Month)</h4>
             {(() => {
               const proc = data.processor
               if (!proc || !proc.repaymentsData) return null
               const y = selectedYear
               const m = selectedMonth
+              const normalizeName = (name) => String(name || '').replace(/\s*branch$/i, '').trim()
+              const targetMap = new Map()
+              targets
+                .filter(t => t.active && Number(t.month) === m && Number(t.year) === y)
+                .forEach(t => targetMap.set(normalizeName(t.branch), Number(t.collectionTarget) || 0))
+
               const agg = {}
               for (const r of proc.repaymentsData) {
                 const s = r.repayment_collected_date || ''
@@ -636,29 +659,39 @@ function LogbookCollection() {
                 const code = r.branch || r.Branch
                 if (!code || !yyyy || !mm || !dd) continue
                 if (Number(yyyy) === y && Number(mm) === m) {
-                  agg[code] = (agg[code] || 0) + (Number(r.repayment_amount) || 0)
+                  const keyName = normalizeName(proc.getBranchName ? proc.getBranchName(code) : code)
+                  agg[keyName] = (agg[keyName] || 0) + (Number(r.repayment_amount) || 0)
                 }
               }
-              const rows = Object.entries(agg).map(([code, amount]) => ({
-                name: proc.getBranchName ? proc.getBranchName(code) : code,
-                value: amount
-              })).sort((a,b) => b.value - a.value)
-              const total = rows.reduce((s, r) => s + r.value, 0)
+              const rows = Object.entries(agg).map(([name, amount]) => {
+                const target = targetMap.get(name) || 0
+                const pct = target > 0 ? (amount / target) * 100 : 0
+                return { name, amount, target, pct }
+              }).sort((a,b) => b.amount - a.amount)
+
+              if (!rows.length) return <div className="text-sm text-gray-600">No data for selected period.</div>
+
               return (
                 <div className="space-y-3">
                   {rows.map(row => {
-                    const pct = total > 0 ? (row.value / total) * 100 : 0
+                    const pct = row.pct
+                    const width = Math.min(100, Math.max(0, pct))
                     return (
                       <div key={row.name}>
                         <div className="flex items-center justify-between text-sm mb-1">
                           <span className="font-medium text-gray-800">{row.name}</span>
-                          <span className="text-gray-500">{formatKES(row.value)}</span>
+                          <span className="text-gray-500">
+                            {formatKES(row.amount)} {row.target > 0 ? ` / ${formatKES(row.target)}` : ''}
+                          </span>
                         </div>
                         <div className="flex items-center space-x-2">
                           <div className="flex-1 h-3 bg-gray-200 rounded-full relative">
-                            <div className="absolute top-0 left-0 h-3 bg-green-500 rounded-full" style={{ width: `${pct}%` }}></div>
+                            <div
+                              className="absolute top-0 left-0 h-3 bg-green-500 rounded-full"
+                              style={{ width: `${width}%` }}
+                            ></div>
                           </div>
-                          <span className="w-12 text-xs text-gray-600">{pct.toFixed(0)}%</span>
+                          <span className="w-16 text-xs text-gray-600 text-right">{pct.toFixed(0)}%</span>
                         </div>
                       </div>
                     )

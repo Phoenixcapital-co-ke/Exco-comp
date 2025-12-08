@@ -8,14 +8,11 @@ function LogbookTargets() {
   const [error, setError] = useState(null)
   const [branches, setBranches] = useState([])
   const [draft, setDraft] = useState({
-    id: null,
-    branch: '',
     month: '',
     year: new Date().getFullYear(),
-    disbursementTarget: 0,
-    collectionTarget: 0,
     active: true
   })
+  const [branchTargets, setBranchTargets] = useState([])
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
@@ -47,6 +44,12 @@ function LogbookTargets() {
           ? data.map((b) => b.name || b.code || '').filter((n) => n && String(n).trim().length > 0)
           : []
         setBranches(names)
+        setBranchTargets(names.map((name) => ({
+          branch: name,
+          disbursementTarget: 0,
+          collectionTarget: 0,
+          active: true
+        })))
       }
     } catch (e) {
       console.error('Failed to load branches', e)
@@ -56,36 +59,38 @@ function LogbookTargets() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError(null)
-    if (!draft.branch.trim()) {
-      setError('Branch is required')
-      return
-    }
     if (!draft.month) {
       setError('Month is required')
       return
     }
+    if (!branchTargets.length) {
+      setError('No branches available')
+      return
+    }
     try {
       setSaving(true)
-      const payload = {
-        branch: draft.branch.trim(),
-        month: Number(draft.month),
-        year: Number(draft.year),
-        disbursementTarget: Number(draft.disbursementTarget) || 0,
-        collectionTarget: Number(draft.collectionTarget) || 0,
-        active: !!draft.active,
-      }
-      const isEdit = Boolean(draft.id)
-      const url = isEdit ? API_URLS.targets.logbook.update(draft.id) : API_URLS.targets.logbook.create
-      const method = isEdit ? 'PUT' : 'POST'
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload)
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Save failed')
+      const monthVal = Number(draft.month)
+      const yearVal = Number(draft.year)
+      const activeVal = !!draft.active
+      const payloads = branchTargets.map((bt) => ({
+        branch: bt.branch,
+        month: monthVal,
+        year: yearVal,
+        disbursementTarget: Number(bt.disbursementTarget) || 0,
+        collectionTarget: Number(bt.collectionTarget) || 0,
+        active: activeVal && bt.active !== false,
+      }))
+      for (const p of payloads) {
+        const res = await fetch(API_URLS.targets.logbook.create, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(p)
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || `Save failed for ${p.branch}`)
+        }
       }
       await loadTargets()
       resetForm()
@@ -98,44 +103,38 @@ function LogbookTargets() {
 
   const resetForm = () => {
     setDraft({
-      id: null,
-      branch: '',
       month: '',
       year: new Date().getFullYear(),
+      active: true
+    })
+    setBranchTargets(branches.map((name) => ({
+      branch: name,
       disbursementTarget: 0,
       collectionTarget: 0,
       active: true
-    })
+    })))
     setError(null)
     setShowForm(false)
   }
 
   const handleCreateClick = () => {
     setDraft({
-      id: null,
-      branch: '',
       month: '',
       year: new Date().getFullYear(),
+      active: true
+    })
+    setBranchTargets(branches.map((name) => ({
+      branch: name,
       disbursementTarget: 0,
       collectionTarget: 0,
       active: true
-    })
+    })))
     setError(null)
     setShowForm(true)
   }
 
-  const handleEdit = (target) => {
-    setDraft({
-      id: target.id,
-      branch: target.branch || '',
-      month: String(target.month || ''),
-      year: target.year || new Date().getFullYear(),
-      disbursementTarget: target.disbursementTarget || 0,
-      collectionTarget: target.collectionTarget || 0,
-      active: !!target.active
-    })
-    setError(null)
-    setShowForm(true)
+  const handleEdit = () => {
+    setError('Editing individual targets is disabled for bulk entry.')
   }
 
   const handleDelete = async (target) => {
@@ -195,19 +194,10 @@ function LogbookTargets() {
           <div className="flex items-center justify-between border-b border-gray-200 pb-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-                {draft.id ? (
-                  <>
-                    <Edit2 size={20} className="text-primary-600" />
-                    Edit Target
-                  </>
-                ) : (
-                  <>
-                    <Plus size={20} className="text-primary-600" />
-                    Add New Target
-                  </>
-                )}
+                <Plus size={20} className="text-primary-600" />
+                Add Monthly Targets (All Branches)
               </h2>
-              <p className="text-sm text-gray-500 mt-1">Set targets for branch performance.</p>
+              <p className="text-sm text-gray-500 mt-1">Enter disbursement and collection targets for every branch in one submission.</p>
             </div>
             <button
               type="button"
@@ -219,23 +209,7 @@ function LogbookTargets() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Branch <span className="text-red-500">*</span>
-              </label>
-              <select
-                value={draft.branch}
-                onChange={(e) => setDraft((prev) => ({ ...prev, branch: e.target.value }))}
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
-                required
-              >
-                <option value="">Select branch</option>
-                {branches.map((b) => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">
                 Month <span className="text-red-500">*</span>
@@ -266,34 +240,6 @@ function LogbookTargets() {
                 required
               />
             </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Disbursement Target (KES) <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                value={draft.disbursementTarget}
-                onChange={(e) => setDraft((prev) => ({ ...prev, disbursementTarget: parseFloat(e.target.value) || 0 }))}
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                min="0"
-                step="0.01"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Collection Target (KES) <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                value={draft.collectionTarget}
-                onChange={(e) => setDraft((prev) => ({ ...prev, collectionTarget: parseFloat(e.target.value) || 0 }))}
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                min="0"
-                step="0.01"
-                required
-              />
-            </div>
             <div className="flex items-center">
               <div className="flex items-center space-x-3 mt-8">
                 <input
@@ -304,29 +250,96 @@ function LogbookTargets() {
                   onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
                 />
                 <label htmlFor="target-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
-                  Active Target
+                  Active Targets
                 </label>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={resetForm}
-              className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
-            >
-              <Save size={16} />
-              {saving ? 'Saving...' : draft.id ? 'Update Target' : 'Create Target'}
-            </button>
+          <div className="mt-6">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
+                    <th className="px-4 py-2 text-right font-semibold text-gray-600">Disbursement Target (KES)</th>
+                    <th className="px-4 py-2 text-right font-semibold text-gray-600">Collection Target (KES)</th>
+                    <th className="px-4 py-2 text-center font-semibold text-gray-600">Active</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {branchTargets.map((bt, idx) => (
+                    <tr key={bt.branch || idx} className="hover:bg-gray-50">
+                      <td className="px-4 py-2 font-semibold text-gray-900">{bt.branch}</td>
+                      <td className="px-4 py-2 text-right">
+                        <input
+                          type="number"
+                          className="w-full rounded border border-gray-300 px-2 py-1 text-right"
+                          min="0"
+                          step="0.01"
+                          value={bt.disbursementTarget}
+                          onChange={(e) => setBranchTargets((prev) => {
+                            const next = [...prev]
+                            next[idx] = { ...next[idx], disbursementTarget: parseFloat(e.target.value) || 0 }
+                            return next
+                          })}
+                        />
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <input
+                          type="number"
+                          className="w-full rounded border border-gray-300 px-2 py-1 text-right"
+                          min="0"
+                          step="0.01"
+                          value={bt.collectionTarget}
+                          onChange={(e) => setBranchTargets((prev) => {
+                            const next = [...prev]
+                            next[idx] = { ...next[idx], collectionTarget: parseFloat(e.target.value) || 0 }
+                            return next
+                          })}
+                        />
+                      </td>
+                      <td className="px-4 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 text-primary-600 border-gray-300 rounded"
+                          checked={bt.active}
+                          onChange={(e) => setBranchTargets((prev) => {
+                            const next = [...prev]
+                            next[idx] = { ...next[idx], active: e.target.checked }
+                            return next
+                          })}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                  {!branchTargets.length && (
+                    <tr>
+                      <td className="px-4 py-4 text-center text-gray-500" colSpan={4}>No branches available.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
+
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={resetForm}
+                className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+              >
+                <Save size={16} />
+                {saving ? 'Saving...' : 'Create Targets'}
+              </button>
+            </div>
         </form>
       )}
 

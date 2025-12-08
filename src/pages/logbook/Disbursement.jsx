@@ -19,6 +19,7 @@ import {
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { formatKES } from '../../utils/format.js'
+import { API_URLS } from '../../utils/api.js'
 
 function LogbookDisbursement() {
   const [data, setData] = useState(null)
@@ -28,6 +29,7 @@ function LogbookDisbursement() {
   const [selectedMonth, setSelectedMonth] = useState(nowInit.getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
   const [selectedBranch, setSelectedBranch] = useState('All')
+  const [targets, setTargets] = useState([])
 
   useEffect(() => {
     const loadData = async () => {
@@ -48,6 +50,21 @@ function LogbookDisbursement() {
     }
 
     loadData()
+  }, [])
+
+  useEffect(() => {
+    const loadTargets = async () => {
+      try {
+        const res = await fetch(API_URLS.targets.logbook.list, { credentials: 'include' })
+        if (res.ok) {
+          const t = await res.json()
+          setTargets(Array.isArray(t) ? t : [])
+        }
+      } catch (e) {
+        console.error('Failed to load logbook targets', e)
+      }
+    }
+    loadTargets()
   }, [])
 
   if (loading) {
@@ -233,13 +250,12 @@ function LogbookDisbursement() {
       .slice(0, 10)
   })()
 
-  // Branch performance from full dataset (current month only)
+  // Branch performance from full dataset (selected month/year) with targets
   const branchChartData = (() => {
     const proc = data.processor
     if (!proc || !proc.disbursementsData) return []
-    const now = new Date()
-    const y = now.getFullYear()
-    const m = now.getMonth() + 1
+    const y = selectedYear
+    const m = selectedMonth
     const parseDMY = (s) => {
       if (!s) return null
       const parts = String(s).split(/[\/\-]/)
@@ -248,6 +264,14 @@ function LogbookDisbursement() {
       if (!yyyy || !mm || !dd) return null
       return new Date(yyyy, mm - 1, dd)
     }
+    const normalizeName = (name) => String(name || '').replace(/\s*branch$/i, '').trim()
+    const targetMap = new Map()
+    targets
+      .filter(t => t.active && Number(t.month) === m && Number(t.year) === y)
+      .forEach(t => {
+        const key = normalizeName(t.branch)
+        targetMap.set(key, Number(t.disbursementTarget) || 0)
+      })
     const agg = {}
     for (const loan of proc.disbursementsData) {
       const dateStr = loan.disbursed_date || loan['Disbursed Date'] || ''
@@ -261,11 +285,17 @@ function LogbookDisbursement() {
         agg[code].count += 1
       }
     }
-    return Object.entries(agg).map(([code, stats]) => ({
-      name: proc.getBranchName ? proc.getBranchName(code) : code,
-      amount: stats.amount,
-      count: stats.count,
-    }))
+    return Object.entries(agg).map(([code, stats]) => {
+      const name = proc.getBranchName ? proc.getBranchName(code) : code
+      const key = normalizeName(name)
+      const target = targetMap.get(key) || 0
+      return {
+        name,
+        amount: stats.amount,
+        count: stats.count,
+        target,
+      }
+    })
   })()
 
   // Calculate Total Disbursed This Week for Disbursement.jsx
@@ -809,8 +839,15 @@ function LogbookDisbursement() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" />
               <YAxis />
-              <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
-              <Bar dataKey="amount" fill="#3b82f6" />
+              <Tooltip
+                formatter={(value, name) => {
+                  const label = name === 'target' ? 'Target' : 'Actual'
+                  return [formatKES(value), label]
+                }}
+              />
+              <Legend />
+              <Bar dataKey="amount" name="Actual Disbursement" fill="#3b82f6" />
+              <Bar dataKey="target" name="Target" fill="#f59e0b" />
             </BarChart>
           </ResponsiveContainer>
         </div>
