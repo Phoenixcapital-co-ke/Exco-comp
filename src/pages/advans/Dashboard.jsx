@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react'
 import { BarChart3, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts'
 import { formatKES } from '../../utils/format.js'
-import { API_URLS } from '../../utils/api.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 function AdvansDashboard() {
   const [rows, setRows] = useState([])
@@ -12,10 +12,8 @@ function AdvansDashboard() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
-        const advans = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
+        const data = await fetchAllZidishaRows()
+        const advans = data.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
         setRows(advans)
         setLoading(false)
       } catch (e) {

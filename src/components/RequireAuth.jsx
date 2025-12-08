@@ -27,7 +27,7 @@ function RequireAuth({ children, allowedRoles }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-  const normalizedUserRole = String(user.role || '').toLowerCase()
+    const normalizedUserRole = String(user.role || '').toLowerCase()
   const isAdmin = normalizedUserRole === 'admin'
   const isCustom = normalizedUserRole === 'custom'
 

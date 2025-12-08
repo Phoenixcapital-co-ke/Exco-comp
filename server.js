@@ -414,11 +414,19 @@ dbRW.exec(`
     year INTEGER NOT NULL,
     disbursement_target REAL NOT NULL DEFAULT 0,
     collection_target REAL NOT NULL DEFAULT 0,
+    new_clients_amount_per_month REAL NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Add new_clients_amount_per_month column if it doesn't exist (for existing databases)
+try {
+  dbRW.exec(`ALTER TABLE Zidisha_Targets ADD COLUMN new_clients_amount_per_month REAL NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // Column already exists, ignore error
+}
 
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
@@ -710,14 +718,14 @@ app.get('/api/logbook/branches', (req, res) => {
 
 const mapUserRow = (user) => {
   const base = {
-    id: user.id,
-    username: user.username,
-    fullName: user.full_name,
-    email: user.email,
-    role: user.role,
-    active: !!user.active,
-    createdAt: user.created_at,
-    updatedAt: user.updated_at
+  id: user.id,
+  username: user.username,
+  fullName: user.full_name,
+  email: user.email,
+  role: user.role,
+  active: !!user.active,
+  createdAt: user.created_at,
+  updatedAt: user.updated_at
   }
   // For custom role users, include their allowed pages
   if (String(user.role || '').toLowerCase() === 'custom') {
@@ -746,6 +754,7 @@ const mapTargetRow = (row) => ({
   year: Number(row.year),
   disbursementTarget: Number(row.disbursement_target) || 0,
   collectionTarget: Number(row.collection_target) || 0,
+  newClientsAmountPerMonth: Number(row.new_clients_amount_per_month) || 0,
   active: !!row.active,
   createdAt: row.created_at,
   updatedAt: row.updated_at
@@ -897,9 +906,9 @@ app.put('/api/users/:id', (req, res) => {
     }
 
     if (fields.length > 0) {
-      fields.push('updated_at = CURRENT_TIMESTAMP')
-      const sql = `UPDATE Users SET ${fields.join(', ')} WHERE id = @id`
-      dbRW.prepare(sql).run(params)
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    const sql = `UPDATE Users SET ${fields.join(', ')} WHERE id = @id`
+    dbRW.prepare(sql).run(params)
     }
     
     // Handle page permissions for custom role
@@ -1235,7 +1244,7 @@ app.get('/api/targets/zidisha', (req, res) => {
 
 app.post('/api/targets/zidisha', (req, res) => {
   try {
-    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, active = 1 } = req.body || {}
+    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, newClientsAmountPerMonth = 0, active = 1 } = req.body || {}
     const branchVal = String(branch || '').trim()
     const monthVal = Number(month)
     const yearVal = Number(year)
@@ -1243,14 +1252,15 @@ app.post('/api/targets/zidisha', (req, res) => {
       return res.status(400).json({ error: 'branch, month (1-12), and year are required' })
     }
     dbRW.prepare(`
-      INSERT INTO Zidisha_Targets (branch, month, year, disbursement_target, collection_target, active)
-      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @active)
+      INSERT INTO Zidisha_Targets (branch, month, year, disbursement_target, collection_target, new_clients_amount_per_month, active)
+      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @new_clients_amount_per_month, @active)
     `).run({
       branch: branchVal,
       month: monthVal,
       year: yearVal,
       disbursement_target: Number(disbursementTarget) || 0,
       collection_target: Number(collectionTarget) || 0,
+      new_clients_amount_per_month: Number(newClientsAmountPerMonth) || 0,
       active: active ? 1 : 0,
     })
     res.json({ ok: true })
@@ -1266,7 +1276,7 @@ app.put('/api/targets/zidisha/:id', (req, res) => {
     const existing = dbRW.prepare('SELECT * FROM Zidisha_Targets WHERE id = ?').get(id)
     if (!existing) return res.status(404).json({ error: 'Target not found' })
 
-    const { branch, month, year, disbursementTarget, collectionTarget, active } = req.body || {}
+    const { branch, month, year, disbursementTarget, collectionTarget, newClientsAmountPerMonth, active } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -1295,6 +1305,10 @@ app.put('/api/targets/zidisha/:id', (req, res) => {
     if (typeof collectionTarget !== 'undefined') {
       fields.push('collection_target = @collection_target')
       params.collection_target = Number(collectionTarget) || 0
+    }
+    if (typeof newClientsAmountPerMonth !== 'undefined') {
+      fields.push('new_clients_amount_per_month = @new_clients_amount_per_month')
+      params.new_clients_amount_per_month = Number(newClientsAmountPerMonth) || 0
     }
     if (typeof active !== 'undefined') {
       fields.push('active = @active')

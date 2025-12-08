@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle, DollarSign, Target, Zap, Calendar, Users, BarChart3 } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
-import { API_URLS } from '../../utils/api.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 function AdvansCollection() {
   const now = new Date()
@@ -15,11 +15,8 @@ function AdvansCollection() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
-        // Filter for Advans Branch only
-        const advans = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
+        const data = await fetchAllZidishaRows()
+        const advans = data.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
         setRows(advans)
         setLoading(false)
       } catch (e) {

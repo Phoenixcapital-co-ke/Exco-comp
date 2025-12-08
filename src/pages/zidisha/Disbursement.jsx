@@ -1,18 +1,27 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { DollarSign, Calendar, TrendingUp, ChevronDown, ChevronRight, Building2 } from 'lucide-react'
+import { DollarSign, Calendar, TrendingUp, ChevronDown, ChevronRight, Building2, Target } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { API_URLS } from '../../utils/api.js'
 
 function ZidishaDisbursement() {
   const [rows, setRows] = useState([])
+  const [targets, setTargets] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const now = new Date()
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
   const [selectedBranch, setSelectedBranch] = useState('All')
+  const [selectedDay, setSelectedDay] = useState(now.getDate())
   const [expandedBranch, setExpandedBranch] = useState(null)
+
+  const cleanBranchName = (name = '') => {
+    const trimmed = String(name || '').trim()
+    const noSuffix = trimmed.replace(/\s*branch\s*$/i, '').trim()
+    return noSuffix || trimmed
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -32,6 +41,21 @@ function ZidishaDisbursement() {
     return () => controller.abort()
   }, [])
 
+  useEffect(() => {
+    const loadTargets = async () => {
+      try {
+        const res = await fetch(API_URLS.targets.zidisha.list, { credentials: 'include' })
+        if (res.ok) {
+          const data = await res.json()
+          setTargets(Array.isArray(data) ? data : [])
+        }
+      } catch (e) {
+        console.error('Failed to load targets', e)
+      }
+    }
+    loadTargets()
+  }, [])
+
   // Helpers
   const inSelectedMonth = (dateLike) => {
     if (!dateLike) return false
@@ -43,10 +67,71 @@ function ZidishaDisbursement() {
   // Filtered rows for selected month
   const monthRows = rows.filter(r => inSelectedMonth(r['Disbursed On Date'] || r.disbursed_on_date))
 
+  // Get targets for selected month/year
+  const selectedTargets = useMemo(() => {
+    return targets.filter(t => 
+      t.month === selectedMonth && 
+      t.year === selectedYear && 
+      t.active
+    )
+  }, [targets, selectedMonth, selectedYear])
+
+  // Create a map of branch -> target for quick lookup
+  const targetMap = useMemo(() => {
+    const map = new Map()
+    selectedTargets.forEach(t => {
+      const key = cleanBranchName(t.branch || '')
+      map.set(key, { ...t, branch: key })
+    })
+    return map
+  }, [selectedTargets])
+
+  // Calculate disbursement vs target
+  const disbursementVsTarget = useMemo(() => {
+    const branchTotals = new Map()
+    for (const r of monthRows) {
+      const branchName = cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim() || 'Unknown')
+      const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
+      branchTotals.set(branchName, (branchTotals.get(branchName) || 0) + principal)
+    }
+
+    const results = []
+    for (const [branch, actual] of branchTotals.entries()) {
+      const target = targetMap.get(branch)
+      if (target) {
+        const targetAmount = target.disbursementTarget || 0
+        const variance = actual - targetAmount
+        const percentage = targetAmount > 0 ? (actual / targetAmount) * 100 : 0
+        results.push({
+          branch,
+          actual,
+          target: targetAmount,
+          variance,
+          percentage
+        })
+      } else {
+        results.push({
+          branch,
+          actual,
+          target: 0,
+          variance: actual,
+          percentage: 0
+        })
+      }
+    }
+    return results.sort((a, b) => b.actual - a.actual)
+  }, [monthRows, targetMap])
+
+  // Overall totals
+  const overallActual = disbursementVsTarget.reduce((sum, r) => sum + r.actual, 0)
+  const overallTarget = disbursementVsTarget.reduce((sum, r) => sum + r.target, 0)
+  const overallVariance = overallActual - overallTarget
+  const overallPercentage = overallTarget > 0 ? (overallActual / overallTarget) * 100 : 0
+
   const branchSummaryTable = useMemo(() => {
     const map = new Map()
     for (const r of monthRows) {
-      const branchName = (r['Branch Name'] || r.branch_name || 'Unknown').trim() || 'Unknown'
+      const branchName = cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim() || 'Unknown')
       const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
       const productName = (r['Product Name'] || r.product_name || '').trim()
       const isNew = productName === 'Zidisha Simba'
@@ -165,7 +250,7 @@ function ZidishaDisbursement() {
     return Array.from(ys).sort((a, b) => a - b)
   })()
   const branchOptions = (() => {
-    const bs = new Set(rows.map(r => (r['Branch Name'] || r.branch_name || 'Unknown').trim()).filter(Boolean))
+    const bs = new Set(rows.map(r => cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim())).filter(Boolean))
     const arr = Array.from(bs).sort((a, b) => a.localeCompare(b))
     return ['All', ...arr]
   })()
@@ -199,7 +284,7 @@ function ZidishaDisbursement() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
@@ -237,111 +322,213 @@ function ZidishaDisbursement() {
             </div>
           </div>
         </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Disbursement vs Target</p>
+              <p className="text-2xl font-bold text-gray-900">{formatKES(overallActual)}</p>
+              {overallTarget > 0 ? (
+                <>
+                  <p className={`text-sm mt-1 ${overallPercentage >= 100 ? 'text-green-700' : 'text-red-700'}`}>
+                    {overallPercentage.toFixed(1)}% of {formatKES(overallTarget)}
+                  </p>
+                  <p className={`text-xs mt-1 ${overallVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {overallVariance >= 0 ? '+' : ''}{formatKES(overallVariance)}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm mt-1 text-gray-500">No target set</p>
+              )}
+            </div>
+            <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
+              <Target size={24} />
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Daily Disbursements for Selected Month with Branch Comparison */}
-      {(() => {
-        const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
-        const overallByDay = Array(daysIn + 1).fill(0)
-        const branchByDay = Array(daysIn + 1).fill(0)
-        const branchFilter = selectedBranch
-        for (const r of monthRows) {
-          const ds = r['Disbursed On Date'] || r.disbursed_on_date
-          if (!ds) continue
-          const d = new Date(ds)
-          if (isNaN(d.getTime())) continue
-          const day = d.getDate()
-          const amt = Number(r['Principal Amount']) || 0
-          if (day >= 1 && day <= daysIn) {
-            overallByDay[day] += amt
-            if (branchFilter !== 'All') {
-              const bname = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-              if (bname === branchFilter) branchByDay[day] += amt
+      <div className="flex flex-col lg:flex-row lg:gap-6">
+        {/* Daily Disbursements for Selected Month with Branch Comparison */}
+        {(() => {
+          const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
+          const overallByDay = Array(daysIn + 1).fill(0)
+          const branchByDay = Array(daysIn + 1).fill(0)
+          const branchFilter = selectedBranch
+          for (const r of monthRows) {
+            const ds = r['Disbursed On Date'] || r.disbursed_on_date
+            if (!ds) continue
+            const d = new Date(ds)
+            if (isNaN(d.getTime())) continue
+            const day = d.getDate()
+            const amt = Number(r['Principal Amount']) || 0
+            if (day >= 1 && day <= daysIn) {
+              overallByDay[day] += amt
+              if (branchFilter !== 'All') {
+                const bname = cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim())
+                if (bname === branchFilter) branchByDay[day] += amt
+              }
             }
           }
-        }
-        const dailySeries = []
-        for (let i = 1; i <= daysIn; i++) dailySeries.push({ day: String(i), overall: overallByDay[i], branch: branchByDay[i] })
-        if (!dailySeries.length) return null
-        return (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
-              <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
-                {branchOptions.map(b => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
+          const dailySeries = []
+          for (let i = 1; i <= daysIn; i++) dailySeries.push({ day: String(i), overall: overallByDay[i], branch: branchByDay[i] })
+          if (!dailySeries.length) return null
+          return (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 w-full lg:w-1/2">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
+                <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
+                  {branchOptions.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="w-full h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={dailySeries}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="day" />
+                    <YAxis />
+                    <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
+                    <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
+                    {selectedBranch !== 'All' && (
+                      <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
+                    )}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-            <div className="w-full h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={dailySeries}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="day" />
-                  <YAxis />
-                  <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
-                  <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
-                  {selectedBranch !== 'All' && (
-                    <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
-                  )}
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )
-      })()}
+          )
+        })()}
 
-      {/* Branch Disbursement Cards (Selected Month) */}
-      {(() => {
-        const agg = new Map()
-        for (const r of monthRows) {
-          const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-          agg.set(b, (agg.get(b) || 0) + (Number(r['Principal Amount']) || 0))
-        }
-        // Previous month key
-        const prev = selectedMonth === 1 ? { y: selectedYear - 1, m: 12 } : { y: selectedYear, m: selectedMonth - 1 }
-        const prevRows = rows.filter(r => {
-          const ds = r['Disbursed On Date'] || r.disbursed_on_date
-          if (!ds) return false
-          const d = new Date(ds)
-          if (isNaN(d.getTime())) return false
-          return d.getFullYear() === prev.y && (d.getMonth() + 1) === prev.m
-        })
-        const prevAgg = new Map()
-        for (const r of prevRows) {
-          const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-          prevAgg.set(b, (prevAgg.get(b) || 0) + (Number(r['Principal Amount']) || 0))
-        }
-        const pctStr = (cur, prev) => {
-          if (prev > 0) {
-            const pct = ((cur - prev) / prev) * 100
-            return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
+        {/* Daily Branch Breakdown (Selected Day) */}
+        {(() => {
+          const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
+          const day = Math.min(selectedDay, daysIn)
+          const agg = new Map()
+          for (const r of monthRows) {
+            const ds = r['Disbursed On Date'] || r.disbursed_on_date
+            if (!ds) continue
+            const d = new Date(ds)
+            if (isNaN(d.getTime())) continue
+            if (d.getFullYear() !== selectedYear || (d.getMonth() + 1) !== selectedMonth || d.getDate() !== day) continue
+            const b = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
+            const amt = Number(r['Principal Amount']) || 0
+            if (!agg.has(b)) agg.set(b, 0)
+            agg.set(b, agg.get(b) + amt)
           }
-          return '+0.0%'
-        }
-        const changeColor = (s) => (s.startsWith('-') ? 'text-red-700' : 'text-green-700')
+          const rowsTbl = Array.from(agg.entries())
+            .map(([branch, amount]) => ({ branch, amount }))
+            .sort((a, b) => b.amount - a.amount)
 
-        const items = Array.from(agg.entries())
-          .map(([branch, amount]) => ({ branch, amount, prev: prevAgg.get(branch) || 0 }))
-          .sort((a, b) => b.amount - a.amount)
-        if (!items.length) return null
-        return (
-          <div className="overflow-x-auto">
-            <div className="flex flex-nowrap gap-4">
-              {items.map((it, idx) => {
-                const rate = pctStr(it.amount, it.prev)
-                return (
-                  <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 flex-none w-64">
-                    <p className="text-sm font-medium text-gray-600">{it.branch}</p>
-                    <p className="text-2xl font-bold text-gray-900">{formatKES(it.amount)}</p>
-                    <p className={`text-sm mt-1 ${changeColor(rate)}`}>{rate}</p>
-                  </div>
-                )
-              })}
+          return (
+            <div className="w-full lg:w-1/2 bg-white rounded-lg shadow-sm border border-gray-200 p-6 flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Daily Branch Breakdown</h3>
+                <div className="flex items-center space-x-2">
+                  <label className="text-xs text-gray-600">Day</label>
+                  <select
+                    className="border border-gray-300 rounded px-2 py-1 text-sm"
+                    value={day}
+                    onChange={(e) => setSelectedDay(Number(e.target.value))}
+                  >
+                    {Array.from({ length: daysIn }, (_, i) => i + 1).map((dv) => (
+                      <option key={dv} value={dv}>{dv}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">Total Disbursement</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {rowsTbl.map((r) => (
+                      <tr key={r.branch} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 text-gray-900">{r.branch}</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(r.amount)}</td>
+                      </tr>
+                    ))}
+                    {!rowsTbl.length && (
+                      <tr>
+                        <td className="px-4 py-6 text-center text-gray-500" colSpan={2}>No disbursements for selected day.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
+          )
+        })()}
+      </div>
+
+      {/* Disbursement vs Target by Branch */}
+      {disbursementVsTarget.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Target className="text-orange-600" size={20} />
+            <h3 className="text-lg font-semibold text-gray-900">Disbursement vs Target by Branch ({monthLabel} {selectedYear})</h3>
           </div>
-        )
-      })()}
+          <div className="w-full h-[520px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={disbursementVsTarget.map(item => ({
+                  branch: item.branch.length > 12 ? item.branch.substring(0, 12) + '...' : item.branch,
+                  fullBranch: item.branch,
+                  actual: item.actual,
+                  target: item.target > 0 ? item.target : 0,
+                  percentage: item.target > 0 ? item.percentage : 0
+                }))}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="branch" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={100}
+                  interval={0}
+                />
+                <YAxis />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === 'actual') return [formatKES(value), 'Actual Disbursement']
+                    if (name === 'target') return [formatKES(value), 'Target']
+                    return [value, name]
+                  }}
+                  labelFormatter={(label) => {
+                    const item = disbursementVsTarget.find(i => i.branch.startsWith(label) || label.startsWith(i.branch))
+                    return item ? item.branch : label
+                  }}
+                  contentStyle={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    padding: '8px'
+                  }}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="actual" 
+                  name="Actual Disbursement" 
+                  fill="#3b82f6" 
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar 
+                  dataKey="target" 
+                  name="Target" 
+                  fill="#f59e0b" 
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* Branch Summary Table */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
@@ -349,23 +536,17 @@ function ZidishaDisbursement() {
           <h3 className="text-xl font-bold text-gray-900">Branch Summary ({monthLabel} {selectedYear})</h3>
           <p className="text-sm text-gray-600 mt-1">Click on a branch to view loan officer details</p>
         </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full">
+        <div>
+          <table className="w-full table-auto">
             <thead>
               <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-300">
-                <th rowSpan={2} className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider align-bottom border-r border-gray-300">
+                <th rowSpan={2} className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider align-bottom border-r border-gray-300 whitespace-normal break-words w-40">
                   <div className="flex items-center gap-2">
                     <Building2 size={16} className="text-indigo-600" />
                     <span>Branch</span>
                   </div>
                 </th>
-                <th colSpan={2} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-blue-50 border-r border-gray-300">
-                  <div className="flex items-center justify-center gap-1">
-                    <TrendingUp size={14} className="text-blue-600" />
-                    <span>Total</span>
-                  </div>
-                </th>
-                <th colSpan={2} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">
+                <th colSpan={3} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">
                   <div className="flex items-center justify-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-green-500"></span>
                     <span>New (Zidisha Simba)</span>
@@ -377,19 +558,32 @@ function ZidishaDisbursement() {
                     <span>Repeat</span>
                   </div>
                 </th>
+                <th colSpan={4} className="px-6 py-3 text-center align-middle text-xs font-bold text-gray-700 uppercase tracking-wider bg-blue-50 border-l border-gray-300">
+                  <div className="flex items-center justify-center gap-1">
+                    <TrendingUp size={14} className="text-blue-600" />
+                    <span>Total</span>
+                  </div>
+                </th>
               </tr>
               <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-300">
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Amount</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Loans</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Amount</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Loans</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50">Amount</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">New Clients Amount / Month</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50 border-r border-gray-300">Amount</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50">Loans</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-l border-gray-300">Amount</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Loans</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">Target</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-r border-gray-300">%</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {branchSummaryTable.map((row, idx) => (
-                <React.Fragment key={row.branch}>
+              {branchSummaryTable.map((row, idx) => {
+                const targetInfo = targetMap.get(row.branch)
+                const targetAmount = targetInfo?.disbursementTarget || 0
+                const percentage = targetAmount > 0 ? (row.totalAmount / targetAmount) * 100 : 0
+                return (
+                  <React.Fragment key={row.branch}>
                   <tr className={`transition-all duration-200 ${expandedBranch === row.branch ? 'bg-indigo-50' : 'hover:bg-gray-50'} ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'}`}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <button
@@ -407,16 +601,25 @@ function ZidishaDisbursement() {
                         <span className="font-semibold">{row.branch}</span>
                       </button>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 text-right">{formatKES(row.totalAmount)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">{row.totalCount.toLocaleString()}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-700 text-right">{formatKES(row.newAmount)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{row.newCount.toLocaleString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">
+                      {targetInfo?.newClientsAmountPerMonth ? formatKES(targetInfo.newClientsAmountPerMonth) : <span className="text-gray-400">-</span>}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-amber-700 text-right">{formatKES(row.repeatAmount)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-amber-600 text-right">{row.repeatCount.toLocaleString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 text-right">{formatKES(row.totalAmount)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">{row.totalCount.toLocaleString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                      {targetAmount > 0 ? formatKES(targetAmount) : <span className="text-gray-400">-</span>}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold text-right ${percentage >= 100 ? 'text-green-700' : percentage >= 80 ? 'text-yellow-700' : 'text-red-700'}`}>
+                      {targetAmount > 0 ? `${percentage.toFixed(1)}%` : <span className="text-gray-400">-</span>}
+                    </td>
                   </tr>
                   {expandedBranch === row.branch && (
                     <tr className="bg-indigo-50/50">
-                      <td colSpan={7} className="px-6 pb-6 pt-4">
+                      <td colSpan={10} className="px-6 pb-6 pt-4">
                         <div className="bg-white rounded-lg shadow-md border-2 border-indigo-200 overflow-hidden">
                           <div className="px-4 py-3 bg-gradient-to-r from-indigo-100 to-blue-100 border-b border-indigo-200">
                             <h4 className="text-sm font-bold text-indigo-900 flex items-center gap-2">
@@ -476,11 +679,12 @@ function ZidishaDisbursement() {
                       </td>
                     </tr>
                   )}
-                </React.Fragment>
-              ))}
+                  </React.Fragment>
+                )
+              })}
               {!branchSummaryTable.length && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center">
+                  <td colSpan={10} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center">
                         <Building2 size={24} className="text-gray-400" />
@@ -518,9 +722,9 @@ function ZidishaDisbursement() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{r['Client Name'] || r.client_name || 'Unknown'}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{r['Product Name'] || r.product_name || 'Unknown'}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatKES(Number(r['Principal Amount']) || 0)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{r['Branch Name'] || r.branch_name || 'Unknown'}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{r['Disbursed On Date'] || r.disbursed_on_date || ''}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-6 py-4 whitespace-normal break-words">
                     <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Completed</span>
                   </td>
                 </tr>

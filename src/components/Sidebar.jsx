@@ -157,15 +157,15 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     }).filter(Boolean)
   } else {
     // For other roles, use existing role-based filtering
-    const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
-    const ROLE_SECTIONS = {
-      admin: navigationItems.map((item) => item.id),
-      manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
-      logbook: ['logbook'],
-      zidisha: ['zidisha'],
-      advans: ['advans'],
-    }
-    const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
+  const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
+  const ROLE_SECTIONS = {
+    admin: navigationItems.map((item) => item.id),
+    manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
+    logbook: ['logbook'],
+    zidisha: ['zidisha'],
+    advans: ['advans'],
+  }
+  const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
     // Always include data section for admin and manager/logbook roles
     if (roleKey === 'admin') {
       allowedSectionIds.push('data')
@@ -309,7 +309,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
                   // Regular items
                   const isActive = location.pathname === item.path
                   return (
-                    <Link
+                <Link
                       key={item.path}
                       to={item.path}
                       className={`flex items-center space-x-3 px-4 py-2 text-sm rounded-lg transition-colors duration-200 ${
@@ -317,7 +317,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
                           ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
                           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
                       }`}
-                      onClick={() => onNavigate?.()}
+                  onClick={() => onNavigate?.()}
                     >
                       <item.icon size={16} />
                       <span>{item.label}</span>

@@ -16,7 +16,7 @@ import {
   Bar,
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
-import { API_URLS } from '../../utils/api.js'
+import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
 
@@ -28,10 +28,8 @@ function AdvansDisbursement() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(API_URLS.zidisha.data, { credentials: 'include' })
-        const data = await res.json()
-        const all = Array.isArray(data) ? data : []
-        const advans = all.filter(
+        const data = await fetchAllZidishaRows()
+        const advans = data.filter(
           (row) => (row['Branch Name'] || row.branch_name || '').trim().toLowerCase() === 'advans branch'
         )
         setRows(advans)

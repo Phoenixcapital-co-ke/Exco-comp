@@ -273,7 +273,8 @@ function ZidishaCollection() {
           const items = Array.from(agg.entries())
             .map(([branch, v]) => {
               const rate = v.expected > 0 ? (v.collected / v.expected) * 100 : 0
-              return { branch, ...v, rate }
+              const to95 = v.expected > 0 ? Math.max(0, (0.95 * v.expected) - v.collected) : 0
+              return { branch, ...v, rate, to95 }
             })
             .sort((a, b) => {
               if (b.rate === a.rate) return b.collected - a.collected
@@ -287,6 +288,7 @@ function ZidishaCollection() {
                     <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
                     <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
                     <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
+                    <th className="px-3 py-2 text-right font-medium text-gray-600">To 95%</th>
                     <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
                   </tr>
                 </thead>
@@ -296,12 +298,13 @@ function ZidishaCollection() {
                       <td className="px-3 py-2 text-gray-900">{r.branch}</td>
                       <td className="px-3 py-2 text-right">{formatKES(r.expected)}</td>
                       <td className="px-3 py-2 text-right">{formatKES(r.collected)}</td>
+                      <td className="px-3 py-2 text-right">{r.expected > 0 ? formatKES(r.to95) : '-'}</td>
                       <td className="px-3 py-2 text-right">{r.rate.toFixed(1)}%</td>
                     </tr>
                   ))}
                   {!items.length && (
                     <tr>
-                      <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>No data for selected period.</td>
+                      <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>No data for selected period.</td>
                     </tr>
                   )}
                 </tbody>
