@@ -370,6 +370,8 @@ function LogbookCollection() {
     const m = selectedMonth
     const daysInMonth = new Date(y, m, 0).getDate()
     const sumByDay = Array(daysInMonth + 1).fill(0)
+
+    // actual collections by day
     for (const r of proc.repaymentsData) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
@@ -379,11 +381,115 @@ function LogbookCollection() {
         if (day >= 1 && day <= daysInMonth) sumByDay[day] += Number(r.repayment_amount) || 0
       }
     }
+
+    // build daily target using targets and working days (Sundays off, branch holidays respected)
+    const targetByDay = Array(daysInMonth + 1).fill(0)
+    const targetsForMonth = targets.filter(
+      (t) => t.active && Number(t.year) === y && Number(t.month) === m
+    )
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(y, m - 1, day)
+      if (date.getDay() === 0) continue // Sunday non-working
+      for (const t of targetsForMonth) {
+        const workingDays = Number(t.workingDays) || 0
+        if (!workingDays) continue
+        const holidaySet = new Set(
+          (Array.isArray(t.holidays) ? t.holidays : []).map((d) => new Date(d).toDateString())
+        )
+        if (holidaySet.has(date.toDateString())) continue
+        targetByDay[day] += (Number(t.collectionTarget) || 0) / workingDays
+      }
+    }
+
     const rows = []
     for (let day = 1; day <= daysInMonth; day++) {
-      rows.push({ date: String(day), amount: sumByDay[day] })
+      rows.push({ date: String(day), amount: sumByDay[day], target: targetByDay[day] })
     }
     return rows
+  })()
+
+  // MTD Collection vs Target by Branch (for bar chart)
+  const branchMTDData = (() => {
+    const proc = data.processor
+    if (!proc || !proc.repaymentsData) return []
+    const y = selectedYear
+    const m = selectedMonth
+    const normalizeName = (name) => String(name || '').replace(/\s*branch$/i, '').trim()
+
+    // Build target map
+    const targetMap = new Map()
+    targets
+      .filter((t) => t.active && Number(t.year) === y && Number(t.month) === m)
+      .forEach((t) => {
+        const key = normalizeName(t.branch)
+        targetMap.set(key, {
+          collectionTarget: Number(t.collectionTarget) || 0,
+          workingDays: Number(t.workingDays) || 0,
+          holidays: Array.isArray(t.holidays) ? t.holidays : [],
+        })
+      })
+
+    // Determine elapsed working days up to today (or full month if past month)
+    const workingDaysElapsed = (month, year, totalWorkingDays, holidays = []) => {
+      const today = new Date()
+      const isFuture =
+        year > today.getFullYear() ||
+        (year === today.getFullYear() && month > today.getMonth() + 1)
+      if (isFuture) return 0
+      const cutoffDay =
+        year === today.getFullYear() && month === today.getMonth() + 1
+          ? today.getDate()
+          : new Date(year, month, 0).getDate()
+      const holidaySet = new Set((Array.isArray(holidays) ? holidays : []).map((d) => new Date(d).toDateString()))
+      let count = 0
+      for (let day = 1; day <= cutoffDay; day++) {
+        const dt = new Date(year, month - 1, day)
+        if (dt.getDay() === 0) continue // Sundays non-working
+        if (holidaySet.has(dt.toDateString())) continue
+        count++
+      }
+      if (totalWorkingDays && totalWorkingDays > 0) {
+        return Math.min(count, totalWorkingDays)
+      }
+      return count
+    }
+
+    // Aggregate actual collections up to cutoff day
+    const cutoffDay =
+      (() => {
+        const today = new Date()
+        if (today.getFullYear() === y && today.getMonth() + 1 === m) return today.getDate()
+        return new Date(y, m, 0).getDate()
+      })()
+
+    const agg = new Map()
+    for (const r of proc.repaymentsData) {
+      const s = r.repayment_collected_date || ''
+      const [dd, mm, yyyy] = String(s).split('/')
+      if (!yyyy || !mm || !dd) continue
+      const yy = Number(yyyy)
+      const mmNum = Number(mm)
+      const ddNum = Number(dd)
+      if (yy !== y || mmNum !== m || ddNum > cutoffDay) continue
+      const code = r.branch || r.Branch
+      if (!code) continue
+      const name = normalizeName(proc.getBranchName ? proc.getBranchName(code) : code)
+      agg.set(name, (agg.get(name) || 0) + (Number(r.repayment_amount) || 0))
+    }
+
+    // Combine targets and actuals
+    const names = new Set([...agg.keys(), ...targetMap.keys()])
+    const rows = []
+    for (const name of names) {
+      const targetInfo = targetMap.get(name) || { collectionTarget: 0, workingDays: 0, holidays: [] }
+      const elapsed = workingDaysElapsed(m, y, targetInfo.workingDays, targetInfo.holidays)
+      const targetMTD =
+        targetInfo.workingDays > 0 ? (targetInfo.collectionTarget / targetInfo.workingDays) * elapsed : 0
+      const actual = agg.get(name) || 0
+      const pct = targetMTD > 0 ? (actual / targetMTD) * 100 : 0
+      rows.push({ name, actual, target: targetMTD, percent: pct })
+    }
+    return rows.sort((a, b) => b.actual - a.actual)
   })()
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
@@ -710,10 +816,41 @@ function LogbookCollection() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" />
               <YAxis />
-              <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
+              <Tooltip
+                formatter={(value, name) => {
+                  if (name === 'target') return [formatKES(value), 'Daily Target']
+                  return [formatKES(value), 'Collected']
+                }}
+              />
               <Area type="monotone" dataKey="amount" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
+              <Area type="monotone" dataKey="target" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.18} name="Daily Target" />
             </AreaChart>
           </ResponsiveContainer>
+          {branchMTDData.length > 0 && (
+            <div className="mt-6">
+              <h4 className="text-md font-semibold text-gray-900 mb-3">MTD Collection vs Target by Branch</h4>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={branchMTDData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis yAxisId="left" />
+                  <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    formatter={(value, name, entry) => {
+                      const key = entry?.dataKey
+                      if (key === 'percent') return [`${value.toFixed(1)}%`, 'MTD % of Target']
+                      if (key === 'target') return [formatKES(value), 'MTD Target']
+                      return [formatKES(value), 'MTD Collected']
+                    }}
+                  />
+                  <Legend />
+                  <Bar yAxisId="left" dataKey="actual" name="MTD Collected" fill="#3b82f6" />
+                  <Bar yAxisId="left" dataKey="target" name="MTD Target" fill="#f59e0b" />
+                  <Bar yAxisId="right" dataKey="percent" name="% of Target" fill="#10b981" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       </div>
 

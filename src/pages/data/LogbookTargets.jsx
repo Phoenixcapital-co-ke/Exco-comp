@@ -1,6 +1,153 @@
 import React, { useEffect, useState } from 'react'
-import { Target, Plus, Save, XCircle, Trash2, Edit2, X } from 'lucide-react'
+import { Target, Plus, Save, XCircle, Trash2, Edit2, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
+
+// Holiday Calendar Component
+function HolidayCalendar({ month, year, selectedDates = [], onSelect, onClose }) {
+  const [currentMonth, setCurrentMonth] = useState(month)
+  const [currentYear, setCurrentYear] = useState(year)
+  
+  // Sync calendar with form's month/year
+  useEffect(() => {
+    setCurrentMonth(month)
+    setCurrentYear(year)
+  }, [month, year])
+  
+  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+  const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1).getDay()
+  
+  const isSelected = (day) => {
+    const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    return selectedDates.includes(dateStr)
+  }
+  
+  const isSunday = (day) => {
+    const date = new Date(currentYear, currentMonth - 1, day)
+    const dayOfWeek = date.getDay()
+    return dayOfWeek === 0 // Only Sundays are non-working days
+  }
+  
+  const toggleDate = (day) => {
+    const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    let newDates = [...selectedDates]
+    
+    if (isSelected(day)) {
+      newDates = newDates.filter(d => d !== dateStr)
+    } else {
+      newDates.push(dateStr)
+      newDates.sort()
+    }
+    
+    onSelect(newDates)
+  }
+  
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  
+  const prevMonth = () => {
+    if (currentMonth === 1) {
+      setCurrentMonth(12)
+      setCurrentYear(currentYear - 1)
+    } else {
+      setCurrentMonth(currentMonth - 1)
+    }
+  }
+  
+  const nextMonth = () => {
+    if (currentMonth === 12) {
+      setCurrentMonth(1)
+      setCurrentYear(currentYear + 1)
+    } else {
+      setCurrentMonth(currentMonth + 1)
+    }
+  }
+  
+  const days = []
+  // Empty cells for days before the first day of the month
+  for (let i = 0; i < firstDayOfMonth; i++) {
+    days.push(null)
+  }
+  // Days of the month
+  for (let day = 1; day <= daysInMonth; day++) {
+    days.push(day)
+  }
+  
+  return (
+    <div className="absolute z-50 mt-2 bg-white border border-gray-300 rounded-lg shadow-xl p-4 w-80">
+      <div className="flex items-center justify-between mb-4">
+        <button
+          type="button"
+          onClick={prevMonth}
+          className="p-1 hover:bg-gray-100 rounded"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <h3 className="font-semibold text-gray-900">
+          {monthNames[currentMonth - 1]} {currentYear}
+        </h3>
+        <button
+          type="button"
+          onClick={nextMonth}
+          className="p-1 hover:bg-gray-100 rounded"
+        >
+          <ChevronRight size={20} />
+        </button>
+      </div>
+      
+      <div className="grid grid-cols-7 gap-1 mb-2">
+        {dayNames.map(day => (
+          <div key={day} className="text-xs font-semibold text-gray-600 text-center py-1">
+            {day}
+          </div>
+        ))}
+      </div>
+      
+      <div className="grid grid-cols-7 gap-1">
+        {days.map((day, idx) => {
+          if (day === null) {
+            return <div key={idx} className="aspect-square" />
+          }
+          
+          const selected = isSelected(day)
+          const sunday = isSunday(day)
+          
+          return (
+            <button
+              key={day}
+              type="button"
+              onClick={() => toggleDate(day)}
+              disabled={sunday}
+              className={`
+                aspect-square text-sm rounded transition-colors
+                ${selected 
+                  ? 'bg-primary-600 text-white font-semibold' 
+                  : sunday 
+                    ? 'text-gray-300 cursor-not-allowed' 
+                    : 'hover:bg-gray-100 text-gray-700'
+                }
+              `}
+            >
+              {day}
+            </button>
+          )
+        })}
+      </div>
+      
+      <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between">
+        <div className="text-xs text-gray-600">
+          {selectedDates.length} holiday{selectedDates.length !== 1 ? 's' : ''} selected
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-sm text-primary-600 hover:text-primary-700 font-semibold"
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function LogbookTargets() {
   const [targets, setTargets] = useState([])
@@ -10,9 +157,12 @@ function LogbookTargets() {
   const [draft, setDraft] = useState({
     month: '',
     year: new Date().getFullYear(),
+    holidays: [],
     active: true
   })
+  const [showHolidayCalendar, setShowHolidayCalendar] = useState(false)
   const [branchTargets, setBranchTargets] = useState([])
+  const [editTargetId, setEditTargetId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
@@ -72,24 +222,40 @@ function LogbookTargets() {
       const monthVal = Number(draft.month)
       const yearVal = Number(draft.year)
       const activeVal = !!draft.active
+      const holidaysVal = Array.isArray(draft.holidays) ? draft.holidays : []
       const payloads = branchTargets.map((bt) => ({
         branch: bt.branch,
         month: monthVal,
         year: yearVal,
         disbursementTarget: Number(bt.disbursementTarget) || 0,
         collectionTarget: Number(bt.collectionTarget) || 0,
+        holidays: holidaysVal,
         active: activeVal && bt.active !== false,
       }))
-      for (const p of payloads) {
-        const res = await fetch(API_URLS.targets.logbook.create, {
-          method: 'POST',
+
+      if (editTargetId && payloads.length === 1) {
+        const res = await fetch(API_URLS.targets.logbook.update(editTargetId), {
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify(p)
+          body: JSON.stringify(payloads[0])
         })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
-          throw new Error(data.error || `Save failed for ${p.branch}`)
+          throw new Error(data.error || 'Update failed')
+        }
+      } else {
+        for (const p of payloads) {
+          const res = await fetch(API_URLS.targets.logbook.create, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(p)
+          })
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}))
+            throw new Error(data.error || `Save failed for ${p.branch}`)
+          }
         }
       }
       await loadTargets()
@@ -105,6 +271,7 @@ function LogbookTargets() {
     setDraft({
       month: '',
       year: new Date().getFullYear(),
+      holidays: [],
       active: true
     })
     setBranchTargets(branches.map((name) => ({
@@ -113,14 +280,17 @@ function LogbookTargets() {
       collectionTarget: 0,
       active: true
     })))
+    setEditTargetId(null)
     setError(null)
     setShowForm(false)
+    setShowHolidayCalendar(false)
   }
 
   const handleCreateClick = () => {
     setDraft({
       month: '',
       year: new Date().getFullYear(),
+      holidays: [],
       active: true
     })
     setBranchTargets(branches.map((name) => ({
@@ -129,12 +299,29 @@ function LogbookTargets() {
       collectionTarget: 0,
       active: true
     })))
+    setEditTargetId(null)
     setError(null)
     setShowForm(true)
+    setShowHolidayCalendar(false)
   }
 
-  const handleEdit = () => {
-    setError('Editing individual targets is disabled for bulk entry.')
+  const handleEdit = (target) => {
+    setDraft({
+      month: String(target.month || ''),
+      year: target.year || new Date().getFullYear(),
+      holidays: Array.isArray(target.holidays) ? target.holidays : [],
+      active: !!target.active
+    })
+    setBranchTargets([{
+      branch: target.branch || '',
+      disbursementTarget: target.disbursementTarget || 0,
+      collectionTarget: target.collectionTarget || 0,
+      active: !!target.active
+    }])
+    setEditTargetId(target.id)
+    setError(null)
+    setShowForm(true)
+    setShowHolidayCalendar(false)
   }
 
   const handleDelete = async (target) => {
@@ -195,9 +382,11 @@ function LogbookTargets() {
             <div>
               <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
                 <Plus size={20} className="text-primary-600" />
-                Add Monthly Targets (All Branches)
+                {editTargetId ? 'Edit Target' : 'Add Monthly Targets (All Branches)'}
               </h2>
-              <p className="text-sm text-gray-500 mt-1">Enter disbursement and collection targets for every branch in one submission.</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {editTargetId ? 'Edit the target for this branch.' : 'Enter disbursement and collection targets for every branch in one submission.'}
+              </p>
             </div>
             <button
               type="button"
@@ -209,7 +398,7 @@ function LogbookTargets() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">
                 Month <span className="text-red-500">*</span>
@@ -239,6 +428,31 @@ function LogbookTargets() {
                 max="2100"
                 required
               />
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Holidays
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowHolidayCalendar(!showHolidayCalendar)}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-left focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
+              >
+                {draft.holidays.length > 0 
+                  ? `${draft.holidays.length} holiday${draft.holidays.length > 1 ? 's' : ''} selected`
+                  : 'Select holidays'}
+              </button>
+              {showHolidayCalendar && draft.month && (
+                <HolidayCalendar
+                  month={Number(draft.month)}
+                  year={draft.year}
+                  selectedDates={draft.holidays}
+                  onSelect={(dates) => {
+                    setDraft((prev) => ({ ...prev, holidays: dates }))
+                  }}
+                  onClose={() => setShowHolidayCalendar(false)}
+                />
+              )}
             </div>
             <div className="flex items-center">
               <div className="flex items-center space-x-3 mt-8">
@@ -337,7 +551,7 @@ function LogbookTargets() {
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
               >
                 <Save size={16} />
-                {saving ? 'Saving...' : 'Create Targets'}
+                {saving ? 'Saving...' : editTargetId ? 'Update Target' : 'Create Targets'}
               </button>
             </div>
         </form>
@@ -371,6 +585,7 @@ function LogbookTargets() {
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Month/Year</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Disbursement Target</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Collection Target</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Working Days</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
                   <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
@@ -389,6 +604,9 @@ function LogbookTargets() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-700">KES {target.collectionTarget.toLocaleString()}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-700">{target.workingDays || 0}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {target.active ? (

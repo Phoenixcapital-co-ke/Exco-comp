@@ -270,7 +270,11 @@ function LogbookDisbursement() {
       .filter(t => t.active && Number(t.month) === m && Number(t.year) === y)
       .forEach(t => {
         const key = normalizeName(t.branch)
-        targetMap.set(key, Number(t.disbursementTarget) || 0)
+        targetMap.set(key, {
+          disbursementTarget: Number(t.disbursementTarget) || 0,
+          workingDays: Number(t.workingDays) || 0,
+          holidays: Array.isArray(t.holidays) ? t.holidays : []
+        })
       })
     const agg = {}
     for (const loan of proc.disbursementsData) {
@@ -285,15 +289,51 @@ function LogbookDisbursement() {
         agg[code].count += 1
       }
     }
+    const workingDaysElapsed = (month, year, totalWorkingDays, holidays = []) => {
+      const today = new Date()
+      const isFuture =
+        year > today.getFullYear() ||
+        (year === today.getFullYear() && month > (today.getMonth() + 1))
+      if (isFuture) return 0
+
+      const lastDay = (year === today.getFullYear() && month === (today.getMonth() + 1))
+        ? today.getDate()
+        : new Date(year, month, 0).getDate()
+
+      const holidaySet = new Set(
+        (Array.isArray(holidays) ? holidays : []).map(d => new Date(d).toDateString())
+      )
+
+      let count = 0
+      for (let day = 1; day <= lastDay; day++) {
+        const date = new Date(year, month - 1, day)
+        // Sunday = 0; Saturdays are working
+        if (date.getDay() === 0) continue
+        if (holidaySet.has(date.toDateString())) continue
+        count++
+      }
+      // Guard against malformed totalWorkingDays
+      if (totalWorkingDays && totalWorkingDays > 0) {
+        return Math.min(count, totalWorkingDays)
+      }
+      return count
+    }
+
     return Object.entries(agg).map(([code, stats]) => {
       const name = proc.getBranchName ? proc.getBranchName(code) : code
       const key = normalizeName(name)
-      const target = targetMap.get(key) || 0
+      const targetInfo = targetMap.get(key) || { disbursementTarget: 0, workingDays: 0, holidays: [] }
+      const target = targetInfo.disbursementTarget || 0
+      const workingDays = targetInfo.workingDays || 0
+      const holidays = targetInfo.holidays || []
+      const elapsed = workingDaysElapsed(m, y, workingDays, holidays)
+      const mtd = workingDays > 0 ? (target / workingDays) * elapsed : 0
       return {
         name,
         amount: stats.amount,
         count: stats.count,
         target,
+        mtd,
       }
     })
   })()
@@ -552,9 +592,33 @@ function LogbookDisbursement() {
       }
     }
   })
+  // Build daily target from targets for the month (sum of branch targets, excluding Sundays/branch holidays)
+  const targetByDay = Array(daysInMonthDaily + 1).fill(0)
+  const targetsForMonth = targets.filter(
+    (t) => t.active && Number(t.year) === yDaily && Number(t.month) === mDaily
+  )
+  for (let day = 1; day <= daysInMonthDaily; day++) {
+    const date = new Date(yDaily, mDaily - 1, day)
+    if (date.getDay() === 0) continue // Sundays are not working days
+    for (const t of targetsForMonth) {
+      const workingDays = Number(t.workingDays) || 0
+      if (!workingDays) continue
+      const holidaySet = new Set(
+        (Array.isArray(t.holidays) ? t.holidays : []).map((d) => new Date(d).toDateString())
+      )
+      if (holidaySet.has(date.toDateString())) continue
+      targetByDay[day] += (Number(t.disbursementTarget) || 0) / workingDays
+    }
+  }
+
   const dailyDisbursementData = []
   for (let day = 1; day <= daysInMonthDaily; day++) {
-    dailyDisbursementData.push({ day: String(day), overall: overallByDay[day], branch: branchByDay[day] })
+    dailyDisbursementData.push({
+      day: String(day),
+      overall: overallByDay[day],
+      branch: branchByDay[day],
+      target: targetByDay[day],
+    })
   }
   const monthLabelDaily = new Date(selectedYear, selectedMonth - 1, 1).toLocaleString('en-US', { month: 'long' });
 
@@ -820,11 +884,19 @@ function LogbookDisbursement() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="day" />
             <YAxis />
-            <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
+            <Tooltip
+              formatter={(v, n) => {
+                if (n === 'overall') return [formatKES(v), 'Overall']
+                if (n === 'branch') return [formatKES(v), selectedBranch]
+                if (n === 'target') return [formatKES(v), 'Daily Target']
+                return [formatKES(v), n]
+              }}
+            />
             <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
             {selectedBranch !== 'All' && (
               <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
             )}
+            <Area type="monotone" dataKey="target" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Daily Target" />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -840,14 +912,31 @@ function LogbookDisbursement() {
               <XAxis dataKey="name" />
               <YAxis />
               <Tooltip
-                formatter={(value, name) => {
-                  const label = name === 'target' ? 'Target' : 'Actual'
-                  return [formatKES(value), label]
+                content={({ active, payload }) => {
+                  if (!active || !payload || !payload.length) return null
+                  return (
+                    <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-3">
+                      {payload.map((entry, index) => {
+                        const labelMap = {
+                          'amount': 'Actual',
+                          'target': 'Target',
+                          'mtd': 'MTD'
+                        }
+                        const label = labelMap[entry.dataKey] || entry.name || 'Actual'
+                        return (
+                          <div key={index} className="text-sm" style={{ color: entry.color }}>
+                            <span className="font-semibold">{label}:</span> {formatKES(entry.value)}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
                 }}
               />
               <Legend />
               <Bar dataKey="amount" name="Actual Disbursement" fill="#3b82f6" />
               <Bar dataKey="target" name="Target" fill="#f59e0b" />
+              <Bar dataKey="mtd" name="MTD" fill="#10b981" />
             </BarChart>
           </ResponsiveContainer>
         </div>

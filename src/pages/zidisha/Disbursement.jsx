@@ -613,7 +613,7 @@ function ZidishaDisbursement() {
               <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-300">
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Amount</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Loans</th>
-                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">Target</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-green-50 border-r border-gray-300">New Target</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50 border-r border-gray-300">Amount</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-amber-50">Loans</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider bg-blue-50 border-l border-gray-300">Amount</th>
@@ -649,7 +649,7 @@ function ZidishaDisbursement() {
                     <td className="px-3 py-3 whitespace-nowrap text-sm font-bold text-green-700 text-right">{formatKES(row.newAmount)}</td>
                     <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{row.newCount.toLocaleString()}</td>
                     <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-gray-700 text-right">
-                      {targetInfo?.disbursementTarget ? formatKES(targetInfo.disbursementTarget) : <span className="text-gray-400">-</span>}
+                      {targetInfo?.newClientsAmountPerMonth ? formatKES(targetInfo.newClientsAmountPerMonth) : <span className="text-gray-400">-</span>}
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap text-sm font-bold text-amber-700 text-right">{formatKES(row.repeatAmount)}</td>
                     <td className="px-3 py-3 whitespace-nowrap text-sm font-semibold text-amber-600 text-right">{row.repeatCount.toLocaleString()}</td>

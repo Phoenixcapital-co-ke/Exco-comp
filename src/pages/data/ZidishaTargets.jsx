@@ -295,7 +295,7 @@ function ZidishaTargets() {
                   <tr>
                     <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
                     <th className="px-4 py-2 text-right font-semibold text-gray-600">Disbursement Target (KES)</th>
-                    <th className="px-4 py-2 text-right font-semibold text-gray-600">New Clients Amount / Month (KES)</th>
+                    <th className="px-4 py-2 text-right font-semibold text-gray-600">New Clients Amount / Month--- (KES)</th>
                     <th className="px-4 py-2 text-center font-semibold text-gray-600">Active</th>
                   </tr>
                 </thead>

@@ -400,6 +400,8 @@ dbRW.exec(`
     year INTEGER NOT NULL,
     disbursement_target REAL NOT NULL DEFAULT 0,
     collection_target REAL NOT NULL DEFAULT 0,
+    working_days INTEGER NOT NULL DEFAULT 0,
+    holidays TEXT DEFAULT '[]',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -424,6 +426,20 @@ dbRW.exec(`
 // Add new_clients_amount_per_month column if it doesn't exist (for existing databases)
 try {
   dbRW.exec(`ALTER TABLE Zidisha_Targets ADD COLUMN new_clients_amount_per_month REAL NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // Column already exists, ignore error
+}
+
+// Add working_days column to Logbook_Targets if it doesn't exist (for existing databases)
+try {
+  dbRW.exec(`ALTER TABLE Logbook_Targets ADD COLUMN working_days INTEGER NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // Column already exists, ignore error
+}
+
+// Add holidays column to Logbook_Targets if it doesn't exist (for existing databases)
+try {
+  dbRW.exec(`ALTER TABLE Logbook_Targets ADD COLUMN holidays TEXT DEFAULT '[]';`)
 } catch (e) {
   // Column already exists, ignore error
 }
@@ -747,18 +763,59 @@ const mapLoanOfficerRow = (row) => ({
   updatedAt: row.updated_at
 })
 
-const mapTargetRow = (row) => ({
-  id: row.id,
-  branch: row.branch,
-  month: Number(row.month),
-  year: Number(row.year),
-  disbursementTarget: Number(row.disbursement_target) || 0,
-  collectionTarget: Number(row.collection_target) || 0,
-  newClientsAmountPerMonth: Number(row.new_clients_amount_per_month) || 0,
-  active: !!row.active,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at
-})
+// Helper function to calculate working days from holidays
+const calculateWorkingDays = (month, year, holidays = []) => {
+  const daysInMonth = new Date(year, month, 0).getDate()
+  let workingDays = 0
+  const holidayDates = Array.isArray(holidays) ? holidays.map(h => new Date(h)) : []
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day)
+    const dayOfWeek = date.getDay() // 0 = Sunday, 6 = Saturday
+    
+    // Skip Sundays only (Saturdays are working days)
+    if (dayOfWeek === 0) continue
+    
+    // Skip holidays
+    const isHoliday = holidayDates.some(h => 
+      h.getFullYear() === year && 
+      h.getMonth() === month - 1 && 
+      h.getDate() === day
+    )
+    if (isHoliday) continue
+    
+    workingDays++
+  }
+  
+  return workingDays
+}
+
+const mapTargetRow = (row) => {
+  let holidays = []
+  try {
+    holidays = row.holidays ? JSON.parse(row.holidays) : []
+  } catch (e) {
+    holidays = []
+  }
+  
+  const month = Number(row.month)
+  const year = Number(row.year)
+  const workingDays = row.working_days != null ? Number(row.working_days) : calculateWorkingDays(month, year, holidays)
+  
+  return {
+    id: row.id,
+    branch: row.branch,
+    month,
+    year,
+    disbursementTarget: Number(row.disbursement_target) || 0,
+    collectionTarget: Number(row.collection_target) || 0,
+    workingDays,
+    holidays,
+    active: !!row.active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
 
 const normalizeZidishaBranchRow = (row) => {
   const name = String(row?.name || '').trim()
@@ -1140,22 +1197,29 @@ app.get('/api/targets/logbook', (req, res) => {
 
 app.post('/api/targets/logbook', (req, res) => {
   try {
-    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, active = 1 } = req.body || {}
+    const { branch, month, year, disbursementTarget = 0, collectionTarget = 0, holidays = [], active = 1 } = req.body || {}
     const branchVal = String(branch || '').trim()
     const monthVal = Number(month)
     const yearVal = Number(year)
     if (!branchVal || !Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
       return res.status(400).json({ error: 'branch, month (1-12), and year are required' })
     }
+    
+    const holidaysArray = Array.isArray(holidays) ? holidays : []
+    const holidaysJson = JSON.stringify(holidaysArray)
+    const workingDays = calculateWorkingDays(monthVal, yearVal, holidaysArray)
+    
     dbRW.prepare(`
-      INSERT INTO Logbook_Targets (branch, month, year, disbursement_target, collection_target, active)
-      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @active)
+      INSERT INTO Logbook_Targets (branch, month, year, disbursement_target, collection_target, working_days, holidays, active)
+      VALUES (@branch, @month, @year, @disbursement_target, @collection_target, @working_days, @holidays, @active)
     `).run({
       branch: branchVal,
       month: monthVal,
       year: yearVal,
       disbursement_target: Number(disbursementTarget) || 0,
       collection_target: Number(collectionTarget) || 0,
+      working_days: workingDays,
+      holidays: holidaysJson,
       active: active ? 1 : 0,
     })
     res.json({ ok: true })
@@ -1171,9 +1235,13 @@ app.put('/api/targets/logbook/:id', (req, res) => {
     const existing = dbRW.prepare('SELECT * FROM Logbook_Targets WHERE id = ?').get(id)
     if (!existing) return res.status(404).json({ error: 'Target not found' })
 
-    const { branch, month, year, disbursementTarget, collectionTarget, active } = req.body || {}
+    const { branch, month, year, disbursementTarget, collectionTarget, holidays, active } = req.body || {}
     const fields = []
     const params = { id }
+    
+    // Get current month/year for working days calculation
+    const currentMonth = typeof month !== 'undefined' ? Number(month) : Number(existing.month)
+    const currentYear = typeof year !== 'undefined' ? Number(year) : Number(existing.year)
 
     if (typeof branch !== 'undefined') {
       const val = String(branch || '').trim()
@@ -1200,6 +1268,16 @@ app.put('/api/targets/logbook/:id', (req, res) => {
     if (typeof collectionTarget !== 'undefined') {
       fields.push('collection_target = @collection_target')
       params.collection_target = Number(collectionTarget) || 0
+    }
+    if (typeof holidays !== 'undefined') {
+      const holidaysArray = Array.isArray(holidays) ? holidays : []
+      const holidaysJson = JSON.stringify(holidaysArray)
+      fields.push('holidays = @holidays')
+      params.holidays = holidaysJson
+      // Recalculate working days when holidays change
+      const workingDays = calculateWorkingDays(currentMonth, currentYear, holidaysArray)
+      fields.push('working_days = @working_days')
+      params.working_days = workingDays
     }
     if (typeof active !== 'undefined') {
       fields.push('active = @active')
