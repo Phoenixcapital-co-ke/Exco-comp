@@ -1597,6 +1597,10 @@ app.post('/api/par/open', async (req, res) => {
   }
 })
 
+// Simple in-memory cache keyed by latest PAR time
+let parBranchesCache = { time: null, data: null }
+let parBorrowerAccessCache = { time: null, data: null }
+
 app.get('/api/par/branches', async (req, res) => {
   try {
     // Get all active branches with names
@@ -1614,6 +1618,11 @@ app.get('/api/par/branches', async (req, res) => {
     }
 
     const latestTime = latestPar.time
+
+    // Return cached if same snapshot time
+    if (parBranchesCache.time === latestPar.time && parBranchesCache.data) {
+      return res.json(parBranchesCache.data)
+    }
 
     // Read all loan records from saved tables
     const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
@@ -1684,6 +1693,7 @@ app.get('/api/par/branches', async (req, res) => {
     // Sort by PAR rate descending
     branchData.sort((a, b) => b.parRate - a.parRate)
     
+    parBranchesCache = { time: latestPar.time, data: branchData }
     res.json(branchData)
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -1698,6 +1708,11 @@ app.get('/api/par/borrower-access', async (req, res) => {
       return res.json([])
     }
     const latestTime = latestPar.time
+
+    // Return cached if same snapshot time
+    if (parBorrowerAccessCache.time === latestPar.time && parBorrowerAccessCache.data) {
+      return res.json(parBorrowerAccessCache.data)
+    }
 
     // Load saved loan records for the snapshot
     const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
@@ -1760,6 +1775,7 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     officerData.sort((a, b) => b.parRate - a.parRate)
 
+    parBorrowerAccessCache = { time: latestPar.time, data: officerData }
     res.json(officerData)
   } catch (e) {
     res.status(500).json({ error: e.message })

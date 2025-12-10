@@ -12,6 +12,7 @@ const AuthContext = createContext({
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
+  const INACTIVITY_LIMIT_MS = 10 * 60 * 1000 // 10 minutes
 
   const refreshUser = useCallback(async () => {
     setIsLoading(true)
@@ -52,6 +53,44 @@ export function AuthProvider({ children }) {
       setIsLoading(false)
     }
   }
+
+  // Client-side inactivity logout
+  useEffect(() => {
+    let timer = null
+
+    const clear = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    const schedule = () => {
+      if (!user) return
+      clear()
+      timer = setTimeout(async () => {
+        await logout()
+        // Force navigation to login after logout
+        window.location.href = '/auth/signin'
+      }, INACTIVITY_LIMIT_MS)
+    }
+
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart']
+    const onActivity = () => {
+      if (!user) return
+      schedule()
+    }
+
+    if (user) {
+      schedule()
+      events.forEach((evt) => window.addEventListener(evt, onActivity))
+    }
+
+    return () => {
+      clear()
+      events.forEach((evt) => window.removeEventListener(evt, onActivity))
+    }
+  }, [user, logout])
 
   return (
     <AuthContext.Provider value={{ user, login, logout, refreshUser, isLoading }}>

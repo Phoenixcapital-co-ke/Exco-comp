@@ -16,7 +16,6 @@ const AUTH = 'Basic hM2PPcacbMJPKsE4mAM3hbYNqbY5vSJtjrKYHRad'
 const TABLE = 'Logbook_Disbursement'
 const COLLECTIONS_BASE = 'https://api-main.loandisk.com/7125'
 const COLLECTIONS_TABLE = 'Logbook_collection'
-const COLLECTION_BRANCH_CODES = ['12936','27504','63796','27133','8678','75092','59535','75350','8550','55886']
 const DEFAULT_COLLECTION_START_DATE = '01/01/2024'
 function buildCollectionsUrl(branchCode){
   return `${COLLECTIONS_BASE}/${branchCode}/advanced_search_repayments`
@@ -32,7 +31,7 @@ const SKIP_COLLECTIONS = process.env.SKIP_COLLECTIONS === '1'
 const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
 
-// Base payload (pagination handled by from/count)
+// Base payload (pagination handled by from/count) - branches_select will be set after loading branches from DB
 const basePayload = {
   from: 1,
   count: 1000,
@@ -40,7 +39,7 @@ const basePayload = {
   end_date: getTodayDMY(),
   do_not_include_restructured_loans: 1,
   do_not_include_not_released_loans: 1,
-  branches_select: '12936||63796||27133||77791||75350||8550||55886',
+  branches_select: '',
 }
 
 async function fetchDisbursments(payload) {
@@ -175,6 +174,18 @@ function initDb() {
     }
   }
   return db
+}
+
+function getActiveBranches(db) {
+  const branchRows = db.prepare(`SELECT code, name FROM Logbook_Branches WHERE active = 1`).all()
+  const list = branchRows.map((r) => ({
+    code: String(r.code).trim(),
+    name: (r.name || String(r.code)).trim(),
+  })).filter(b => b.code)
+  if (!list.length) {
+    throw new Error('No active branches found in Logbook_Branches (active=1). Please populate/activate branches.')
+  }
+  return list
 }
 
 function migrateDropRawIfPresent(db) {
@@ -384,14 +395,7 @@ async function fetchAllBorrowers(db) {
       borrower_email=excluded.borrower_email,
       national_id=excluded.national_id
   `)
-  // Load branch codes from DB if present; fallback to constant list
-  const branchRows = db.prepare(`SELECT code, name FROM Logbook_Branches WHERE active = 1`).all()
-  const branchList = branchRows.length
-    ? branchRows.map(r => ({
-        code: String(r.code).trim(),
-        name: (r.name || String(r.code)).trim(),
-      }))
-    : COLLECTION_BRANCH_CODES.map(code => ({ code, name: code }))
+  const branchList = getActiveBranches(db)
 
   console.info(
     `[Borrowers] Active branches to fetch: ${branchList
@@ -505,9 +509,7 @@ async function fetchAllCollectionsWithDb(db) {
   }
   console.info(`[Collections] Fetching records from ${startDate} to ${today}`)
 
-  // Load branch codes from DB if present; fallback to constant list
-  const branchRows = db.prepare(`SELECT code FROM Logbook_Branches WHERE active = 1`).all()
-  const branchList = branchRows.length ? branchRows.map(r => String(r.code)) : COLLECTION_BRANCH_CODES
+  const branchList = getActiveBranches(db).map(b => b.code)
   for (const branchCode of branchList) {
     console.info(`[Collections] Fetching repayments for branch ${branchCode} (from ${startDate} to ${today})`)
     let branchInserted = 0
@@ -785,6 +787,10 @@ function insertZidisha(db, row) {
   try {
     const db = initDb()
     migrateDropRawIfPresent(db)
+
+    // Load active branches once and apply to disbursement payload
+    const activeBranches = getActiveBranches(db)
+    basePayload.branches_select = activeBranches.map(b => b.code).join('||')
 
     // === Disbursements ingestion ===
     if (!SKIP_DISBURSEMENTS) {
