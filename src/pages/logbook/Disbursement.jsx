@@ -936,9 +936,9 @@ function LogbookDisbursement() {
                 }}
               />
               <Legend />
-              <Bar dataKey="target" name="MTD Target" fill="#f59e0b" />
-              <Bar dataKey="mtd" name="MTD" fill="#10b981" />
-              <Bar dataKey="amount" name="Actual Disbursement" fill="#3b82f6">
+              <Bar dataKey="target" name="EoM Target" fill="#f59e0b" />
+              <Bar dataKey="mtd" name="MTD Target" fill="#10b981" />
+              <Bar dataKey="amount" name="Actual" fill="#3b82f6">
                 <LabelList
                   dataKey="actualPct"
                   position="top"
