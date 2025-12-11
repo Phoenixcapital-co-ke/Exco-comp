@@ -364,67 +364,67 @@ function ZidishaDisbursement() {
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="flex flex-col lg:flex-row lg:gap-6">
-        {/* Daily Disbursements for Selected Month with Branch Comparison */}
-        {(() => {
-          const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
-          const overallByDay = Array(daysIn + 1).fill(0)
-          const branchByDay = Array(daysIn + 1).fill(0)
-          const branchFilter = selectedBranch
-          for (const r of monthRows) {
-            const ds = r['Disbursed On Date'] || r.disbursed_on_date
-            if (!ds) continue
-            const d = new Date(ds)
-            if (isNaN(d.getTime())) continue
-            const day = d.getDate()
-            const amt = Number(r['Principal Amount']) || 0
-            if (day >= 1 && day <= daysIn) {
-              overallByDay[day] += amt
-              if (branchFilter !== 'All') {
+      {/* Daily Disbursements for Selected Month with Branch Comparison */}
+      {(() => {
+        const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
+        const overallByDay = Array(daysIn + 1).fill(0)
+        const branchByDay = Array(daysIn + 1).fill(0)
+        const branchFilter = selectedBranch
+        for (const r of monthRows) {
+          const ds = r['Disbursed On Date'] || r.disbursed_on_date
+          if (!ds) continue
+          const d = new Date(ds)
+          if (isNaN(d.getTime())) continue
+          const day = d.getDate()
+          const amt = Number(r['Principal Amount']) || 0
+          if (day >= 1 && day <= daysIn) {
+            overallByDay[day] += amt
+            if (branchFilter !== 'All') {
                 const bname = cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim())
-                if (bname === branchFilter) branchByDay[day] += amt
-              }
+              if (bname === branchFilter) branchByDay[day] += amt
             }
           }
-          const dailySeries = []
-          for (let i = 1; i <= daysIn; i++) dailySeries.push({ day: String(i), overall: overallByDay[i], branch: branchByDay[i] })
-          if (!dailySeries.length) return null
-          return (
+        }
+        const dailySeries = []
+        for (let i = 1; i <= daysIn; i++) dailySeries.push({ day: String(i), overall: overallByDay[i], branch: branchByDay[i] })
+        if (!dailySeries.length) return null
+        return (
             <div className="w-full lg:w-2/3">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
-                <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
-                  {branchOptions.map(b => (
-                    <option key={b} value={b}>{b}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="w-full h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={dailySeries}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="day" />
-                    <YAxis />
-                    <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
-                    <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
-                    {selectedBranch !== 'All' && (
-                      <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
-                    )}
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
+              <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
+                {branchOptions.map(b => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
             </div>
-          )
-        })()}
+            <div className="w-full h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailySeries}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis />
+                  <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
+                  <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
+                  {selectedBranch !== 'All' && (
+                    <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
+                  )}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )
+      })()}
 
         {/* Daily Branch Breakdown (Selected Day) */}
-        {(() => {
+      {(() => {
           const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
           const day = Math.min(selectedDay, daysIn)
-          const agg = new Map()
-          for (const r of monthRows) {
-            const ds = r['Disbursed On Date'] || r.disbursed_on_date
+        const agg = new Map()
+        for (const r of monthRows) {
+          const ds = r['Disbursed On Date'] || r.disbursed_on_date
             if (!ds) continue
-            const d = new Date(ds)
+          const d = new Date(ds)
             if (isNaN(d.getTime())) continue
             if (d.getFullYear() !== selectedYear || (d.getMonth() + 1) !== selectedMonth || d.getDate() !== day) continue
             const b = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
@@ -434,9 +434,9 @@ function ZidishaDisbursement() {
           }
           const rowsTbl = Array.from(agg.entries())
             .map(([branch, amount]) => ({ branch, amount }))
-            .sort((a, b) => b.amount - a.amount)
+          .sort((a, b) => b.amount - a.amount)
 
-          return (
+        return (
             <div className="w-full lg:w-1/3 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">Daily Branch Breakdown</h3>
@@ -453,7 +453,7 @@ function ZidishaDisbursement() {
                   </select>
                 </div>
               </div>
-              <div className="overflow-x-auto">
+          <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50">
                     <tr>
@@ -476,8 +476,8 @@ function ZidishaDisbursement() {
                   </tbody>
                 </table>
               </div>
-            </div>
-          )
+                  </div>
+                )
         })()}
         </div>
       </div>
@@ -628,7 +628,7 @@ function ZidishaDisbursement() {
                 const targetAmount = targetInfo?.disbursementTarget || 0
                 const percentage = targetAmount > 0 ? (row.totalAmount / targetAmount) * 100 : 0
                 return (
-                  <React.Fragment key={row.branch}>
+                <React.Fragment key={row.branch}>
                   <tr className={`transition-all duration-200 ${expandedBranch === row.branch ? 'bg-indigo-50' : 'hover:bg-gray-50'} ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'}`}>
                     <td className="px-3 py-3 whitespace-normal break-words">
                       <button
@@ -724,7 +724,7 @@ function ZidishaDisbursement() {
                       </td>
                     </tr>
                   )}
-                  </React.Fragment>
+                </React.Fragment>
                 )
               })}
               {!branchSummaryTable.length && (

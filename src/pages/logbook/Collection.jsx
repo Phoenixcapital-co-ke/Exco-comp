@@ -746,7 +746,7 @@ function LogbookCollection() {
 
           {/* Collection By Branch (Selected Month) with Targets */}
           <div className="mt-8">
-            <h4 className="text-md font-semibold mb-3 text-gray-900">Collection By Branch (Selected Month)</h4>
+          <h4 className="text-md font-semibold mb-3 text-gray-900">Collection By Branch (Selected Month)</h4>
             {(() => {
               const proc = data.processor
               if (!proc || !proc.repaymentsData) return null
@@ -848,7 +848,7 @@ function LogbookCollection() {
                   <Bar yAxisId="left" dataKey="target" name="MTD Target" fill="#f59e0b" />
                   <Bar yAxisId="right" dataKey="percent" name="% of Target" fill="#10b981" />
                 </BarChart>
-              </ResponsiveContainer>
+          </ResponsiveContainer>
             </div>
           )}
         </div>

@@ -3,6 +3,7 @@ import { DollarSign, Calendar, TrendingUp, Building2 } from 'lucide-react'
 import { 
   BarChart, 
   Bar, 
+  LabelList,
   LineChart, 
   Line, 
   PieChart, 
@@ -334,6 +335,7 @@ function LogbookDisbursement() {
         count: stats.count,
         target,
         mtd,
+        actualPct: target > 0 ? (stats.amount / target) * 100 : null,
       }
     })
   })()
@@ -919,8 +921,8 @@ function LogbookDisbursement() {
                       {payload.map((entry, index) => {
                         const labelMap = {
                           'amount': 'Actual',
-                          'target': 'Target',
-                          'mtd': 'MTD'
+                          'target': 'EoM Target',
+                          'mtd': 'MTD Target'
                         }
                         const label = labelMap[entry.dataKey] || entry.name || 'Actual'
                         return (
@@ -934,9 +936,17 @@ function LogbookDisbursement() {
                 }}
               />
               <Legend />
-              <Bar dataKey="amount" name="Actual Disbursement" fill="#3b82f6" />
-              <Bar dataKey="target" name="Target" fill="#f59e0b" />
+              <Bar dataKey="target" name="MTD Target" fill="#f59e0b" />
               <Bar dataKey="mtd" name="MTD" fill="#10b981" />
+              <Bar dataKey="amount" name="Actual Disbursement" fill="#3b82f6">
+                <LabelList
+                  dataKey="actualPct"
+                  position="top"
+                  formatter={(v) => (v == null ? '' : `${v.toFixed(1)}%`)}
+                  fill="#111827"
+                  fontSize={11}
+                />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
