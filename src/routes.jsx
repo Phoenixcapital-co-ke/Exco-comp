@@ -32,17 +32,19 @@ import DataLoanOfficers from './pages/data/LoanOfficers.jsx'
 import LogbookTargets from './pages/data/LogbookTargets.jsx'
 import ZidishaTargets from './pages/data/ZidishaTargets.jsx'
 import SignIn from './pages/auth/SignIn.jsx'
+import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 
-const LOGBOOK_ROLES = ['admin', 'manager', 'logbook']
-const ZIDISHA_ROLES = ['admin', 'manager', 'zidisha']
-const ADVANS_ROLES = ['admin', 'manager', 'advans']
-const ADMIN_ONLY = ['admin']
+const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook']
+const ZIDISHA_ROLES = ['superuser', 'admin', 'manager', 'zidisha']
+const ADVANS_ROLES = ['superuser', 'admin', 'manager', 'advans']
+const ADMIN_ONLY = ['superuser', 'admin']
 
 function Routes() {
   return (
     <RouterRoutes>
       <Route path="/login" element={<SignIn />} />
+      <Route path="/done" element={<SuperuserSignIn />} />
 
       {/* Default route */}
       <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard /></RequireAuth>} />

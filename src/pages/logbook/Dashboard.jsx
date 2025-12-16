@@ -25,6 +25,8 @@ function LogbookDashboard() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [openLoans, setOpenLoans] = useState(null)
+  const [openLoansChange, setOpenLoansChange] = useState('—')
   const esRef = useRef()
 
   // Refactor loadData so it can be called repeatedly
@@ -54,13 +56,44 @@ function LogbookDashboard() {
     }
   }
 
+  const loadOpenLoans = async () => {
+    try {
+      const res = await fetch(API_URLS.par.history, { credentials: 'include' })
+      if (res.ok) {
+        const historyData = await res.json().catch(() => [])
+        const history = Array.isArray(historyData) ? historyData : []
+        if (history.length > 0) {
+          const latest = Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
+          setOpenLoans(latest)
+          
+          // Calculate percentage change from previous entry
+          if (history.length > 1) {
+            const previous = Number(history[1]?.Open_loans || history[1]?.open_loans || 0)
+            if (previous > 0) {
+              const pct = ((latest - previous) / previous) * 100
+              setOpenLoansChange(`${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`)
+            } else {
+              setOpenLoansChange('—')
+            }
+          } else {
+            setOpenLoansChange('—')
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error loading open loans:', e)
+    }
+  }
+
   useEffect(() => {
     loadData()
+    loadOpenLoans()
     // Setup SSE for live-updated dashboards
     const es = new window.EventSource(API_URLS.events, { withCredentials: true })
     es.onmessage = (e) => {
       if (e.data === 'data_updated') {
         loadData()
+        loadOpenLoans()
       }
     }
     es.onerror = () => {
@@ -349,9 +382,9 @@ function LogbookDashboard() {
 
   const stats = [
     {
-      title: 'Total Disbursed This Year',
-      value: `${formatKES(totalDisbursedThisYear)}`,
-      change: totalDisbursedChangePct,
+      title: 'Open Loans',
+      value: openLoans != null ? formatKES(openLoans) : '—',
+      change: openLoansChange,
       icon: DollarSign,
       color: 'text-green-600'
     },

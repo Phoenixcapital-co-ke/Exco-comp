@@ -83,5 +83,9 @@ export const API_URLS = {
   pages: {
     list: `${API_BASE}/api/pages`,
   },
+  system: {
+    status: `${API_BASE}/api/system/status`,
+    maintenance: `${API_BASE}/api/system/maintenance`,
+  },
 }
 

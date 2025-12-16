@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const ROLE_DEFAULT_ROUTE = {
+  superuser: '/logbook/dashboard',
   admin: '/logbook/dashboard',
   manager: '/logbook/dashboard',
   logbook: '/logbook/dashboard',
@@ -27,7 +28,8 @@ function RequireAuth({ children, allowedRoles }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-    const normalizedUserRole = String(user.role || '').toLowerCase()
+  const normalizedUserRole = String(user.role || '').toLowerCase()
+  const isSuperuser = normalizedUserRole === 'superuser'
   const isAdmin = normalizedUserRole === 'admin'
   const isCustom = normalizedUserRole === 'custom'
 
@@ -49,7 +51,7 @@ function RequireAuth({ children, allowedRoles }) {
   // Check role-based access for non-custom roles
   if (Array.isArray(allowedRoles) && allowedRoles.length && !isCustom) {
     const normalizedAllowed = allowedRoles.map((role) => role.toLowerCase())
-    const hasAccess = isAdmin || normalizedAllowed.includes(normalizedUserRole)
+    const hasAccess = isSuperuser || isAdmin || normalizedAllowed.includes(normalizedUserRole)
 
     if (!hasAccess) {
       const fallback = ROLE_DEFAULT_ROUTE[normalizedUserRole] || ROLE_DEFAULT_ROUTE.admin

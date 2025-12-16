@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
 import { useLastRefresh } from '../../hooks/useLastRefresh.js'
+import { useAuth } from '../../context/AuthContext.jsx'
 
 function DataOverview() {
   const [logs, setLogs] = useState([
@@ -9,12 +10,16 @@ function DataOverview() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [showSuccess, setShowSuccess] = useState(false)
+  const [maintenance, setMaintenance] = useState(false)
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false)
+  const [maintenanceError, setMaintenanceError] = useState(null)
   const esRef = useRef()
   const {
     formattedLastRefresh,
     error: lastRefreshError,
     refresh: reloadLastRefresh
   } = useLastRefresh()
+  const { user } = useAuth()
 
   const handleRefresh = () => {
     setLogs(['Ready for ingestion...', 'Starting data refresh...'])
@@ -40,6 +45,44 @@ function DataOverview() {
       setLoading(false)
       setError('Connection lost.')
       es.close()
+    }
+  }
+
+  const fetchMaintenance = async () => {
+    try {
+      const res = await fetch(API_URLS.system.status, { credentials: 'include' })
+      if (!res.ok) throw new Error('Failed to fetch status')
+      const data = await res.json()
+      setMaintenance(Boolean(data.maintenance))
+    } catch (e) {
+      setMaintenanceError('Unable to load maintenance status')
+    }
+  }
+
+  useEffect(() => {
+    fetchMaintenance()
+  }, [])
+
+  const handleMaintenanceToggle = async (enabled) => {
+    setMaintenanceLoading(true)
+    setMaintenanceError(null)
+    try {
+      const res = await fetch(API_URLS.system.maintenance, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error || 'Failed to update maintenance mode')
+      }
+      const data = await res.json()
+      setMaintenance(Boolean(data.maintenance))
+    } catch (e) {
+      setMaintenanceError(e.message)
+    } finally {
+      setMaintenanceLoading(false)
     }
   }
 
@@ -80,7 +123,31 @@ function DataOverview() {
       )}
 
       <div className="max-w-2xl mx-auto mt-12 p-8 bg-white shadow-lg rounded-lg border border-gray-200 relative">
-        <h1 className="text-2xl font-semibold mb-6">Data Management</h1>
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
+          <h1 className="text-2xl font-semibold">Data Management</h1>
+          {user?.role?.toLowerCase() === 'superuser' && (
+            <div className="flex items-center gap-3">
+              <div className="text-sm">
+                <div className="font-semibold text-gray-800">Maintenance mode</div>
+                <div className="text-gray-600">{maintenance ? 'On' : 'Off'}</div>
+              </div>
+              <button
+                onClick={() => handleMaintenanceToggle(!maintenance)}
+                disabled={maintenanceLoading}
+                className={`px-3 py-2 rounded font-semibold text-sm border ${
+                  maintenance
+                    ? 'bg-red-600 text-white border-red-600 hover:bg-red-700'
+                    : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
+                } disabled:opacity-60`}
+              >
+                {maintenanceLoading ? 'Updating...' : maintenance ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          )}
+        </div>
+        {maintenanceError && (
+          <div className="mb-4 text-sm text-red-600">{maintenanceError}</div>
+        )}
         <button onClick={handleRefresh} disabled={loading} className="bg-primary-600 text-white font-semibold px-6 py-2 rounded shadow hover:bg-primary-700 disabled:opacity-70">
           {loading ? 'Refreshing...' : 'Refresh All Data'}
         </button>

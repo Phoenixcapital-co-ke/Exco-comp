@@ -331,8 +331,8 @@ function LogbookDisbursement() {
       const mtd = workingDays > 0 ? (target / workingDays) * elapsed : 0
       return {
         name,
-        amount: stats.amount,
-        count: stats.count,
+      amount: stats.amount,
+      count: stats.count,
         target,
         mtd,
         actualPct: target > 0 ? (stats.amount / target) * 100 : null,

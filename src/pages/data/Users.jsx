@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
 import { Plus, Save, XCircle, Trash2, ToggleLeft, ToggleRight, X, Users, Edit2 } from 'lucide-react'
+import { useAuth } from '../../context/AuthContext.jsx'
 
 const defaultDraft = {
   id: null,
@@ -21,6 +22,7 @@ function UsersPage() {
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [availablePages, setAvailablePages] = useState([])
+  const { user: currentUser } = useAuth()
 
   const loadUsers = async () => {
     try {
@@ -28,7 +30,14 @@ function UsersPage() {
       const res = await fetch(API_URLS.users.list, { credentials: 'include' })
       if (!res.ok) throw new Error(`Failed to load users (${res.status})`)
       const data = await res.json()
-      setUsers(Array.isArray(data) ? data : [])
+      const list = Array.isArray(data) ? data : []
+      const currentRole = String(currentUser?.role || '').toLowerCase()
+      // Admins should not see superuser accounts in the list
+      const filtered =
+        currentRole === 'admin'
+          ? list.filter((u) => String(u.role || '').toLowerCase() !== 'superuser')
+          : list
+      setUsers(filtered)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -282,6 +291,10 @@ function UsersPage() {
                 }}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
               >
+                {/* Only superuser can assign the superuser role */}
+                {String(currentUser?.role || '').toLowerCase() === 'superuser' && (
+                  <option value="superuser">Superuser</option>
+                )}
                 <option value="admin">Admin</option>
                 <option value="manager">Manager</option>
                 <option value="logbook">Logbook</option>

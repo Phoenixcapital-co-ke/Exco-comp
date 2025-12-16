@@ -159,6 +159,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     // For other roles, use existing role-based filtering
   const defaultSections = navigationItems.filter((item) => item.id !== 'data').map((item) => item.id)
   const ROLE_SECTIONS = {
+    superuser: navigationItems.map((item) => item.id),
     admin: navigationItems.map((item) => item.id),
     manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
     logbook: ['logbook'],
@@ -166,8 +167,8 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     advans: ['advans'],
   }
   const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
-    // Always include data section for admin and manager/logbook roles
-    if (roleKey === 'admin') {
+    // Always include data section for admin/superuser and manager/logbook roles
+    if (roleKey === 'admin' || roleKey === 'superuser') {
       allowedSectionIds.push('data')
     } else if (roleKey === 'manager' || roleKey === 'logbook') {
       allowedSectionIds.push('data')

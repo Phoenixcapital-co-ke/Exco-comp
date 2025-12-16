@@ -86,7 +86,42 @@ dbRW.exec(`
   );
 `);
 
-const PUBLIC_API_PATHS = new Set(['/auth/login', '/auth/logout'])
+// Global key/value settings (e.g., maintenance mode)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS System_Settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+const PUBLIC_API_PATHS = new Set(['/auth/login', '/auth/logout', '/system/status'])
+
+// Settings helpers
+const getSettingStmt = dbRW.prepare('SELECT value FROM System_Settings WHERE key = ? LIMIT 1')
+const upsertSettingStmt = dbRW.prepare(
+  `INSERT INTO System_Settings (key, value)
+   VALUES (@key, @value)
+   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+)
+
+const getSetting = (key, defaultValue = null) => {
+  try {
+    const row = getSettingStmt.get(key)
+    if (!row || typeof row.value === 'undefined' || row.value === null) {
+      return defaultValue
+    }
+    return row.value
+  } catch {
+    return defaultValue
+  }
+}
+
+const setSetting = (key, value) => {
+  upsertSettingStmt.run({ key, value: String(value ?? '') })
+}
+
+const isMaintenanceEnabled = () => String(getSetting('maintenance_mode', '0')) === '1'
 
 const signAuthToken = (user) =>
   jwt.sign(
@@ -464,6 +499,22 @@ try {
       })
     console.log('Seeded default admin user (username: admin, password: admin123)')
   }
+  const existingDev = dbRW.prepare('SELECT id FROM Users WHERE username = ? LIMIT 1').get('dev')
+  if (!existingDev) {
+    dbRW
+      .prepare(
+        `INSERT INTO Users (username, full_name, email, role, active, password_hash)
+         VALUES (@username, @full_name, @email, @role, 1, @password_hash)`
+      )
+      .run({
+        username: 'dev',
+        full_name: 'Superuser',
+        email: 'dev@example.com',
+        role: 'superuser',
+        password_hash: hashPassword('dev@123')
+      })
+    console.log('Seeded superuser (username: dev, password: dev@123)')
+  }
 } catch (err) {
   console.error('Unable to ensure default admin user:', err)
 }
@@ -629,7 +680,18 @@ app.use('/api', (req, res, next) => {
   if (PUBLIC_API_PATHS.has(path)) {
     return next()
   }
-  return requireAuth(req, res, next)
+  if (!req.authUser) {
+    return requireAuth(req, res, next)
+  }
+
+  // Global maintenance gate: block non-superusers from all API routes (except public status)
+  const isSuperuser = String(req.authUser.role || '').toLowerCase() === 'superuser'
+  const maintenanceOn = isMaintenanceEnabled()
+  if (maintenanceOn && !isSuperuser && path !== '/system/status') {
+    return res.status(503).json({ error: 'System under maintenance' })
+  }
+
+  return next()
 })
 // SSE endpoint for dashboard clients to receive live update notifications
 app.get('/api/events', (req, res) => {
@@ -824,7 +886,7 @@ const normalizeZidishaBranchRow = (row) => {
 
 app.post('/api/auth/login', (req, res) => {
   try {
-    const { username, password } = req.body || {}
+    const { username, password, superuserOnly } = req.body || {}
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' })
     }
@@ -836,6 +898,18 @@ app.post('/api/auth/login', (req, res) => {
     }
     if (!user.active) {
       return res.status(403).json({ error: 'User is deactivated' })
+    }
+    const isSuperuser = String(user.role || '').toLowerCase() === 'superuser'
+    
+    // If superuserOnly flag is set, only allow superuser login
+    if (superuserOnly && !isSuperuser) {
+      return res.status(403).json({ error: 'Access denied. Superuser credentials required.' })
+    }
+    
+    const maintenanceOn = isMaintenanceEnabled()
+    // During maintenance, only superusers can login (unless it's a superuser-only login attempt)
+    if (maintenanceOn && !isSuperuser) {
+      return res.status(503).json({ error: 'System under maintenance' })
     }
     const passwordHash = hashPassword(password)
     if (passwordHash !== user.password_hash) {
@@ -1991,6 +2065,34 @@ app.get('/api/data/last-refresh', (req, res) => {
   try {
     const row = dbRW.prepare('SELECT last_run_time FROM DataRefresh_Status WHERE id = 1').get()
     res.json({ last_run_time: row?.last_run_time || null })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// System maintenance status (public)
+app.get('/api/system/status', (req, res) => {
+  try {
+    res.json({ maintenance: isMaintenanceEnabled() })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Toggle maintenance (superuser only)
+app.post('/api/system/maintenance', (req, res) => {
+  try {
+    if (!req.authUser) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const isSuperuser = String(req.authUser.role || '').toLowerCase() === 'superuser'
+    if (!isSuperuser) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    const { enabled } = req.body || {}
+    const flag = enabled ? '1' : '0'
+    setSetting('maintenance_mode', flag)
+    res.json({ maintenance: flag === '1' })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
