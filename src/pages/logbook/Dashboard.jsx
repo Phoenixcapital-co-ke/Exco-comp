@@ -382,7 +382,7 @@ function LogbookDashboard() {
 
   const stats = [
     {
-      title: 'Open Loans',
+      title: 'Portfolio',
       value: openLoans != null ? formatKES(openLoans) : '—',
       change: openLoansChange,
       icon: DollarSign,
