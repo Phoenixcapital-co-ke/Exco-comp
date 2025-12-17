@@ -165,6 +165,31 @@ function LogbookCollection() {
     return sum
   })()
 
+  // Selected-month total collection target (EoM target)
+  const totalCollectionTargetSelectedMonth = (() => {
+    if (!Array.isArray(targets) || !targets.length) return 0
+    const y = selectedYear
+    const m = selectedMonth
+    const targetsForMonth = targets.filter(
+      (t) => t.active && Number(t.year) === y && Number(t.month) === m
+    )
+    if (!targetsForMonth.length) return 0
+    return targetsForMonth.reduce(
+      (sum, t) => sum + (Number(t.collectionTarget) || 0),
+      0
+    )
+  })()
+
+  // Percentage of target collected for the selected month
+  const collectedVsTargetPctStr = (() => {
+    const target = totalCollectionTargetSelectedMonth
+    if (target > 0) {
+      const pct = (totalCollectedSelectedMonth / target) * 100
+      return `${pct.toFixed(1)}%`
+    }
+    return '—'
+  })()
+
   // Weekly and daily collection cards
   function getWeekRange(date) {
     const d = new Date(date)
@@ -323,28 +348,6 @@ function LogbookCollection() {
   const principalChangePct = pctStr(selectedMonthPrincipal, prevMonthPrincipal)
   const interestChangePct = pctStr(selectedMonthInterest, prevMonthInterest)
 
-  // MoM change for total collected (selected month vs prevYM)
-  const prevMonthCollected = (() => {
-    const proc = data.processor
-    if (!proc || !proc.repaymentsData) return 0
-    const { py, pm } = prevYM
-    let sum = 0
-    for (const r of proc.repaymentsData) {
-      const s = r.repayment_collected_date || ''
-      const [dd, mm, yyyy] = String(s).split('/')
-      if (!yyyy || !mm || !dd) continue
-      if (Number(yyyy) === py && Number(mm) === pm) sum += Number(r.repayment_amount) || 0
-    }
-    return sum
-  })()
-  const momCollectedChangePct = (() => {
-    const prev = prevMonthCollected
-    if (prev > 0) {
-      const pct = ((totalCollectedSelectedMonth - prev) / prev) * 100
-      return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
-    }
-    return '+0.0%'
-  })()
   const changeColor = (s) => (s.startsWith('-') ? 'text-red-700' : 'text-green-700')
   const repaymentComposition = [
     { name: 'Principal', value: data.totalPrincipal, color: '#3b82f6' },
@@ -572,7 +575,7 @@ function LogbookCollection() {
             <div>
               <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} Collected`}</p>
               <p className="text-2xl font-bold text-gray-900">{formatKES(totalCollectedSelectedMonth)}</p>
-              <p className="text-sm mt-1 text-green-600">{momCollectedChangePct}</p>
+              <p className="text-sm mt-1 text-green-600">{collectedVsTargetPctStr}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
               <CheckCircle size={24} />
