@@ -681,7 +681,7 @@ app.use('/api', (req, res, next) => {
     return next()
   }
   if (!req.authUser) {
-    return requireAuth(req, res, next)
+  return requireAuth(req, res, next)
   }
 
   // Global maintenance gate: block non-superusers from all API routes (except public status)
@@ -1105,15 +1105,18 @@ app.get('/api/pages', (req, res) => {
       { path: '/zidisha/dashboard', label: 'Zidisha - Dashboard', category: 'Zidisha' },
       { path: '/zidisha/disbursement', label: 'Zidisha - Disbursement', category: 'Zidisha' },
       { path: '/zidisha/collection', label: 'Zidisha - Collection', category: 'Zidisha' },
-      { path: '/zidisha/par', label: 'Zidisha - PAR', category: 'Zidisha' },
       { path: '/zidisha/productivity', label: 'Zidisha - Productivity', category: 'Zidisha' },
       { path: '/zidisha/demographics', label: 'Zidisha - Demographics', category: 'Zidisha' },
       // Advans pages
       { path: '/advans/dashboard', label: 'Advans - Dashboard', category: 'Advans' },
       { path: '/advans/disbursement', label: 'Advans - Disbursement', category: 'Advans' },
       { path: '/advans/collection', label: 'Advans - Collection', category: 'Advans' },
-      { path: '/advans/par', label: 'Advans - PAR', category: 'Advans' },
       { path: '/advans/productivity', label: 'Advans - Productivity', category: 'Advans' },
+      // Boda pages
+      { path: '/boda/dashboard', label: 'Boda - Dashboard', category: 'Boda' },
+      { path: '/boda/disbursement', label: 'Boda - Disbursement', category: 'Boda' },
+      { path: '/boda/collection', label: 'Boda - Collection', category: 'Boda' },
+      { path: '/boda/productivity', label: 'Boda - Productivity', category: 'Boda' },
       // Other pages
       { path: '/kajea/clients', label: 'Kajea - Clients', category: 'Other' },
       { path: '/insurance/dashboard', label: 'Insurance - Dashboard', category: 'Other' },
@@ -2079,6 +2082,212 @@ app.get('/api/system/status', (req, res) => {
   }
 })
 
+// Kajea stats endpoint
+app.get('/api/kajea/stats', (req, res) => {
+  try {
+    let whiteLabelClientCount = 0
+    let uniqueOwners = 0
+    let overseaDeviceCount = 0
+    let whitelabelDeviceCount = 0
+    const vehicleTypes = new Set()
+    let clientGrowth = []
+    
+    // Count clients from white_label table (if exists)
+    try {
+      const result = db.prepare('SELECT COUNT(*) as count FROM white_label').get()
+      whiteLabelClientCount = Number(result?.count || 0)
+    } catch (e) {
+      console.warn('[Kajea Stats] white_label table not found or error:', e.message)
+    }
+    
+    // Count unique owner_name from oversea_devices table (if exists)
+    try {
+      const result = db.prepare("SELECT COUNT(DISTINCT owner_name) as count FROM oversea_devices WHERE owner_name IS NOT NULL AND owner_name != ''").get()
+      uniqueOwners = Number(result?.count || 0)
+    } catch (e) {
+      console.warn('[Kajea Stats] oversea_devices table not found or error:', e.message)
+    }
+    
+    // Sum both to get total clients
+    const clientCount = whiteLabelClientCount + uniqueOwners
+    
+    // Count devices from both oversea_devices and Whitelabel_devices (if exist)
+    try {
+      const result = db.prepare('SELECT COUNT(*) as count FROM oversea_devices').get()
+      overseaDeviceCount = Number(result?.count || 0)
+    } catch (e) {
+      console.warn('[Kajea Stats] oversea_devices table not found for device count:', e.message)
+    }
+    
+    try {
+      const result = db.prepare('SELECT COUNT(*) as count FROM Whitelabel_devices').get()
+      whitelabelDeviceCount = Number(result?.count || 0)
+    } catch (e) {
+      console.warn('[Kajea Stats] Whitelabel_devices table not found:', e.message)
+    }
+    
+    const totalDevices = overseaDeviceCount + whitelabelDeviceCount
+    
+    // Get vehicle types from both tables (if exist)
+    try {
+      const overseaTypes = db.prepare("SELECT DISTINCT type FROM oversea_devices WHERE type IS NOT NULL AND type != ''").all()
+      overseaTypes.forEach(row => {
+        if (row.type) vehicleTypes.add(row.type)
+      })
+    } catch (e) {
+      console.warn('[Kajea Stats] Error fetching oversea vehicle types:', e.message)
+    }
+    
+    try {
+      const whitelabelTypes = db.prepare("SELECT DISTINCT make FROM Whitelabel_devices WHERE make IS NOT NULL AND make != ''").all()
+      whitelabelTypes.forEach(row => {
+        if (row.make) vehicleTypes.add(row.make)
+      })
+    } catch (e) {
+      console.warn('[Kajea Stats] Error fetching whitelabel vehicle types:', e.message)
+    }
+    
+    // Build client growth series based on activate_time from oversea_devices
+    try {
+      const rows = db.prepare("SELECT activate_time FROM oversea_devices WHERE activate_time IS NOT NULL AND activate_time != ''").all()
+      const byMonth = new Map()
+      for (const row of rows) {
+        const raw = String(row.activate_time || '').trim()
+        if (!raw) continue
+        let d = new Date(raw)
+        if (isNaN(d.getTime())) {
+          // Try parsing date-only part if there's a time component
+          const dateOnly = raw.split('T')[0]
+          d = new Date(dateOnly)
+        }
+        if (isNaN(d.getTime())) continue
+        const y = d.getFullYear()
+        const m = d.getMonth() + 1
+        const key = `${y}-${String(m).padStart(2, '0')}`
+        byMonth.set(key, (byMonth.get(key) || 0) + 1)
+      }
+      const sorted = Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+      let cumulative = 0
+      clientGrowth = sorted.map(([ym, count]) => {
+        cumulative += count
+        const [yStr, mStr] = ym.split('-')
+        const labelDate = new Date(Number(yStr), Number(mStr) - 1, 1)
+        const label = labelDate.toLocaleString('en-US', { month: 'short', year: '2-digit' })
+        return {
+          key: ym,
+          month: label,
+          count,
+          cumulative,
+        }
+      })
+    } catch (e) {
+      console.warn('[Kajea Stats] Error building client growth series:', e.message)
+      clientGrowth = []
+    }
+    
+    res.json({
+      clients: clientCount,
+      devices: totalDevices,
+      vehicleTypes: Array.from(vehicleTypes).sort(),
+      clientGrowth,
+    })
+  } catch (e) {
+    console.error('[Kajea Stats] Unexpected error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Kajea clients list endpoint
+app.get('/api/kajea/clients', (req, res) => {
+  try {
+    const clients = []
+    const gpsDeviceAgg = new Map()
+    const overseaDeviceAgg = new Map()
+    
+    // Precompute device aggregates for GPSIoT clients
+    try {
+      const rows = db.prepare(`
+        SELECT client_id, COUNT(*) AS devices, COUNT(DISTINCT make) AS vehicleTypes
+        FROM Whitelabel_devices
+        GROUP BY client_id
+      `).all()
+      rows.forEach((row) => {
+        gpsDeviceAgg.set(row.client_id, {
+          devices: Number(row.devices || 0),
+          vehicleTypes: Number(row.vehicleTypes || 0),
+        })
+      })
+    } catch (e) {
+      console.warn('[Kajea Clients] Error aggregating Whitelabel_devices:', e.message)
+    }
+    
+    // Precompute device aggregates for Oversea owners
+    try {
+      const rows = db.prepare(`
+        SELECT owner_name, COUNT(*) AS devices, COUNT(DISTINCT brand) AS vehicleTypes, MAX(activate_time) AS lastActivate
+        FROM oversea_devices
+        WHERE owner_name IS NOT NULL AND owner_name != ''
+        GROUP BY owner_name
+      `).all()
+      rows.forEach((row) => {
+        overseaDeviceAgg.set(row.owner_name, {
+          devices: Number(row.devices || 0),
+          vehicleTypes: Number(row.vehicleTypes || 0),
+          lastActivate: row.lastActivate || null,
+        })
+      })
+    } catch (e) {
+      console.warn('[Kajea Clients] Error aggregating oversea_devices:', e.message)
+    }
+    
+    // Get clients from white_label table
+    try {
+      const whiteLabelClients = db.prepare('SELECT client_id, company_name, reseller_name FROM white_label ORDER BY company_name').all()
+      whiteLabelClients.forEach(row => {
+        const agg = gpsDeviceAgg.get(row.client_id) || { devices: 0, vehicleTypes: 0 }
+        clients.push({
+          id: row.client_id,
+          name: row.company_name || 'Unknown',
+          source: 'GPSIoT',
+          reseller: row.reseller_name || '',
+          devices: agg.devices,
+          vehicleTypes: agg.vehicleTypes,
+          lastActivate: null,
+        })
+      })
+    } catch (e) {
+      console.warn('[Kajea Clients] white_label table not found or error:', e.message)
+    }
+    
+    // Get unique owners from oversea_devices table
+    try {
+      const overseaOwners = db.prepare("SELECT DISTINCT owner_name FROM oversea_devices WHERE owner_name IS NOT NULL AND owner_name != '' ORDER BY owner_name").all()
+      overseaOwners.forEach(row => {
+        const agg = overseaDeviceAgg.get(row.owner_name) || { devices: 0, vehicleTypes: 0, lastActivate: null }
+        clients.push({
+          id: `oversea_${row.owner_name}`,
+          name: row.owner_name,
+          source: 'Oversea',
+          reseller: '',
+          devices: agg.devices,
+          vehicleTypes: agg.vehicleTypes,
+          lastActivate: agg.lastActivate,
+        })
+      })
+    } catch (e) {
+      console.warn('[Kajea Clients] oversea_devices table not found or error:', e.message)
+    }
+    
+    // Sort by name
+    clients.sort((a, b) => a.name.localeCompare(b.name))
+    
+    res.json(clients)
+  } catch (e) {
+    console.error('[Kajea Clients] Unexpected error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Toggle maintenance (superuser only)
 app.post('/api/system/maintenance', (req, res) => {
   try {
@@ -2157,6 +2366,50 @@ cron.schedule('0 0 * * *', () => {
   })
   proc.on('error', (err) => {
     console.error('[CRON] Borrowers ingestion failed to start:', err.message)
+  })
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Every 30 minutes: fetch Oversea devices
+cron.schedule('*/30 * * * *', () => {
+  console.log(`[CRON] Running scheduled Oversea devices fetch at ${new Date().toISOString()}`)
+  const proc = spawn('node', ['scripts/fetch_oversea_devices.mjs'], { cwd: process.cwd(), shell: true })
+  proc.stdout.on('data', (chunk) => {
+    console.log(`[OVERSEA-CRON-OUT] ${chunk.toString().trimEnd()}`)
+  })
+  proc.stderr.on('data', (chunk) => {
+    console.error(`[OVERSEA-CRON-ERR] ${chunk.toString().trimEnd()}`)
+  })
+  proc.on('close', (code) => {
+    console.log(`[CRON] Oversea devices fetch completed with code ${code}`)
+    events.emit('kajea_data_updated')
+  })
+  proc.on('error', (err) => {
+    console.error('[CRON] Oversea devices fetch failed to start:', err.message)
+  })
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Every 30 minutes: fetch GPSIoT clients and assets
+cron.schedule('*/30 * * * *', () => {
+  console.log(`[CRON] Running scheduled GPSIoT clients/assets fetch at ${new Date().toISOString()}`)
+  const proc = spawn('node', ['scripts/fetch_gpsiot_clients.mjs'], { cwd: process.cwd(), shell: true })
+  proc.stdout.on('data', (chunk) => {
+    console.log(`[GPSIOT-CRON-OUT] ${chunk.toString().trimEnd()}`)
+  })
+  proc.stderr.on('data', (chunk) => {
+    console.error(`[GPSIOT-CRON-ERR] ${chunk.toString().trimEnd()}`)
+  })
+  proc.on('close', (code) => {
+    console.log(`[CRON] GPSIoT clients/assets fetch completed with code ${code}`)
+    events.emit('kajea_data_updated')
+  })
+  proc.on('error', (err) => {
+    console.error('[CRON] GPSIoT clients/assets fetch failed to start:', err.message)
   })
 }, {
   scheduled: true,

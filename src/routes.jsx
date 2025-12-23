@@ -22,6 +22,12 @@ import AdvansCollection from './pages/advans/Collection.jsx'
 import AdvansPAR from './pages/advans/PAR.jsx'
 import AdvansProductivity from './pages/advans/Productivity.jsx'
 
+import BodaDashboard from './pages/boda/Dashboard.jsx'
+import BodaDisbursement from './pages/boda/Disbursement.jsx'
+import BodaCollection from './pages/boda/Collection.jsx'
+import BodaPAR from './pages/boda/PAR.jsx'
+import BodaProductivity from './pages/boda/Productivity.jsx'
+
 import KajeaClients from './pages/kajea/Clients.jsx'
 
 import InsuranceDashboard from './pages/insurance/Dashboard.jsx'
@@ -38,6 +44,7 @@ import RequireAuth from './components/RequireAuth.jsx'
 const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook']
 const ZIDISHA_ROLES = ['superuser', 'admin', 'manager', 'zidisha']
 const ADVANS_ROLES = ['superuser', 'admin', 'manager', 'advans']
+const BODA_ROLES = ['superuser', 'admin', 'manager', 'boda']
 const ADMIN_ONLY = ['superuser', 'admin']
 
 function Routes() {
@@ -61,7 +68,6 @@ function Routes() {
       <Route path="/zidisha/dashboard" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDashboard /></RequireAuth>} />
       <Route path="/zidisha/disbursement" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDisbursement /></RequireAuth>} />
       <Route path="/zidisha/collection" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaCollection /></RequireAuth>} />
-      <Route path="/zidisha/par" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaPAR /></RequireAuth>} />
       <Route path="/zidisha/productivity" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaProductivity /></RequireAuth>} />
       <Route path="/zidisha/demographics" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDemographics /></RequireAuth>} />
       
@@ -69,8 +75,13 @@ function Routes() {
       <Route path="/advans/dashboard" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansDashboard /></RequireAuth>} />
       <Route path="/advans/disbursement" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansDisbursement /></RequireAuth>} />
       <Route path="/advans/collection" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansCollection /></RequireAuth>} />
-      <Route path="/advans/par" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansPAR /></RequireAuth>} />
       <Route path="/advans/productivity" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansProductivity /></RequireAuth>} />
+      
+      {/* Boda routes */}
+      <Route path="/boda/dashboard" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaDashboard /></RequireAuth>} />
+      <Route path="/boda/disbursement" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaDisbursement /></RequireAuth>} />
+      <Route path="/boda/collection" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaCollection /></RequireAuth>} />
+      <Route path="/boda/productivity" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaProductivity /></RequireAuth>} />
       
       {/* Kajea routes */}
       <Route path="/kajea/clients" element={<RequireAuth><KajeaClients /></RequireAuth>} />

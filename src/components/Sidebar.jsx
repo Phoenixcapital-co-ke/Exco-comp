@@ -60,7 +60,6 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
         { path: '/zidisha/dashboard', label: 'Dashboard', icon: BarChart3 },
         { path: '/zidisha/disbursement', label: 'Disbursement', icon: DollarSign },
         { path: '/zidisha/collection', label: 'Collection', icon: TrendingUp },
-        { path: '/zidisha/par', label: 'PAR', icon: AlertTriangle },
         { path: '/zidisha/productivity', label: 'Productivity', icon: Activity },
         { path: '/zidisha/demographics', label: 'Demographics', icon: Users }
       ]
@@ -73,8 +72,18 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
         { path: '/advans/dashboard', label: 'Dashboard', icon: BarChart3 },
         { path: '/advans/disbursement', label: 'Disbursement', icon: DollarSign },
         { path: '/advans/collection', label: 'Collection', icon: TrendingUp },
-        { path: '/advans/par', label: 'PAR', icon: AlertTriangle },
         { path: '/advans/productivity', label: 'Productivity', icon: Activity }
+      ]
+    },
+    {
+      id: 'boda',
+      label: 'Boda',
+      icon: Building2,
+      items: [
+        { path: '/boda/dashboard', label: 'Dashboard', icon: BarChart3 },
+        { path: '/boda/disbursement', label: 'Disbursement', icon: DollarSign },
+        { path: '/boda/collection', label: 'Collection', icon: TrendingUp },
+        { path: '/boda/productivity', label: 'Productivity', icon: Activity }
       ]
     },
     {
@@ -165,6 +174,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     logbook: ['logbook'],
     zidisha: ['zidisha'],
     advans: ['advans'],
+    boda: ['boda'],
   }
   const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
     // Always include data section for admin/superuser and manager/logbook roles

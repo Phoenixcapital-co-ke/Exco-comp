@@ -9,6 +9,7 @@ const ROLE_DEFAULT_ROUTE = {
   logbook: '/logbook/dashboard',
   zidisha: '/zidisha/dashboard',
   advans: '/advans/dashboard',
+  boda: '/boda/dashboard',
   custom: '/login', // Custom users will be redirected to their first allowed page
 }
 

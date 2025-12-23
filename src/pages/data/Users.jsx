@@ -300,6 +300,7 @@ function UsersPage() {
                 <option value="logbook">Logbook</option>
                 <option value="zidisha">Zidisha</option>
                 <option value="advans">Advans</option>
+                <option value="boda">Boda</option>
                 <option value="custom">Custom</option>
               </select>
             </div>
