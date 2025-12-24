@@ -76,7 +76,7 @@ function BodaCollection() {
       const change = ((totalCollectedMonth - prevMonthCollected) / prevMonthCollected) * 100
       return { value: change, display: `${change >= 0 ? '+' : ''}${change.toFixed(1)}%` }
     }
-    return { value: 0, display: 'N/A' }
+    return { value: 0, display: '0.0%' }
   }, [totalCollectedMonth, prevMonthCollected])
 
   // Average collection per loan
@@ -464,7 +464,7 @@ function BodaCollection() {
               <p className="text-sm font-medium text-gray-600 mb-1">Outstanding</p>
               <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
               <p className="text-xs text-gray-500 mt-2">
-                {totalExpectedMonth > 0 ? `${((totalOutstandingMonth / totalExpectedMonth) * 100).toFixed(1)}% of expected` : 'N/A'}
+                {totalExpectedMonth > 0 ? `${((totalOutstandingMonth / totalExpectedMonth) * 100).toFixed(1)}% of expected` : '0.0% of expected'}
               </p>
             </div>
             <div className="p-4 rounded-xl bg-red-500 text-white">
