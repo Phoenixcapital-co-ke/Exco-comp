@@ -200,14 +200,14 @@ function KajeaClients() {
                 <option key={year} value={year}>{year}</option>
               ))}
             </select>
-          </div>
+            </div>
           {loading ? (
             <div className="h-64 flex items-center justify-center">
               <div className="flex flex-col items-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mb-3"></div>
                 <p className="text-sm text-gray-500">Loading client growth...</p>
-              </div>
             </div>
+          </div>
           ) : !stats.clientGrowth || stats.clientGrowth.length === 0 ? (
             <div className="h-64 flex items-center justify-center">
               <p className="text-sm text-gray-500">No client growth data available.</p>
@@ -215,7 +215,7 @@ function KajeaClients() {
           ) : filteredClientGrowth.length === 0 ? (
             <div className="h-64 flex items-center justify-center">
               <p className="text-sm text-gray-500">No client growth data available for {selectedYear}.</p>
-            </div>
+        </div>
           ) : (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
@@ -255,7 +255,7 @@ function KajeaClients() {
                   />
                 </AreaChart>
               </ResponsiveContainer>
-            </div>
+          </div>
           )}
         </div>
       </div>
@@ -282,7 +282,7 @@ function KajeaClients() {
             <p className="text-sm text-gray-600">
               Showing {filteredClients.length} of {clients.length} clients
             </p>
-          </div>
+        </div>
         )}
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
@@ -308,17 +308,17 @@ function KajeaClients() {
                 </tr>
               ) : filteredClients.length > 0 ? (
                 filteredClients.map((client) => (
-                  <tr key={client.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{client.name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                <tr key={client.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{client.name}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">
                       <span
                         className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                           client.source === 'GPSIoT' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
                         }`}
                       >
                         {client.source}
-                      </span>
-                    </td>
+                    </span>
+                  </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{client.reseller || '—'}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {client.devices != null ? client.devices.toLocaleString() : '0'}

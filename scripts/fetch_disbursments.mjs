@@ -639,6 +639,7 @@ const ZIDISHA_COLUMNS = [
   'Matured On Date',
   'Penalties Overdue Derived',
   'Principal Amount',
+  'Principal Outstanding Derived',
   'Product Name',
   'Total Expected Repayment Derived',
   'Total Outstanding Derived',
@@ -660,6 +661,7 @@ function initZidishaTable(db) {
       "Matured On Date" TEXT,
       "Penalties Overdue Derived" TEXT,
       "Principal Amount" REAL,
+      "Principal Outstanding Derived" REAL,
       "Product Name" TEXT,
       "Total Expected Repayment Derived" REAL,
       "Total Outstanding Derived" REAL,
@@ -677,6 +679,9 @@ function initZidishaTable(db) {
   }
   if (!cols.includes('Gender')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Gender" TEXT;`)
+  }
+  if (!cols.includes('Principal Outstanding Derived')) {
+    db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Outstanding Derived" REAL;`)
   }
   if (!cols.includes('Business Profile - Business Category')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Business Profile - Business Category" TEXT;`)
@@ -774,7 +779,7 @@ function insertZidisha(db, row) {
   for(const c of cols) {
     let v = row[c]
     if (v == null) v = ''
-    if (["Principal Amount","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
+    if (["Principal Amount","Principal Outstanding Derived","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
       cleanRow[keyFor(c)] = Number((v+'').replace(/,/g,'')) || 0
     } else {
       cleanRow[keyFor(c)] = v

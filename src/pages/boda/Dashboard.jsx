@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react'
-import { BarChart3, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
+import { BarChart3, DollarSign, TrendingUp, AlertTriangle, Wallet } from 'lucide-react'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
@@ -13,7 +13,12 @@ function BodaDashboard() {
     const load = async () => {
       try {
         const data = await fetchAllZidishaRows()
-        const boda = data.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'nairobi boda')
+        const boda = data.filter((r) => {
+          const product = (r['Product Name'] || r.product_name || '').trim().toLowerCase()
+          const clientId = (r['Client Id'] || r.client_id || '').trim()
+          if (clientId === '3926') return false
+          return product === 'zidisha boda'
+        })
         setRows(boda)
         setLoading(false)
       } catch (e) {
@@ -25,6 +30,9 @@ function BodaDashboard() {
   }, [])
 
   const totalLoaned = rows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
+
+  // Calculate portfolio size (sum of all Principal Outstanding Derived)
+  const portfolioSize = rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
 
   // Calculate current year collection rate for Nairobi Boda
   const currentYearCollectionRate = useMemo(() => {
@@ -60,6 +68,7 @@ function BodaDashboard() {
   const stats = [
     { title: 'Total loaned', value: formatKES(totalLoaned), change: '', icon: DollarSign, color: 'text-green-600' },
     { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
+    { title: 'Portfolio size', value: formatKES(portfolioSize), change: '', icon: Wallet, color: 'text-indigo-600' },
     { title: 'Current Year Collection Rate', value: currentYearCollectionRate, change: '', icon: TrendingUp, color: 'text-purple-600' },
     { title: 'PAR', value: '—', change: '', icon: AlertTriangle, color: 'text-orange-600' }
   ]
@@ -79,7 +88,7 @@ function BodaDashboard() {
       )}
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {stats.map((stat, index) => (
           <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between">
@@ -125,13 +134,13 @@ function BodaDashboard() {
           collected: collMap.get(`${y}-${m}`) || 0,
         }))
 
-        // Product Name distribution (counts)
-        const productCountsMap = new Map()
+        // Branch Name distribution (counts)
+        const branchCountsMap = new Map()
         for (const r of rows) {
-          const p = (r['Product Name'] || r.product_name || 'Unknown').trim()
-          productCountsMap.set(p, (productCountsMap.get(p) || 0) + 1)
+          const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
+          branchCountsMap.set(b, (branchCountsMap.get(b) || 0) + 1)
         }
-        const productCounts = Array.from(productCountsMap.entries()).map(([name, count]) => ({ name, count }))
+        const branchCounts = Array.from(branchCountsMap.entries()).map(([name, count]) => ({ name, count }))
           .sort((a, b) => b.count - a.count)
         const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
 
@@ -159,12 +168,12 @@ function BodaDashboard() {
             </div>
             
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Loan Distribution by Product</h3>
-              {productCounts.length > 0 ? (
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Loan Distribution by Branch</h3>
+              {branchCounts.length > 0 ? (
                 <ResponsiveContainer width="100%" height={320}>
                   <PieChart>
                     <Pie
-                      data={productCounts}
+                      data={branchCounts}
                       cx="50%"
                       cy="96%"
                       startAngle={180}
@@ -175,7 +184,7 @@ function BodaDashboard() {
                       dataKey="count"
                       label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                     >
-                      {productCounts.map((entry, index) => (
+                      {branchCounts.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>

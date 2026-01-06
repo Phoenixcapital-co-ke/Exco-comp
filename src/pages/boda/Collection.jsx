@@ -16,7 +16,12 @@ function BodaCollection() {
     const load = async () => {
       try {
         const data = await fetchAllZidishaRows()
-        const boda = data.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'nairobi boda')
+        const boda = data.filter((r) => {
+          const product = (r['Product Name'] || r.product_name || '').trim().toLowerCase()
+          const clientId = (r['Client Id'] || r.client_id || '').trim()
+          if (clientId === '3926') return false
+          return product === 'zidisha boda'
+        })
         setRows(boda)
         setLoading(false)
       } catch (e) {
@@ -27,37 +32,140 @@ function BodaCollection() {
     load()
   }, [])
 
-  const filtered = useMemo(() => {
-    const inMonth = (iso) => {
-      if (!iso) return false
-      const d = new Date(iso)
-      if (isNaN(d.getTime())) return false
-      return d.getFullYear() === selectedYear && (d.getMonth() + 1) === selectedMonth
+  // Map of first-loan timestamp per (clientId, product) across all Boda rows
+  const firstLoanMap = useMemo(() => {
+    const map = new Map()
+    for (const r of rows) {
+      const clientId = (r['Client Id'] || r.client_id || '').trim()
+      const product = (r['Product Name'] || r.product_name || '').trim()
+      if (!clientId || !product) continue
+      const ds = r['Disbursed On Date'] || r.disbursed_on_date
+      if (!ds) continue
+      const d = new Date(ds)
+      if (isNaN(d.getTime())) continue
+      const key = `${clientId}||${product}`
+      const ts = d.getTime()
+      if (!map.has(key) || ts < map.get(key)) {
+        map.set(key, ts)
+      }
     }
-    return rows.filter(r => inMonth(r['Expected Matured On Date'] || r.expected_matured_on_date))
+    return map
+  }, [rows])
+
+  // Helper function to check if loan period overlaps with selected month
+  const loanOverlapsMonth = (disbursed, matured, year, month) => {
+    if (!disbursed || !matured) return false
+    const disbursedDate = new Date(disbursed)
+    const maturedDate = new Date(matured)
+    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return false
+    
+    const monthStart = new Date(year, month - 1, 1)
+    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999)
+    
+    // Check if loan period overlaps with month
+    return disbursedDate <= monthEnd && maturedDate >= monthStart
+  }
+
+  // Helper function to calculate days of loan within selected month
+  const daysInMonth = (disbursed, matured, year, month) => {
+    if (!disbursed || !matured) return 0
+    const disbursedDate = new Date(disbursed)
+    const maturedDate = new Date(matured)
+    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return 0
+    
+    const monthStart = new Date(year, month - 1, 1)
+    monthStart.setHours(0, 0, 0, 0)
+    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999)
+    
+    const loanStart = disbursedDate > monthStart ? disbursedDate : monthStart
+    const loanEnd = maturedDate < monthEnd ? maturedDate : monthEnd
+    
+    if (loanStart > loanEnd) return 0
+    
+    const days = Math.ceil((loanEnd.getTime() - loanStart.getTime()) / (1000 * 60 * 60 * 24)) + 1
+    return Math.max(0, days)
+  }
+
+  // Helper function to calculate daily target for a loan
+  const calculateDailyTarget = (row) => {
+    const expected = Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0) || 0
+    const principal = Number(row['Principal Amount'] || row.principal_amount || 0) || 0
+    const clientId = (row['Client Id'] || row.client_id || '').trim()
+    const product = (row['Product Name'] || row.product_name || '').trim()
+    const disbursed = row['Disbursed On Date'] || row.disbursed_on_date
+    const matured = row['Expected Matured On Date'] || row.expected_matured_on_date
+    
+    if (!expected || !principal || !disbursed || !matured) return 0
+    
+    // Check if this is the first loan for this client+product
+    let isFirstLoan = false
+    if (clientId && product && disbursed) {
+      const d = new Date(disbursed)
+      if (!isNaN(d.getTime())) {
+        const key = `${clientId}||${product}`
+        const firstTs = firstLoanMap.get(key)
+        if (firstTs != null && d.getTime() === firstTs) {
+          isFirstLoan = true
+        }
+      }
+    }
+    
+    // Calculate Amount on Start
+    let deduction = principal * 0.1
+    if (isFirstLoan) {
+      deduction += 1000
+    }
+    const amountOnStart = expected - deduction
+    
+    // Calculate days between Disbursed On Date and Expected Matured On Date
+    const disbursedDate = new Date(disbursed)
+    const maturedDate = new Date(matured)
+    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return 0
+    
+    const daysDiff = Math.ceil((maturedDate.getTime() - disbursedDate.getTime()) / (1000 * 60 * 60 * 24))
+    if (daysDiff <= 0) return 0
+    
+    // Calculate daily target
+    return amountOnStart / daysDiff
+  }
+
+  const filtered = useMemo(() => {
+    return rows.filter(r => {
+      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
+      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
+      return loanOverlapsMonth(disbursed, matured, selectedYear, selectedMonth)
+    })
   }, [rows, selectedMonth, selectedYear])
 
   // Previous month for comparison
   const prevMonth = useMemo(() => {
     const prev = selectedMonth === 1 ? { m: 12, y: selectedYear - 1 } : { m: selectedMonth - 1, y: selectedYear }
-    const inMonth = (iso) => {
-      if (!iso) return false
-      const d = new Date(iso)
-      if (isNaN(d.getTime())) return false
-      return d.getFullYear() === prev.y && (d.getMonth() + 1) === prev.m
-    }
-    return rows.filter(r => inMonth(r['Expected Matured On Date'] || r.expected_matured_on_date))
+    return rows.filter(r => {
+      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
+      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
+      return loanOverlapsMonth(disbursed, matured, prev.y, prev.m)
+    })
   }, [rows, selectedMonth, selectedYear])
 
   const totalCollectedMonth = useMemo(() => {
     return filtered.reduce((sum, r) => sum + (Number(r['Total Repayment Derived']) || 0), 0)
   }, [filtered])
+  
   const totalExpectedMonth = useMemo(() => {
-    return filtered.reduce((sum, r) => sum + (Number(r['Total Expected Repayment Derived']) || 0), 0)
-  }, [filtered])
+    let total = 0
+    for (const r of filtered) {
+      const dailyTarget = calculateDailyTarget(r)
+      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
+      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
+      const days = daysInMonth(disbursed, matured, selectedYear, selectedMonth)
+      total += dailyTarget * days
+    }
+    return total
+  }, [filtered, selectedYear, selectedMonth])
+  
   const totalOutstandingMonth = useMemo(() => {
-    return filtered.reduce((sum, r) => sum + (Number(r['Total Outstanding Derived']) || 0), 0)
-  }, [filtered])
+    return totalExpectedMonth - totalCollectedMonth
+  }, [totalExpectedMonth, totalCollectedMonth])
   
   const prevMonthCollected = useMemo(() => {
     return prevMonth.reduce((sum, r) => sum + (Number(r['Total Repayment Derived']) || 0), 0)
@@ -316,6 +424,62 @@ function BodaCollection() {
       .slice(0, 10)
   }, [rows])
 
+  // Daily Collection per Branch
+  const dailyCollectionPerBranch = useMemo(() => {
+    const branchMap = new Map()
+    
+    for (const r of rows) {
+      const branchName = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
+      const expected = Number(r['Total Expected Repayment Derived'] || r.total_expected_repayment_derived || 0) || 0
+      const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
+      const clientId = (r['Client Id'] || r.client_id || '').trim()
+      const product = (r['Product Name'] || r.product_name || '').trim()
+      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
+      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
+      
+      if (!expected || !principal || !disbursed || !matured) continue
+      
+      // Check if this is the first loan for this client+product
+      let isFirstLoan = false
+      if (clientId && product && disbursed) {
+        const d = new Date(disbursed)
+        if (!isNaN(d.getTime())) {
+          const key = `${clientId}||${product}`
+          const firstTs = firstLoanMap.get(key)
+          if (firstTs != null && d.getTime() === firstTs) {
+            isFirstLoan = true
+          }
+        }
+      }
+      
+      // Calculate Amount on Start
+      let deduction = principal * 0.1
+      if (isFirstLoan) {
+        deduction += 1000
+      }
+      const amountOnStart = expected - deduction
+      
+      // Calculate days between Disbursed On Date and Expected Matured On Date
+      const disbursedDate = new Date(disbursed)
+      const maturedDate = new Date(matured)
+      if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) continue
+      
+      const daysDiff = Math.ceil((maturedDate.getTime() - disbursedDate.getTime()) / (1000 * 60 * 60 * 24))
+      if (daysDiff <= 0) continue
+      
+      // Calculate daily target
+      const dailyTarget = amountOnStart / daysDiff
+      
+      if (!branchMap.has(branchName)) {
+        branchMap.set(branchName, { branch: branchName, dailyTarget: 0 })
+      }
+      branchMap.get(branchName).dailyTarget += dailyTarget
+    }
+    
+    return Array.from(branchMap.values())
+      .sort((a, b) => b.dailyTarget - a.dailyTarget)
+  }, [rows, firstLoanMap])
+
   // Collection Status Table Data
   const collectionTableData = useMemo(() => {
     return filtered
@@ -325,6 +489,27 @@ function BodaCollection() {
         const expDate = r['Expected Matured On Date'] || r.expected_matured_on_date
         const today = new Date()
         today.setHours(0, 0, 0, 0)
+
+        const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
+        const clientId = (r['Client Id'] || r.client_id || '').trim()
+        const product = (r['Product Name'] || r.product_name || '').trim()
+        const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
+        let isFirstLoan = false
+        if (clientId && product && disbursed) {
+          const d = new Date(disbursed)
+          if (!isNaN(d.getTime())) {
+            const key = `${clientId}||${product}`
+            const firstTs = firstLoanMap.get(key)
+            if (firstTs != null && d.getTime() === firstTs) {
+              isFirstLoan = true
+            }
+          }
+        }
+        let deduction = principal * 0.1
+        if (isFirstLoan) {
+          deduction += 1000
+        }
+        const amountOnStart = expected - deduction
         
         let status = 'Pending'
         let daysPast = 0
@@ -343,6 +528,7 @@ function BodaCollection() {
           client: r['Client Name'] || r.client_name || 'Unknown',
           product: r['Product Name'] || r.product_name || 'Unknown',
           amount: expected,
+          amountOnStart,
           dueDate: expDate || '',
           status,
           collected: repaid,
@@ -357,7 +543,7 @@ function BodaCollection() {
         return b.amount - a.amount
       })
       .slice(0, 50)
-  }, [filtered])
+  }, [filtered, firstLoanMap])
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -563,37 +749,27 @@ function BodaCollection() {
           )}
         </div>
 
-        {/* Collection Status Distribution */}
+        {/* Daily Collection per Branch */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Collection Status Overview</h3>
-          {collectionStatusDistribution.length > 0 ? (
-            <div className="space-y-4">
-              <ResponsiveContainer width="100%" height={200}>
-                <PieChart>
-                  <Pie
-                    data={collectionStatusDistribution}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={90}
-                    dataKey="value"
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  >
-                    {collectionStatusDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value) => [value.toLocaleString(), 'Loans']} />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="grid grid-cols-3 gap-4 pt-4 border-t border-gray-200">
-                {collectionStatusDistribution.map((item, idx) => (
-                  <div key={idx} className="text-center">
-                    <p className="text-2xl font-bold" style={{ color: item.color }}>{item.value.toLocaleString()}</p>
-                    <p className="text-xs text-gray-600 mt-1">{item.name}</p>
-                  </div>
-                ))}
-              </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Daily Collection per Branch</h3>
+          {dailyCollectionPerBranch.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700 uppercase tracking-wider">Branch</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-700 uppercase tracking-wider">Daily Target</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {dailyCollectionPerBranch.map((item) => (
+                    <tr key={item.branch} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-gray-900 font-medium">{item.branch}</td>
+                      <td className="px-4 py-3 text-right text-gray-900 font-semibold">{formatKES(item.dailyTarget)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
@@ -776,6 +952,7 @@ function BodaCollection() {
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Product</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount on Start</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Due Date</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Collected</th>
@@ -788,6 +965,7 @@ function BodaCollection() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{item.product}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{formatKES(item.amount)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{formatKES(item.amountOnStart)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                     {item.dueDate ? new Date(item.dueDate).toLocaleDateString() : '-'}
                   </td>
@@ -808,7 +986,7 @@ function BodaCollection() {
               ))}
               {collectionTableData.length === 0 && (
                 <tr>
-                  <td className="px-6 py-6 text-center text-gray-500" colSpan={7}>No data available for selected period</td>
+                  <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No data available for selected period</td>
                 </tr>
               )}
             </tbody>
