@@ -711,7 +711,7 @@ function AdvansCollection() {
       {/* Top Performing Loan Officers */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Top Performing Loan Officers</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Loan Officers Performance</h3>
           <BarChart3 className="text-gray-400" size={20} />
         </div>
         <div className="overflow-x-auto">

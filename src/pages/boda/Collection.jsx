@@ -1,14 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle, DollarSign, Target, Zap, Calendar, Users, BarChart3 } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
-import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
+import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { API_URLS } from '../../utils/api.js'
 
 function BodaCollection() {
   const now = new Date()
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
   const [rows, setRows] = useState([])
+  const [repaymentMap, setRepaymentMap] = useState({})
+  const [dailyRepayments, setDailyRepayments] = useState({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -32,152 +35,99 @@ function BodaCollection() {
     load()
   }, [])
 
-  // Map of first-loan timestamp per (clientId, product) across all Boda rows
-  const firstLoanMap = useMemo(() => {
-    const map = new Map()
-    for (const r of rows) {
-      const clientId = (r['Client Id'] || r.client_id || '').trim()
-      const product = (r['Product Name'] || r.product_name || '').trim()
-      if (!clientId || !product) continue
-      const ds = r['Disbursed On Date'] || r.disbursed_on_date
-      if (!ds) continue
-      const d = new Date(ds)
-      if (isNaN(d.getTime())) continue
-      const key = `${clientId}||${product}`
-      const ts = d.getTime()
-      if (!map.has(key) || ts < map.get(key)) {
-        map.set(key, ts)
-      }
-    }
-    return map
-  }, [rows])
-
-  // Helper function to check if loan period overlaps with selected month
-  const loanOverlapsMonth = (disbursed, matured, year, month) => {
-    if (!disbursed || !matured) return false
-    const disbursedDate = new Date(disbursed)
-    const maturedDate = new Date(matured)
-    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return false
-    
-    const monthStart = new Date(year, month - 1, 1)
-    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999)
-    
-    // Check if loan period overlaps with month
-    return disbursedDate <= monthEnd && maturedDate >= monthStart
-  }
-
-  // Helper function to calculate days of loan within selected month
-  const daysInMonth = (disbursed, matured, year, month) => {
-    if (!disbursed || !matured) return 0
-    const disbursedDate = new Date(disbursed)
-    const maturedDate = new Date(matured)
-    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return 0
-    
-    const monthStart = new Date(year, month - 1, 1)
-    monthStart.setHours(0, 0, 0, 0)
-    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999)
-    
-    const loanStart = disbursedDate > monthStart ? disbursedDate : monthStart
-    const loanEnd = maturedDate < monthEnd ? maturedDate : monthEnd
-    
-    if (loanStart > loanEnd) return 0
-    
-    const days = Math.ceil((loanEnd.getTime() - loanStart.getTime()) / (1000 * 60 * 60 * 24)) + 1
-    return Math.max(0, days)
-  }
-
-  // Helper function to calculate daily target for a loan
-  const calculateDailyTarget = (row) => {
-    const expected = Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0) || 0
-    const principal = Number(row['Principal Amount'] || row.principal_amount || 0) || 0
-    const clientId = (row['Client Id'] || row.client_id || '').trim()
-    const product = (row['Product Name'] || row.product_name || '').trim()
-    const disbursed = row['Disbursed On Date'] || row.disbursed_on_date
-    const matured = row['Expected Matured On Date'] || row.expected_matured_on_date
-    
-    if (!expected || !principal || !disbursed || !matured) return 0
-    
-    // Check if this is the first loan for this client+product
-    let isFirstLoan = false
-    if (clientId && product && disbursed) {
-      const d = new Date(disbursed)
-      if (!isNaN(d.getTime())) {
-        const key = `${clientId}||${product}`
-        const firstTs = firstLoanMap.get(key)
-        if (firstTs != null && d.getTime() === firstTs) {
-          isFirstLoan = true
+  // Fetch repayment data for the selected month/year
+  useEffect(() => {
+    const loadRepayments = async () => {
+      try {
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+        })
+        const res = await fetch(`${API_URLS.boda.repayments}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          console.warn('Failed to load repayment data:', res.status)
+          setRepaymentMap({})
+          return
         }
+        const data = await res.json()
+        setRepaymentMap(data || {})
+      } catch (e) {
+        console.warn('Error loading repayment data:', e.message)
+        setRepaymentMap({})
       }
     }
-    
-    // Calculate Amount on Start
-    let deduction = principal * 0.1
-    if (isFirstLoan) {
-      deduction += 1000
+    if (selectedMonth && selectedYear) {
+      loadRepayments()
     }
-    const amountOnStart = expected - deduction
-    
-    // Calculate days between Disbursed On Date and Expected Matured On Date
-    const disbursedDate = new Date(disbursed)
-    const maturedDate = new Date(matured)
-    if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) return 0
-    
-    const daysDiff = Math.ceil((maturedDate.getTime() - disbursedDate.getTime()) / (1000 * 60 * 60 * 24))
-    if (daysDiff <= 0) return 0
-    
-    // Calculate daily target
-    return amountOnStart / daysDiff
-  }
+  }, [selectedMonth, selectedYear])
+
+  // Fetch daily repayment data for the selected month/year
+  useEffect(() => {
+    const loadDailyRepayments = async () => {
+      try {
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+        })
+        const res = await fetch(`${API_URLS.boda.repaymentsDaily}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          console.warn('Failed to load daily repayment data:', res.status)
+          setDailyRepayments({})
+          return
+        }
+        const data = await res.json()
+        console.log(`[Boda Collection] Daily repayments for ${selectedMonth}/${selectedYear}:`, data)
+        setDailyRepayments(data || {})
+      } catch (e) {
+        console.warn('Error loading daily repayment data:', e.message)
+        setDailyRepayments({})
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadDailyRepayments()
+    }
+  }, [selectedMonth, selectedYear])
 
   const filtered = useMemo(() => {
-    return rows.filter(r => {
-      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
-      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
-      return loanOverlapsMonth(disbursed, matured, selectedYear, selectedMonth)
-    })
+    const inMonth = (iso) => {
+      if (!iso) return false
+      const d = new Date(iso)
+      if (isNaN(d.getTime())) return false
+      return d.getFullYear() === selectedYear && (d.getMonth() + 1) === selectedMonth
+    }
+    return rows.filter(r => inMonth(r['Expected Matured On Date'] || r.expected_matured_on_date))
   }, [rows, selectedMonth, selectedYear])
 
   // Previous month for comparison
   const prevMonth = useMemo(() => {
     const prev = selectedMonth === 1 ? { m: 12, y: selectedYear - 1 } : { m: selectedMonth - 1, y: selectedYear }
-    return rows.filter(r => {
-      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
-      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
-      return loanOverlapsMonth(disbursed, matured, prev.y, prev.m)
-    })
+    const inMonth = (iso) => {
+      if (!iso) return false
+      const d = new Date(iso)
+      if (isNaN(d.getTime())) return false
+      return d.getFullYear() === prev.y && (d.getMonth() + 1) === prev.m
+    }
+    return rows.filter(r => inMonth(r['Expected Matured On Date'] || r.expected_matured_on_date))
   }, [rows, selectedMonth, selectedYear])
 
+  const MS_PER_DAY = 1000 * 60 * 60 * 24
+
   const totalCollectedMonth = useMemo(() => {
-    return filtered.reduce((sum, r) => sum + (Number(r['Total Repayment Derived']) || 0), 0)
-  }, [filtered])
-  
+    // Sum of all repayment amounts from repaymentMap for the selected month
+    return Object.values(repaymentMap).reduce((sum, amount) => sum + (Number(amount) || 0), 0)
+  }, [repaymentMap])
   const totalExpectedMonth = useMemo(() => {
-    let total = 0
-    for (const r of filtered) {
-      const dailyTarget = calculateDailyTarget(r)
-      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
-      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
-      const days = daysInMonth(disbursed, matured, selectedYear, selectedMonth)
-      total += dailyTarget * days
-    }
-    return total
-  }, [filtered, selectedYear, selectedMonth])
-  
-  const totalOutstandingMonth = useMemo(() => {
-    return totalExpectedMonth - totalCollectedMonth
-  }, [totalExpectedMonth, totalCollectedMonth])
+    return filtered.reduce((sum, r) => sum + (Number(r['Total Expected Repayment Derived']) || 0), 0)
+  }, [filtered])
+  // Outstanding will be calculated after currentMonthTarget is available
   
   const prevMonthCollected = useMemo(() => {
     return prevMonth.reduce((sum, r) => sum + (Number(r['Total Repayment Derived']) || 0), 0)
   }, [prevMonth])
-  
-  const collectionRatePct = useMemo(() => {
-    if (totalExpectedMonth > 0) {
-      const pct = (totalCollectedMonth / totalExpectedMonth) * 100
-      return { value: pct, display: `${pct.toFixed(1)}%` }
-    }
-    return { value: 0, display: '0.0%' }
-  }, [totalCollectedMonth, totalExpectedMonth])
 
   const collectionChange = useMemo(() => {
     if (prevMonthCollected > 0) {
@@ -194,92 +144,135 @@ function BodaCollection() {
     return totalCollectedMonth / loansWithCollection.length
   }, [filtered, totalCollectedMonth])
 
-  // Collection efficiency (collected vs expected ratio)
-  const collectionEfficiency = useMemo(() => {
-    if (totalExpectedMonth > 0) {
-      return (totalCollectedMonth / totalExpectedMonth) * 100
-    }
-    return 0
-  }, [totalCollectedMonth, totalExpectedMonth])
+  // Client Performance Data (with active days in selected month)
+  const clientPerformanceData = useMemo(() => {
+    const monthStart = new Date(selectedYear, selectedMonth - 1, 1)
+    const monthEnd = new Date(selectedYear, selectedMonth, 0) // last day of month
+    const today = new Date()
+    const todayInMonth =
+      today.getFullYear() === selectedYear && today.getMonth() + 1 === selectedMonth
+        ? today
+        : null
 
-  // MTD collection rate: loans maturing in current month up to today
-  const mtdCollectionRatePct = useMemo(() => {
-    const nowD = new Date()
-    const y = nowD.getFullYear()
-    const m = nowD.getMonth() + 1
-    let expSum = 0
-    let repSum = 0
-    for (const r of rows) {
-      const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
-      if (!exp) continue
-      const d = new Date(exp)
-      if (isNaN(d.getTime())) continue
-      if (d.getFullYear() === y && (d.getMonth() + 1) === m && d <= nowD) {
-        expSum += Number(r['Total Expected Repayment Derived']) || 0
-        repSum += Number(r['Total Repayment Derived']) || 0
-      }
-    }
-    if (expSum > 0) {
-      const pct = (repSum / expSum) * 100
-      return `${pct.toFixed(1)}%`
-    }
-    return '0.0%'
-  }, [rows])
+    return rows
+      .map(r => {
+        const expected = Number(r['Total Expected Repayment Derived'] || r.total_expected_repayment_derived || 0)
+        const charges = Number(r['Total Charges Due At Disbursement Derived'] || r.total_charges_due_at_disbursement_derived || 0)
+        const disbursedDate = r['Disbursed On Date'] || r.disbursed_on_date
+        const maturedDate = r['Expected Matured On Date'] || r.expected_matured_on_date
+        
+        let period = 0
+        let dailyInstallment = 0
+        let activeDays = 0
+        let mtdActiveDays = 0
+        
+        if (disbursedDate && maturedDate) {
+          const d1 = new Date(disbursedDate)
+          const d2 = new Date(maturedDate)
+          if (!isNaN(d1.getTime()) && !isNaN(d2.getTime())) {
+            period = Math.max(1, Math.ceil((d2 - d1) / MS_PER_DAY))
+            dailyInstallment = (expected - charges) / period
 
-  // Monthly Collection Trend (Last 12 Months)
-  const monthlyCollectionTrend = useMemo(() => {
-    const months = [null, 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-    const keys = []
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      keys.push({ y: d.getFullYear(), m: d.getMonth() + 1 })
-    }
-    const collMap = new Map(keys.map(({y,m}) => [`${y}-${m}`, 0]))
-    const expMap = new Map(keys.map(({y,m}) => [`${y}-${m}`, 0]))
-    for (const r of rows) {
-      const ds = r['Disbursed On Date'] || r.disbursed_on_date || ''
-      if (!ds) continue
-      const d = new Date(ds)
-      if (isNaN(d.getTime())) continue
-      const key = `${d.getFullYear()}-${d.getMonth() + 1}`
-      const collAmt = Number(r['Total Repayment Derived']) || 0
-      const expAmt = Number(r['Total Expected Repayment Derived']) || 0
-      if (collMap.has(key)) collMap.set(key, collMap.get(key) + collAmt)
-      if (expMap.has(key)) expMap.set(key, expMap.get(key) + expAmt)
-    }
-    return keys.map(({ y, m }) => {
-      const collected = collMap.get(`${y}-${m}`) || 0
-      const expected = expMap.get(`${y}-${m}`) || 0
-      return {
-        month: `${months[m]} ${String(y).slice(-2)}`,
-        collected,
-        expected,
-        rate: expected > 0 ? (collected / expected) * 100 : 0
-      }
-    })
-  }, [rows])
+            // Active days in the selected month:
+            // - Start from Disbursed On Date if within the month, else from first day of month
+            // - End at Expected Matured On Date if it falls in or before the month, else at month end
+            const overlapStart = d1 > monthStart ? d1 : monthStart
+            const overlapEnd = d2 < monthEnd ? d2 : monthEnd
+            if (overlapEnd >= overlapStart) {
+              activeDays = Math.floor((overlapEnd - overlapStart) / MS_PER_DAY) + 1
+            }
 
-  // Daily Expected vs Collected (Current Month)
+            // MTD active days (capped to today if within the selected month)
+            if (todayInMonth) {
+              const mtdEnd = overlapEnd < todayInMonth ? overlapEnd : todayInMonth
+              if (mtdEnd >= overlapStart) {
+                mtdActiveDays = Math.floor((mtdEnd - overlapStart) / MS_PER_DAY) + 1
+              }
+            } else {
+              // If today's month is different, MTD = full active days when today is after month, else 0
+              mtdActiveDays = today > monthEnd ? activeDays : 0
+            }
+          }
+        }
+
+        const eomTarget = dailyInstallment * activeDays
+        const mtdTarget = dailyInstallment * mtdActiveDays
+
+        // Get repayment sum for this client/loan in the selected month
+        const clientId = (r['Client Id'] || r.client_id || '').trim()
+        const loanId = (r['Loan ID'] || r.loan_id || '').trim()
+        const repaymentKey = `${clientId}|${loanId}`
+        const repaidCurrentMonth = repaymentMap[repaymentKey] || 0
+
+        return {
+          client: r['Client Name'] || r.client_name || 'Unknown',
+          clientId,
+          loanId,
+          dailyInstallment,
+          period,
+          activeDays,
+          mtdTarget,
+          eomTarget,
+          totalExpected: expected,
+          repaidCurrentMonth
+        }
+      })
+      .sort((a, b) => b.totalExpected - a.totalExpected)
+  }, [rows, selectedMonth, selectedYear, repaymentMap, MS_PER_DAY])
+
+  // Daily Expected vs Collected (Current Month) - based on active days and daily installments
   const dailyExpectedVsCollected = useMemo(() => {
     const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
+    const monthStart = new Date(selectedYear, selectedMonth - 1, 1)
+    const monthEnd = new Date(selectedYear, selectedMonth, 0)
     const expByDay = Array(daysIn + 1).fill(0)
-    const repByDay = Array(daysIn + 1).fill(0)
-    for (const r of rows) {
-      const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
-      if (!exp) continue
-      const d = new Date(exp)
-      if (isNaN(d.getTime())) continue
-      if (d.getFullYear() !== selectedYear || (d.getMonth() + 1) !== selectedMonth) continue
-      const day = d.getDate()
-      if (day >= 1 && day <= daysIn) {
-        expByDay[day] += Number(r['Total Expected Repayment Derived']) || 0
-        repByDay[day] += Number(r['Total Repayment Derived']) || 0
+    
+    // Calculate expected amounts based on active days and daily installments
+    for (const client of clientPerformanceData) {
+      if (!client.dailyInstallment || client.dailyInstallment <= 0) continue
+      
+      // Determine which days in the month this client's loan is active
+      const row = rows.find(r => {
+        const clientId = (r['Client Id'] || r.client_id || '').trim()
+        const loanId = (r['Loan ID'] || r.loan_id || '').trim()
+        return clientId === client.clientId && loanId === client.loanId
+      })
+      
+      if (!row) continue
+      
+      const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
+      const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
+      
+      if (!disbursedDate || !maturedDate) continue
+      
+      const d1 = new Date(disbursedDate)
+      const d2 = new Date(maturedDate)
+      if (isNaN(d1.getTime()) || isNaN(d2.getTime())) continue
+      
+      // Calculate overlap with selected month
+      const overlapStart = d1 > monthStart ? d1 : monthStart
+      const overlapEnd = d2 < monthEnd ? d2 : monthEnd
+      
+      if (overlapEnd < overlapStart) continue
+      
+      // For each day in the overlap, add the daily installment
+      const startDay = Math.max(1, overlapStart.getDate())
+      const endDay = Math.min(daysIn, overlapEnd.getDate())
+      
+      for (let day = startDay; day <= endDay; day++) {
+        expByDay[day] += client.dailyInstallment
       }
     }
+    
+    // Get collected amounts from daily repayments API
     const arr = []
+    let totalExpected = 0
+    let totalCollected = 0
     for (let i = 1; i <= daysIn; i++) {
       const expected = expByDay[i]
-      const collected = repByDay[i]
+      const collected = dailyRepayments[i] || 0
+      totalExpected += expected
+      totalCollected += collected
       arr.push({ 
         day: String(i), 
         expected, 
@@ -287,117 +280,81 @@ function BodaCollection() {
         rate: expected > 0 ? (collected / expected) * 100 : 0
       })
     }
+    console.log(`[Boda Collection] Daily chart data - Total Expected: ${totalExpected.toFixed(2)}, Total Collected: ${totalCollected.toFixed(2)}`)
     return arr
-  }, [rows, selectedMonth, selectedYear])
+  }, [clientPerformanceData, rows, selectedMonth, selectedYear, dailyRepayments])
 
-  // Collection Rate by Product
-  const collectionRateByProduct = useMemo(() => {
-    const productMap = new Map()
+  // Helper function to clean branch name
+  const cleanBranchName = (name = '') => {
+    const trimmed = String(name || '').trim()
+    const noSuffix = trimmed.replace(/\s*branch\s*$/i, '').trim()
+    return noSuffix || trimmed || 'Unknown'
+  }
+
+  // Branch Breakdown Table
+  const branchBreakdown = useMemo(() => {
+    const branchMap = new Map()
+    
     for (const r of rows) {
-      const product = (r['Product Name'] || r.product_name || 'Unknown').trim()
-      if (!productMap.has(product)) {
-        productMap.set(product, { expected: 0, collected: 0, count: 0 })
-      }
-      const entry = productMap.get(product)
-      entry.expected += Number(r['Total Expected Repayment Derived']) || 0
-      entry.collected += Number(r['Total Repayment Derived']) || 0
-      entry.count += 1
-    }
-    return Array.from(productMap.entries())
-      .map(([name, v]) => ({
-        name: name.length > 20 ? name.substring(0, 20) + '...' : name,
-        fullName: name,
-        rate: v.expected > 0 ? (v.collected / v.expected) * 100 : 0,
-        collected: v.collected,
-        expected: v.expected,
-        count: v.count
-      }))
-      .sort((a, b) => b.rate - a.rate)
-      .slice(0, 10)
-  }, [rows])
-
-  // Collection Status Distribution
-  const collectionStatusDistribution = useMemo(() => {
-    let collected = 0
-    let overdue = 0
-    let pending = 0
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-
-    for (const r of rows) {
-      const expected = Number(r['Total Expected Repayment Derived']) || 0
-      const repaid = Number(r['Total Repayment Derived']) || 0
-      const expDate = r['Expected Matured On Date'] || r.expected_matured_on_date
+      const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
       
-      if (repaid >= expected * 0.99) {
-        collected++
-      } else if (expDate) {
-        const d = new Date(expDate)
-        d.setHours(0, 0, 0, 0)
-        if (d < today) {
-          overdue++
-        } else {
-          pending++
+      if (!branchMap.has(branchName)) {
+        branchMap.set(branchName, {
+          branch: branchName,
+          totalLoans: 0,
+          totalExpected: 0,
+          totalChargesAtDisbursement: 0,
+          totalDailyInstallment: 0,
+          avgDailyInstallment: 0,
+          mtdTarget: 0,
+          eomTarget: 0,
+          repaidCurrentMonth: 0
+        })
+      }
+      
+      const entry = branchMap.get(branchName)
+      const expected = Number(r['Total Expected Repayment Derived'] || r.total_expected_repayment_derived || 0)
+      const charges = Number(r['Total Charges Due At Disbursement Derived'] || r.total_charges_due_at_disbursement_derived || 0)
+      const disbursedDate = r['Disbursed On Date'] || r.disbursed_on_date
+      const maturedDate = r['Expected Matured On Date'] || r.expected_matured_on_date
+      
+      entry.totalLoans += 1
+      entry.totalExpected += expected
+      entry.totalChargesAtDisbursement += charges
+      
+      // Calculate daily installment for this loan
+      if (disbursedDate && maturedDate) {
+        const d1 = new Date(disbursedDate)
+        const d2 = new Date(maturedDate)
+        if (!isNaN(d1.getTime()) && !isNaN(d2.getTime())) {
+          const daysDiff = Math.max(1, Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24)))
+          const dailyInstallment = (expected - charges) / daysDiff
+          entry.totalDailyInstallment += dailyInstallment
         }
-      } else {
-        pending++
+      }
+      
+      // Get MTD Target, EoM Target, and Repaid Current Month from clientPerformanceData
+      const clientId = (r['Client Id'] || r.client_id || '').trim()
+      const loanId = (r['Loan ID'] || r.loan_id || '').trim()
+      const clientData = clientPerformanceData.find(c => 
+        c.clientId === clientId && c.loanId === loanId
+      )
+      
+      if (clientData) {
+        entry.mtdTarget += clientData.mtdTarget || 0
+        entry.eomTarget += clientData.eomTarget || 0
+        entry.repaidCurrentMonth += clientData.repaidCurrentMonth || 0
       }
     }
-
-    return [
-      { name: 'Collected', value: collected, color: '#10b981' },
-      { name: 'Overdue', value: overdue, color: '#ef4444' },
-      { name: 'Pending', value: pending, color: '#f59e0b' }
-    ].filter(item => item.value > 0)
-  }, [rows])
-
-  // Overdue Analysis
-  const overdueAnalysis = useMemo(() => {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const buckets = {
-      '0-30': { count: 0, amount: 0 },
-      '31-60': { count: 0, amount: 0 },
-      '61-90': { count: 0, amount: 0 },
-      '90+': { count: 0, amount: 0 }
-    }
-
-    for (const r of rows) {
-      const expected = Number(r['Total Expected Repayment Derived']) || 0
-      const repaid = Number(r['Total Repayment Derived']) || 0
-      const expDate = r['Expected Matured On Date'] || r.expected_matured_on_date
-      
-      if (repaid >= expected * 0.99) continue
-      if (!expDate) continue
-      
-      const d = new Date(expDate)
-      d.setHours(0, 0, 0, 0)
-      if (d >= today) continue
-      
-      const daysPast = Math.floor((today - d) / (1000 * 60 * 60 * 24))
-      const outstanding = expected - repaid
-      
-      if (daysPast <= 30) {
-        buckets['0-30'].count++
-        buckets['0-30'].amount += outstanding
-      } else if (daysPast <= 60) {
-        buckets['31-60'].count++
-        buckets['31-60'].amount += outstanding
-      } else if (daysPast <= 90) {
-        buckets['61-90'].count++
-        buckets['61-90'].amount += outstanding
-      } else {
-        buckets['90+'].count++
-        buckets['90+'].amount += outstanding
-      }
-    }
-
-    return Object.entries(buckets).map(([range, data]) => ({
-      range,
-      count: data.count,
-      amount: data.amount
-    })).filter(item => item.count > 0)
-  }, [rows])
+    
+    // Calculate average daily installment per branch
+    const result = Array.from(branchMap.values()).map(entry => ({
+      ...entry,
+      avgDailyInstallment: entry.totalLoans > 0 ? entry.totalDailyInstallment / entry.totalLoans : 0
+    }))
+    
+    return result.sort((a, b) => b.totalExpected - a.totalExpected)
+  }, [rows, clientPerformanceData])
 
   // Top performing loan officers by collection
   const topOfficers = useMemo(() => {
@@ -424,126 +381,46 @@ function BodaCollection() {
       .slice(0, 10)
   }, [rows])
 
-  // Daily Collection per Branch
-  const dailyCollectionPerBranch = useMemo(() => {
-    const branchMap = new Map()
-    
-    for (const r of rows) {
-      const branchName = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-      const expected = Number(r['Total Expected Repayment Derived'] || r.total_expected_repayment_derived || 0) || 0
-      const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
-      const clientId = (r['Client Id'] || r.client_id || '').trim()
-      const product = (r['Product Name'] || r.product_name || '').trim()
-      const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
-      const matured = r['Expected Matured On Date'] || r.expected_matured_on_date
-      
-      if (!expected || !principal || !disbursed || !matured) continue
-      
-      // Check if this is the first loan for this client+product
-      let isFirstLoan = false
-      if (clientId && product && disbursed) {
-        const d = new Date(disbursed)
-        if (!isNaN(d.getTime())) {
-          const key = `${clientId}||${product}`
-          const firstTs = firstLoanMap.get(key)
-          if (firstTs != null && d.getTime() === firstTs) {
-            isFirstLoan = true
-          }
-        }
-      }
-      
-      // Calculate Amount on Start
-      let deduction = principal * 0.1
-      if (isFirstLoan) {
-        deduction += 1000
-      }
-      const amountOnStart = expected - deduction
-      
-      // Calculate days between Disbursed On Date and Expected Matured On Date
-      const disbursedDate = new Date(disbursed)
-      const maturedDate = new Date(matured)
-      if (isNaN(disbursedDate.getTime()) || isNaN(maturedDate.getTime())) continue
-      
-      const daysDiff = Math.ceil((maturedDate.getTime() - disbursedDate.getTime()) / (1000 * 60 * 60 * 24))
-      if (daysDiff <= 0) continue
-      
-      // Calculate daily target
-      const dailyTarget = amountOnStart / daysDiff
-      
-      if (!branchMap.has(branchName)) {
-        branchMap.set(branchName, { branch: branchName, dailyTarget: 0 })
-      }
-      branchMap.get(branchName).dailyTarget += dailyTarget
+  // Current month target: sum of EoM targets for all clients in the selected month
+  const currentMonthTarget = useMemo(() => {
+    return clientPerformanceData.reduce((sum, r) => sum + (r.eomTarget || 0), 0)
+  }, [clientPerformanceData])
+
+  // MTD Target: sum of MTD targets for all clients in the selected month
+  const mtdTargetTotal = useMemo(() => {
+    return clientPerformanceData.reduce((sum, r) => sum + (r.mtdTarget || 0), 0)
+  }, [clientPerformanceData])
+
+  // MTD Collection Rate: percentage of Total Collected on MTD Target
+  const mtdCollectionRatePct = useMemo(() => {
+    if (mtdTargetTotal > 0) {
+      const pct = (totalCollectedMonth / mtdTargetTotal) * 100
+      return `${pct.toFixed(1)}%`
     }
-    
-    return Array.from(branchMap.values())
-      .sort((a, b) => b.dailyTarget - a.dailyTarget)
-  }, [rows, firstLoanMap])
+    return '0.0%'
+  }, [totalCollectedMonth, mtdTargetTotal])
 
-  // Collection Status Table Data
-  const collectionTableData = useMemo(() => {
-    return filtered
-      .map(r => {
-        const expected = Number(r['Total Expected Repayment Derived']) || 0
-        const repaid = Number(r['Total Repayment Derived']) || 0
-        const expDate = r['Expected Matured On Date'] || r.expected_matured_on_date
-        const today = new Date()
-        today.setHours(0, 0, 0, 0)
+  // Collection Rate: percentage of Current Month Target
+  const collectionRatePct = useMemo(() => {
+    if (currentMonthTarget > 0) {
+      const pct = (totalCollectedMonth / currentMonthTarget) * 100
+      return { value: pct, display: `${pct.toFixed(1)}%` }
+    }
+    return { value: 0, display: '0.0%' }
+  }, [totalCollectedMonth, currentMonthTarget])
 
-        const principal = Number(r['Principal Amount'] || r.principal_amount || 0) || 0
-        const clientId = (r['Client Id'] || r.client_id || '').trim()
-        const product = (r['Product Name'] || r.product_name || '').trim()
-        const disbursed = r['Disbursed On Date'] || r.disbursed_on_date
-        let isFirstLoan = false
-        if (clientId && product && disbursed) {
-          const d = new Date(disbursed)
-          if (!isNaN(d.getTime())) {
-            const key = `${clientId}||${product}`
-            const firstTs = firstLoanMap.get(key)
-            if (firstTs != null && d.getTime() === firstTs) {
-              isFirstLoan = true
-            }
-          }
-        }
-        let deduction = principal * 0.1
-        if (isFirstLoan) {
-          deduction += 1000
-        }
-        const amountOnStart = expected - deduction
-        
-        let status = 'Pending'
-        let daysPast = 0
-        if (repaid >= expected * 0.99) {
-          status = 'Collected'
-        } else if (expDate) {
-          const d = new Date(expDate)
-          d.setHours(0, 0, 0, 0)
-          if (d < today) {
-            status = 'Overdue'
-            daysPast = Math.floor((today - d) / (1000 * 60 * 60 * 24))
-          }
-        }
+  // Collection efficiency: same as Collection Rate (collected vs Current Month Target)
+  const collectionEfficiency = useMemo(() => {
+    if (currentMonthTarget > 0) {
+      return (totalCollectedMonth / currentMonthTarget) * 100
+    }
+    return 0
+  }, [totalCollectedMonth, currentMonthTarget])
 
-        return {
-          client: r['Client Name'] || r.client_name || 'Unknown',
-          product: r['Product Name'] || r.product_name || 'Unknown',
-          amount: expected,
-          amountOnStart,
-          dueDate: expDate || '',
-          status,
-          collected: repaid,
-          outstanding: expected - repaid,
-          daysPast
-        }
-      })
-      .sort((a, b) => {
-        if (a.status === 'Overdue' && b.status !== 'Overdue') return -1
-        if (a.status !== 'Overdue' && b.status === 'Overdue') return 1
-        if (a.status === 'Overdue' && b.status === 'Overdue') return b.daysPast - a.daysPast
-        return b.amount - a.amount
-      })
-      .slice(0, 50)
-  }, [filtered, firstLoanMap])
+  // Outstanding: Current Month Target - Total Collected
+  const totalOutstandingMonth = useMemo(() => {
+    return Math.max(0, currentMonthTarget - totalCollectedMonth)
+  }, [currentMonthTarget, totalCollectedMonth])
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -650,7 +527,7 @@ function BodaCollection() {
               <p className="text-sm font-medium text-gray-600 mb-1">Outstanding</p>
               <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
               <p className="text-xs text-gray-500 mt-2">
-                {totalExpectedMonth > 0 ? `${((totalOutstandingMonth / totalExpectedMonth) * 100).toFixed(1)}% of expected` : '0.0% of expected'}
+                {currentMonthTarget > 0 ? `${((totalOutstandingMonth / currentMonthTarget) * 100).toFixed(1)}% of target` : '0.0% of target'}
               </p>
             </div>
             <div className="p-4 rounded-xl bg-red-500 text-white">
@@ -662,14 +539,14 @@ function BodaCollection() {
         <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl shadow-sm border border-purple-200 p-6 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600 mb-1">Avg per Loan</p>
-              <p className="text-3xl font-bold text-gray-900">{formatKES(avgCollectionPerLoan)}</p>
+              <p className="text-sm font-medium text-gray-600 mb-1">MTD Target</p>
+              <p className="text-3xl font-bold text-gray-900">{formatKES(mtdTargetTotal)}</p>
               <p className="text-xs text-gray-500 mt-2">
-                {filtered.filter(r => (Number(r['Total Repayment Derived']) || 0) > 0).length} active collections
+                Sum of MTD targets for all clients in {new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear}
               </p>
             </div>
             <div className="p-4 rounded-xl bg-purple-500 text-white">
-              <DollarSign size={28} />
+              <Target size={28} />
             </div>
           </div>
         </div>
@@ -694,7 +571,7 @@ function BodaCollection() {
               <p className="text-sm font-medium text-gray-600">
                 {new Date(selectedYear, selectedMonth - 1).toLocaleString('en-US', { month: 'long' })} Total Expected Repayment
               </p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(totalExpectedMonth)}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(currentMonthTarget)}</p>
             </div>
             <div className="p-3 rounded-lg bg-yellow-50 text-yellow-600">
               <Calendar size={24} />
@@ -705,7 +582,7 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Loans</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{filtered.length.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{clientPerformanceData.filter(c => c.activeDays > 0).length.toLocaleString()}</p>
             </div>
             <div className="p-3 rounded-lg bg-gray-50 text-gray-600">
               <Users size={24} />
@@ -715,65 +592,142 @@ function BodaCollection() {
       </div>
 
       {/* Visualizations */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Monthly Collection Trend with Rate */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Collection Performance (Last 12 Months)</h3>
-          {monthlyCollectionTrend.length > 0 ? (
-            <ResponsiveContainer width="100%" height={320}>
-              <ComposedChart data={monthlyCollectionTrend}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="month" stroke="#6b7280" />
-                <YAxis yAxisId="left" tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} stroke="#6b7280" />
-                <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${v.toFixed(0)}%`} stroke="#6b7280" />
-                <Tooltip 
-                  formatter={(value, name) => {
-                    const key = (name || '').toString().toLowerCase()
-                    if (key === 'rate %' || key === 'rate') return [`${value.toFixed(1)}%`, 'Collection Rate']
-                    if (key === 'collected') return [formatKES(value), 'Collected']
-                    if (key === 'expected') return [formatKES(value), 'Expected']
-                    return [formatKES(value), name]
-                  }}
-                  contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                />
-                <Legend />
-                <Area yAxisId="left" type="monotone" dataKey="collected" name="Collected" stroke="#10b981" fill="#10b981" fillOpacity={0.2} />
-                <Area yAxisId="left" type="monotone" dataKey="expected" name="Expected" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.1} />
-                <Line yAxisId="right" type="monotone" dataKey="rate" name="Rate %" stroke="#3b82f6" strokeWidth={2} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
-              <p className="text-gray-500">No data available</p>
-            </div>
-          )}
-        </div>
-
-        {/* Daily Collection per Branch */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Daily Collection per Branch</h3>
-          {dailyCollectionPerBranch.length > 0 ? (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Top Performing Loan Officers */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:col-span-1">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-base font-semibold text-gray-900">Top Performing Loan Officers</h3>
+            <BarChart3 className="text-gray-400" size={18} />
+          </div>
+          {topOfficers.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50">
+              <table className="min-w-full divide-y divide-gray-200 text-xs">
+                <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                   <tr>
-                    <th className="px-4 py-3 text-left font-semibold text-gray-700 uppercase tracking-wider">Branch</th>
-                    <th className="px-4 py-3 text-right font-semibold text-gray-700 uppercase tracking-wider">Daily Target</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-700">Officer</th>
+                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Collected</th>
+                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Rate</th>
+                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Loans</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {dailyCollectionPerBranch.map((item) => (
-                    <tr key={item.branch} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-900 font-medium">{item.branch}</td>
-                      <td className="px-4 py-3 text-right text-gray-900 font-semibold">{formatKES(item.dailyTarget)}</td>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {topOfficers.map((officer, idx) => (
+                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-2 py-2 font-medium text-gray-900 text-xs">{officer.name.length > 15 ? officer.name.substring(0, 15) + '...' : officer.name}</td>
+                      <td className="px-2 py-2 text-right font-semibold text-gray-900 text-xs">{formatKES(officer.collected)}</td>
+                      <td className="px-2 py-2 text-right">
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-semibold ${
+                          officer.rate >= 90 ? 'bg-green-100 text-green-800' :
+                          officer.rate >= 70 ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {officer.rate.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="px-2 py-2 text-right text-gray-600 text-xs">{officer.count.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
+            <div className="h-48 bg-gray-50 rounded-lg flex items-center justify-center">
+              <p className="text-gray-500 text-sm">No data available</p>
+            </div>
+          )}
+        </div>
+
+        {/* Branch Breakdown Table */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 lg:col-span-2">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Branch Breakdown</h3>
+          {branchBreakdown.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Branch
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Charges at Disbursement
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" colSpan={2}>
+                        MTD Target
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" colSpan={2}>
+                        EoM Target
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Repaid Current Month
+                      </th>
+                    </tr>
+                    <tr>
+                      <th></th>
+                      <th></th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Amount
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        %
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Amount
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        %
+                      </th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {branchBreakdown.map((branch, idx) => {
+                      // Calculate collection rate percentages: Repaid Current Month / Target
+                      const mtdPct = branch.mtdTarget > 0 ? (branch.repaidCurrentMonth / branch.mtdTarget) * 100 : 0
+                      const eomPct = branch.eomTarget > 0 ? (branch.repaidCurrentMonth / branch.eomTarget) * 100 : 0
+                      return (
+                        <tr key={branch.branch} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {branch.branch}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
+                            {formatKES(branch.totalChargesAtDisbursement)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
+                            {formatKES(branch.mtdTarget)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right">
+                            <span className={`font-semibold ${
+                              mtdPct >= 70 ? 'text-green-600' :
+                              mtdPct >= 50 ? 'text-yellow-600' :
+                              'text-red-600'
+                            }`}>
+                              {mtdPct.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
+                            {formatKES(branch.eomTarget)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right">
+                            <span className={`font-semibold ${
+                              eomPct >= 70 ? 'text-green-600' :
+                              eomPct >= 50 ? 'text-yellow-600' :
+                              'text-red-600'
+                            }`}>
+                              {eomPct.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-green-600 text-right">
+                            {formatKES(branch.repaidCurrentMonth)}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+          ) : (
             <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
-              <p className="text-gray-500">No data available</p>
+              <p className="text-gray-500">No branch data available</p>
             </div>
           )}
         </div>
@@ -814,179 +768,41 @@ function BodaCollection() {
         )}
       </div>
 
-      {/* Collection Rate by Product and Overdue Analysis */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Collection Rate by Product */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Collection Rate by Product</h3>
-          {collectionRateByProduct.length > 0 ? (
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={collectionRateByProduct} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis type="number" tickFormatter={(v) => `${v.toFixed(0)}%`} stroke="#6b7280" />
-                <YAxis dataKey="name" type="category" width={120} stroke="#6b7280" />
-                <Tooltip 
-                  formatter={(value, name) => {
-                    if (name === 'rate') return [`${value.toFixed(1)}%`, 'Collection Rate']
-                    return [formatKES(value), name === 'collected' ? 'Collected' : 'Expected']
-                  }}
-                  contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                />
-                <Legend />
-                <Bar dataKey="rate" fill="#3b82f6" radius={[0, 6, 6, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
-              <p className="text-gray-500">No data available</p>
-            </div>
-          )}
-        </div>
-
-        {/* Overdue Analysis */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Overdue Analysis by Age</h3>
-          {overdueAnalysis.length > 0 ? (
-            <div className="space-y-4">
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={overdueAnalysis}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="range" stroke="#6b7280" />
-                  <YAxis stroke="#6b7280" />
-                  <Tooltip 
-                    formatter={(value, name) => {
-                      if (name === 'amount') return [formatKES(value), 'Outstanding']
-                      return [value, 'Loans']
-                    }}
-                    contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                  />
-                  <Legend />
-                  <Bar dataKey="count" fill="#ef4444" radius={[6, 6, 0, 0]} name="Loans" />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="space-y-2 pt-4 border-t border-gray-200">
-                {overdueAnalysis.map((item, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">{item.range} days</p>
-                      <p className="text-xs text-gray-600">{item.count} loans</p>
-                    </div>
-                    <p className="text-lg font-bold text-red-600">{formatKES(item.amount)}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
-              <p className="text-gray-500">No overdue loans</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Top Performing Loan Officers */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Top Performing Loan Officers</h3>
-          <BarChart3 className="text-gray-400" size={20} />
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
-              <tr>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">Rank</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">Officer</th>
-                <th className="px-4 py-3 text-right font-semibold text-gray-700">Collected</th>
-                <th className="px-4 py-3 text-right font-semibold text-gray-700">Expected</th>
-                <th className="px-4 py-3 text-right font-semibold text-gray-700">Rate</th>
-                <th className="px-4 py-3 text-right font-semibold text-gray-700">Loans</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-100">
-              {topOfficers.map((officer, idx) => (
-                <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold ${
-                      idx === 0 ? 'bg-yellow-100 text-yellow-800' :
-                      idx === 1 ? 'bg-gray-100 text-gray-800' :
-                      idx === 2 ? 'bg-orange-100 text-orange-800' :
-                      'bg-gray-50 text-gray-600'
-                    }`}>
-                      {idx + 1}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{officer.name}</td>
-                  <td className="px-4 py-3 text-right font-semibold text-gray-900">{formatKES(officer.collected)}</td>
-                  <td className="px-4 py-3 text-right text-gray-600">{formatKES(officer.expected)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${
-                      officer.rate >= 90 ? 'bg-green-100 text-green-800' :
-                      officer.rate >= 70 ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-red-100 text-red-800'
-                    }`}>
-                      {officer.rate.toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right text-gray-600">{officer.count.toLocaleString()}</td>
-                </tr>
-              ))}
-              {topOfficers.length === 0 && (
-                <tr>
-                  <td className="px-4 py-6 text-center text-gray-500" colSpan={6}>No data available</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Collection Status Table */}
+      {/* Client Performance Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900">Collection Status Details</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Product</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount on Start</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Due Date</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Collected</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Outstanding</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Daily Installment</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Period (Days)</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Active Days (Selected Month)</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">MTD Target</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Target</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Repaid Current Month</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Expected Repayment</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {collectionTableData.map((item, idx) => (
+              {clientPerformanceData.map((item, idx) => (
                 <tr key={idx} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{item.product}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{formatKES(item.amount)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{formatKES(item.amountOnStart)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                    {item.dueDate ? new Date(item.dueDate).toLocaleDateString() : '-'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center space-x-2">
-                      {getStatusIcon(item.status)}
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(item.status)}`}>
-                        {item.status}
-                        {item.status === 'Overdue' && item.daysPast > 0 && (
-                          <span className="ml-1">({item.daysPast}d)</span>
-                        )}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600">{formatKES(item.collected)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-red-600">{formatKES(item.outstanding)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.dailyInstallment)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{item.period.toLocaleString()}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{item.activeDays.toLocaleString()}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{formatKES(item.repaidCurrentMonth)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatKES(item.totalExpected)}</td>
                 </tr>
               ))}
-              {collectionTableData.length === 0 && (
+              {clientPerformanceData.length === 0 && (
                 <tr>
-                  <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No data available for selected period</td>
+                  <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No client data available</td>
                 </tr>
               )}
             </tbody>

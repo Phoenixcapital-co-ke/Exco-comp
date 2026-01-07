@@ -29,6 +29,10 @@ export const API_URLS = {
     data: `${API_BASE}/api/zidisha/data`,
     branches: `${API_BASE}/api/zidisha/branches`,
   },
+  boda: {
+    repayments: `${API_BASE}/api/boda/repayments`,
+    repaymentsDaily: `${API_BASE}/api/boda/repayments/daily`,
+  },
   events: `${API_BASE}/api/events`,
   ingest: `${API_BASE}/api/ingest`,
   par: {

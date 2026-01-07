@@ -39,11 +39,7 @@ function ZidishaDashboard() {
   const [error, setError] = useState(null)
 
   const filterRows = (data) =>
-    data.filter((r) => {
-      const branch = (r['Branch Name'] || r.branch_name || '').trim().toLowerCase()
-      const product = (r['Product Name'] || r.product_name || '').trim().toLowerCase()
-      return branch !== 'advans branch' && product !== 'zidisha boda'
-    })
+    data.filter((r) => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
 
   useEffect(() => {
     const controller = new AbortController()

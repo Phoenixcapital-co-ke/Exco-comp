@@ -730,6 +730,98 @@ app.get('/api/zidisha/data', (req, res) => {
   }
 })
 
+// Boda repayments endpoint - get repayment sums by Client Id, Loan Id, and month/year
+app.get('/api/boda/repayments', (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+
+    // Build date range for the selected month
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    // Query: sum Transaction Amount grouped by Client Id and Loan Id for the selected month
+    const rows = db.prepare(`
+      SELECT 
+        "Client Id" as clientId,
+        "Loan Id" as loanId,
+        SUM("Transaction Amount") as totalRepaid
+      FROM boda_repayments
+      WHERE "Submitted On Date" >= ? AND "Submitted On Date" < ?
+        AND "Transaction Amount" IS NOT NULL
+      GROUP BY "Client Id", "Loan Id"
+    `).all(monthStart, monthEnd)
+
+    // Convert to a map for easy lookup: key = "clientId|loanId", value = totalRepaid
+    const repaymentMap = {}
+    for (const row of rows) {
+      const key = `${row.clientId}|${row.loanId}`
+      repaymentMap[key] = Number(row.totalRepaid || 0)
+    }
+
+    res.json(repaymentMap)
+  } catch (e) {
+    console.error('[Boda Repayments API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Boda daily repayments endpoint - get daily repayment breakdown for a month
+app.get('/api/boda/repayments/daily', (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+
+    // Build date range for the selected month
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    // Query: sum Transaction Amount grouped by day for the selected month
+    // Extract day from date string (format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+    // Day is at positions 9-10 (1-indexed) in "YYYY-MM-DD" format
+    const rows = db.prepare(`
+      SELECT 
+        CAST(SUBSTR("Submitted On Date", 9, 2) AS INTEGER) as day,
+        SUM(CAST("Transaction Amount" AS REAL)) as totalRepaid
+      FROM boda_repayments
+      WHERE "Submitted On Date" >= ? 
+        AND "Submitted On Date" < ?
+        AND "Transaction Amount" IS NOT NULL
+        AND "Transaction Amount" != ''
+        AND CAST("Transaction Amount" AS REAL) > 0
+      GROUP BY day
+      ORDER BY day
+    `).all(monthStart, monthEnd)
+
+    // Convert to a map: key = day (1-31), value = totalRepaid
+    const dailyRepayments = {}
+    for (const row of rows) {
+      const day = Number(row.day || 0)
+      if (day >= 1 && day <= 31) {
+        dailyRepayments[day] = Number(row.totalRepaid || 0)
+      }
+    }
+
+    console.log(`[Boda Daily Repayments] Month: ${month}/${year}, Found ${rows.length} days with repayments`)
+    res.json(dailyRepayments)
+  } catch (e) {
+    console.error('[Boda Daily Repayments API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/logbook/disbursements', (req, res) => {
   const rows = db.prepare('SELECT * FROM Logbook_Disbursement').all();
   res.json(rows);

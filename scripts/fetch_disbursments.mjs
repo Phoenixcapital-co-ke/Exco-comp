@@ -1,10 +1,11 @@
 // Fetch disbursement_report from Loandisk and persist into SQLite (table: disbursments)
 // Usage: node scripts/fetch_disbursments.mjs
 // Behaviour can be controlled with environment flags:
-//   SKIP_DISBURSEMENTS=1  -> skip disbursement ingestion
-//   SKIP_COLLECTIONS=1    -> skip collections ingestion
-//   SKIP_BORROWERS=1      -> skip borrowers ingestion
-//   SKIP_ZIDISHA=1        -> skip Zidisha ingestion
+//   SKIP_DISBURSEMENTS=1     -> skip disbursement ingestion
+//   SKIP_COLLECTIONS=1       -> skip collections ingestion
+//   SKIP_BORROWERS=1         -> skip borrowers ingestion
+//   SKIP_ZIDISHA=1           -> skip Zidisha ingestion
+//   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
 
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
@@ -30,6 +31,7 @@ const SKIP_DISBURSEMENTS = process.env.SKIP_DISBURSEMENTS === '1'
 const SKIP_COLLECTIONS = process.env.SKIP_COLLECTIONS === '1'
 const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
+const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
 
 // Base payload (pagination handled by from/count) - branches_select will be set after loading branches from DB
 const basePayload = {
@@ -613,6 +615,19 @@ function mapResult(r) {
 // === Zidisha setup ===
 const ZIDISHA_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/10/download'
 const ZIDISHA_TABLE = 'zidisha_data'
+
+// Boda repayments (Musoni export id 20) - saved into boda_repayments
+const BODA_REPAY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/20/download?fileFormat=csv'
+const BODA_REPAY_TABLE = 'boda_repayments'
+const BODA_REPAY_COLUMNS = [
+  'Client Id',
+  'Loan Id',
+  'Product Name',
+  'Submitted On Date',
+  'Total Repaid',
+  'Transaction Amount',
+]
+
 // Match these headers exactly to the successful Postman request.
 // NOTE: Accept is application/json, not text/csv or */*.
 const ZIDISHA_HEADERS = {
@@ -641,10 +656,33 @@ const ZIDISHA_COLUMNS = [
   'Principal Amount',
   'Principal Outstanding Derived',
   'Product Name',
+  'Total Charges Due At Disbursement Derived',
   'Total Expected Repayment Derived',
   'Total Outstanding Derived',
   'Total Repayment Derived',
 ]
+
+function initBodaRepaymentsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${BODA_REPAY_TABLE} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "Client Id" TEXT,
+      "Loan Id" TEXT,
+      "Product Name" TEXT,
+      "Submitted On Date" TEXT,
+      "Total Repaid" REAL,
+      "Transaction Amount" REAL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `)
+  const cols = db.prepare(`PRAGMA table_info(${BODA_REPAY_TABLE});`).all().map(c => c.name)
+  for (const col of ["Client Id","Loan Id","Product Name","Submitted On Date","Total Repaid","Transaction Amount"]) {
+    if (!cols.includes(col)) {
+      const type = (col === 'Total Repaid' || col === 'Transaction Amount') ? 'REAL' : 'TEXT'
+      db.exec(`ALTER TABLE ${BODA_REPAY_TABLE} ADD COLUMN "${col}" ${type};`)
+    }
+  }
+}
 function initZidishaTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${ZIDISHA_TABLE} (
@@ -663,6 +701,7 @@ function initZidishaTable(db) {
       "Principal Amount" REAL,
       "Principal Outstanding Derived" REAL,
       "Product Name" TEXT,
+      "Total Charges Due At Disbursement Derived" REAL,
       "Total Expected Repayment Derived" REAL,
       "Total Outstanding Derived" REAL,
       "Total Repayment Derived" REAL,
@@ -682,6 +721,9 @@ function initZidishaTable(db) {
   }
   if (!cols.includes('Principal Outstanding Derived')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Outstanding Derived" REAL;`)
+  }
+  if (!cols.includes('Total Charges Due At Disbursement Derived')) {
+    db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Total Charges Due At Disbursement Derived" REAL;`)
   }
   if (!cols.includes('Business Profile - Business Category')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Business Profile - Business Category" TEXT;`)
@@ -768,6 +810,66 @@ async function fetchZidishaCsv() {
     return obj
   })
 }
+
+async function fetchBodaRepaymentsCsv() {
+  const res = await fetch(BODA_REPAY_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
+  if (!res.ok) throw new Error(`Boda repayments API fetch failed: ${res.status}`)
+  const csv = await res.text()
+  if (PAPAPARSE) {
+    const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
+    return data
+  }
+  // Fallback CSV parser (same as Zidisha) – handles quoted fields and newlines
+  const rows = []
+  let field = ''
+  let row = []
+  let insideQuotes = false
+  let i = 0
+  while (i < csv.length) {
+    const ch = csv[i]
+    if (ch === '"') {
+      if (insideQuotes && csv[i + 1] === '"') {
+        field += '"'
+        i += 2
+        continue
+      }
+      insideQuotes = !insideQuotes
+      i += 1
+      continue
+    }
+    if (!insideQuotes && ch === ';') {
+      row.push(field)
+      field = ''
+      i += 1
+      continue
+    }
+    if (!insideQuotes && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && csv[i + 1] === '\n') i += 1
+      row.push(field)
+      field = ''
+      if (row.length && row.some(cell => cell !== '' || rows.length === 0)) rows.push(row)
+      row = []
+      i += 1
+      continue
+    }
+    field += ch
+    i += 1
+  }
+  if (field.length || row.length) {
+    row.push(field)
+    rows.push(row)
+  }
+  if (!rows.length) return []
+  const headers = rows[0].map(h => h.trim())
+  if (headers.length < 2) throw new Error('Could not parse boda_repayments CSV headers')
+  return rows.slice(1).filter(r => r.length).map((vals) => {
+    const obj = {}
+    headers.forEach((h, idx) => {
+      obj[h] = vals[idx] ?? ''
+    })
+    return obj
+  })
+}
 function insertZidisha(db, row) {
   const cols = ZIDISHA_COLUMNS
   const toParam = (name) => ('@' + name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
@@ -779,13 +881,41 @@ function insertZidisha(db, row) {
   for(const c of cols) {
     let v = row[c]
     if (v == null) v = ''
-    if (["Principal Amount","Principal Outstanding Derived","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
+    if (["Principal Amount","Principal Outstanding Derived","Total Charges Due At Disbursement Derived","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
       cleanRow[keyFor(c)] = Number((v+'').replace(/,/g,'')) || 0
     } else {
       cleanRow[keyFor(c)] = v
     }
   }
   try { stmt.run(cleanRow) } catch (e) { /* skip invalid row */ }
+}
+
+function insertBodaRepayment(db, row) {
+  const stmt = db.prepare(`
+    INSERT INTO ${BODA_REPAY_TABLE} (
+      "Client Id",
+      "Loan Id",
+      "Product Name",
+      "Submitted On Date",
+      "Total Repaid",
+      "Transaction Amount"
+    ) VALUES (@client_id, @loan_id, @product_name, @submitted_on_date, @total_repaid, @transaction_amount)
+  `)
+
+  const clean = {
+    client_id: row['Client Id'] ?? '',
+    loan_id: row['Loan Id'] ?? '',
+    product_name: row['Product Name'] ?? '',
+    submitted_on_date: row['Submitted On Date'] ?? '',
+    total_repaid: Number((row['Total Repaid'] || '').toString().replace(/,/g,'')) || 0,
+    transaction_amount: Number((row['Transaction Amount'] || '').toString().replace(/,/g,'')) || 0,
+  }
+
+  try {
+    stmt.run(clean)
+  } catch (e) {
+    console.error('Failed to insert boda_repayments row:', e.message)
+  }
 }
 
 (async () => {
@@ -856,6 +986,23 @@ function insertZidisha(db, row) {
       console.log(`Saved ${zidishaRows.length} rows into ${ZIDISHA_TABLE}. Table now has ${zidishaCount} rows.`)
     } else {
       console.log('Skipping Zidisha ingestion due to SKIP_ZIDISHA=1')
+    }
+
+    // === Boda repayments ingestion (Musoni export id 20) ===
+    if (!SKIP_BODA_REPAYMENTS) {
+      const dbB = initDb()
+      initBodaRepaymentsTable(dbB)
+      // Truncate table before fresh insert
+      dbB.exec(`DELETE FROM ${BODA_REPAY_TABLE}`)
+      const bodaRows = await fetchBodaRepaymentsCsv()
+      const txB = dbB.transaction((rows) => {
+        for (const r of rows) insertBodaRepayment(dbB, r)
+      })
+      txB(bodaRows)
+      const bodaCount = dbB.prepare(`SELECT COUNT(*) as c FROM ${BODA_REPAY_TABLE}`).get().c
+      console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
+    } else {
+      console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
     }
 
     db.close()
