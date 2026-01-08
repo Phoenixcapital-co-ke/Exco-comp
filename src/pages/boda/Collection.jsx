@@ -18,9 +18,11 @@ function BodaCollection() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const data = await fetchAllZidishaRows()
+        setLoading(true)
+        const data = await fetchAllZidishaRows({ signal: controller.signal })
         const boda = data.filter((r) => {
           const product = (r['Product Name'] || r.product_name || '').trim().toLowerCase()
           const clientId = (r['Client Id'] || r.client_id || '').trim()
@@ -30,11 +32,13 @@ function BodaCollection() {
         setRows(boda)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   // Fetch repayment data for the selected month/year
@@ -467,7 +471,13 @@ function BodaCollection() {
   }
 
   if (!mainDataReady) {
-    return <div className="h-64 flex items-center justify-center text-gray-600">Loading collection data...</div>
+    return (
+      <div className="h-64 flex flex-col items-center justify-center text-gray-600">
+        <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-sm">Loading collection data...</p>
+        <p className="text-xs text-gray-500 mt-2">Fetching Boda loan data</p>
+      </div>
+    )
   }
 
   return (
