@@ -77,15 +77,28 @@ function LogbookPAR() {
   const loadBorrowerData = useCallback(async () => {
     try {
       setBorrowerLoading(true)
-      const res = await fetch(API_URLS.par.borrowerAccess, { credentials: 'include' })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 second timeout
+      
+      const res = await fetch(API_URLS.par.borrowerAccess, { 
+        credentials: 'include',
+        signal: controller.signal
+      })
+      clearTimeout(timeoutId)
+      
       if (!res.ok) {
         throw new Error(`Failed to load borrower access data: ${res.status}`)
       }
       const data = await res.json()
       setBorrowerData(Array.isArray(data) ? data : [])
     } catch (e) {
-      console.error('Error loading borrower access data:', e)
-      setBorrowerData([])
+      if (e.name === 'AbortError') {
+        console.error('Borrower access data request timed out')
+        setBorrowerData([])
+      } else {
+        console.error('Error loading borrower access data:', e)
+        setBorrowerData([])
+      }
     } finally {
       setBorrowerLoading(false)
     }

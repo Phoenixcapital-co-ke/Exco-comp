@@ -58,6 +58,14 @@ dbRW.prepare(`
     time TEXT NOT NULL
   )
 `).run();
+// Add indexes for faster queries on time column
+try {
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_open_loans_time ON Open_loans(time)').run();
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_past_missed_time ON Past_Missed_repayment(time)').run();
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_par_time ON PAR(time)').run();
+} catch (e) {
+  // Indexes might already exist, ignore
+}
 // Create table to track PAR snapshot last run time
 dbRW.prepare(`
   CREATE TABLE IF NOT EXISTS PAR_Snapshot_LastRun (
@@ -1940,21 +1948,33 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     const officerMap = new Map()
 
+    // Optimized accumulation function with faster processing
     const accumulateLoan = (rows, key) => {
       for (const row of rows) {
         try {
-          const loan = JSON.parse(row.loan_data)
+          // Fast JSON parse with early exit on error
+          let loan
+          try {
+            loan = JSON.parse(row.loan_data)
+          } catch (parseErr) {
+            continue // Skip invalid JSON silently
+          }
+          
           const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
           if (!borrowerAccessIds.length) continue
 
-          const rawPrincipal =
-            loan.principal_balance_amount ??
-            loan.PrincipalBalanceAmount ??
-            loan['principal_balance_amount'] ??
-            loan['Principal Balance Amount'] ??
-            loan['Principal Balance'] ??
-            0
-          const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+          // Optimize principal extraction - check number type first
+          const rawPrincipal = loan.principal_balance_amount ?? 
+                              loan.PrincipalBalanceAmount ?? 
+                              loan['principal_balance_amount'] ?? 
+                              loan['Principal Balance Amount'] ?? 
+                              loan['Principal Balance'] ?? 0
+          const principal = typeof rawPrincipal === 'number' 
+            ? rawPrincipal 
+            : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+
+          // Early exit if principal is 0
+          if (principal === 0) continue
 
           borrowerAccessIds.forEach((officerId) => {
             const officerKey = String(officerId).trim()
@@ -1974,7 +1994,8 @@ app.get('/api/par/borrower-access', async (req, res) => {
             entry.branches.add(row.branch_code)
           })
         } catch (e) {
-          console.error('Error parsing loan record for borrower access aggregation:', e.message)
+          // Silently skip errors to avoid logging overhead
+          continue
         }
       }
     }
