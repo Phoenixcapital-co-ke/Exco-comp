@@ -16,7 +16,7 @@ function Layout({ children }) {
   const [maintenance, setMaintenance] = useState(false)
   const [statusLoading, setStatusLoading] = useState(true)
   const location = useLocation()
-  const { user } = useAuth()
+  const { user, isLoading } = useAuth()
 
   useInactivityLogout()
 
@@ -106,6 +106,22 @@ function Layout({ children }) {
 
   if (NO_CHROME_ROUTES.includes(location.pathname)) {
     return <div className="min-h-screen bg-gray-50">{children}</div>
+  }
+
+  // Don't render layout with sidebar if user is not authenticated
+  // This prevents the "sidebar but no content" issue
+  if (!user && !isLoading) {
+    // User is not authenticated - let RequireAuth handle redirect
+    return <div className="min-h-screen bg-gray-50">{children}</div>
+  }
+
+  // Show loading state while checking auth
+  if (isLoading && !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-gray-500">
+        Checking session...
+      </div>
+    )
   }
 
   return (

@@ -48,7 +48,7 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(!cachedUserOnMount)
   const INACTIVITY_LIMIT_MS = 10 * 60 * 1000 // 10 minutes
 
-  const refreshUser = useCallback(async (showLoading = true) => {
+  const refreshUser = useCallback(async (showLoading = true, forceCheck = false) => {
     // Set loading only if explicitly requested
     if (showLoading) {
       setIsLoading(true)
@@ -70,8 +70,11 @@ export function AuthProvider({ children }) {
         setUser(newUser)
         setCachedUser(newUser)
       } else if (res.status === 401) {
+        // Token expired - immediately clear user and cache
+        // RequireAuth will handle the redirect
         setUser(null)
         setCachedUser(null)
+        setIsLoading(false) // Stop loading immediately so RequireAuth can redirect
       }
     } catch (err) {
       clearTimeout(timeoutId)
@@ -85,6 +88,11 @@ export function AuthProvider({ children }) {
             return null
           }
           // If we had cached user and request failed, keep it (might be network issue)
+          // But if forceCheck is true, we should clear it (token likely expired)
+          if (forceCheck) {
+            setCachedUser(null)
+            return null
+          }
           return currentUser
         })
       }
@@ -107,6 +115,24 @@ export function AuthProvider({ children }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only run once on mount
+
+  // Handle visibility change - check auth when user returns to tab
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user) {
+        // User returned to tab - force check auth (might have expired)
+        // Use forceCheck=true to clear cached user if token expired
+        refreshUser(false, true).catch(() => {
+          // Silently fail
+        })
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [user, refreshUser])
 
   const login = useCallback((userData) => {
     setUser(userData)
