@@ -721,6 +721,9 @@ app.get('/api/zidisha/data', (req, res) => {
     
     // Support excluding a branch
     const excludeBranch = req.query.excludeBranch
+    
+    // Support excluding client IDs
+    const excludeClientIds = req.query.excludeClientIds ? req.query.excludeClientIds.split(',').map(id => id.trim()).filter(Boolean) : null
 
     // Build WHERE clause
     const whereConditions = []
@@ -744,6 +747,12 @@ app.get('/api/zidisha/data', (req, res) => {
     if (excludeBranch) {
       whereConditions.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
       params.push(excludeBranch.trim())
+    }
+    
+    if (excludeClientIds && excludeClientIds.length > 0) {
+      const placeholders = excludeClientIds.map(() => '?').join(', ')
+      whereConditions.push(`TRIM("Client Id") NOT IN (${placeholders})`)
+      params.push(...excludeClientIds.map(id => id.trim()))
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''

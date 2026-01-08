@@ -28,8 +28,12 @@ function ZidishaDisbursement() {
     const controller = new AbortController()
     const load = async () => {
       try {
-        const all = await fetchAllZidishaRows({ signal: controller.signal })
-        const filtered = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
+        setLoading(true)
+        // Use backend filtering to exclude Advans Branch
+        const filtered = await fetchAllZidishaRows({ 
+          signal: controller.signal,
+          excludeBranch: 'Advans Branch'
+        })
         setRows(filtered)
         setLoading(false)
       } catch (e) {
@@ -205,7 +209,6 @@ function ZidishaDisbursement() {
       .sort((a, b) => b.totalAmount - a.totalAmount)
   }, [monthRows])
 
-  if (loading) return <div className="h-64 flex items-center justify-center text-gray-600">Loading...</div>
   if (error) return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
 
   // Metrics
@@ -299,67 +302,86 @@ function ZidishaDisbursement() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} ${selectedYear} Disbursed`}</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedMonth)}</p>
-              <p className={`text-sm mt-1 ${changeColor(totalDisbursedMoM)}`}>{totalDisbursedMoM}</p>
+        {loading ? (
+          Array.from({ length: 4 }).map((_, idx) => (
+            <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-200 rounded animate-pulse mb-3 w-32"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 w-28"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-20"></div>
+                </div>
+                <div className="p-3 rounded-lg bg-gray-100">
+                  <div className="w-6 h-6 bg-gray-200 rounded animate-pulse"></div>
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-green-50 text-green-600">
-              <DollarSign size={24} />
+          ))
+        ) : (
+          <>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} ${selectedYear} Disbursed`}</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedMonth)}</p>
+                  <p className={`text-sm mt-1 ${changeColor(totalDisbursedMoM)}`}>{totalDisbursedMoM}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-green-50 text-green-600">
+                  <DollarSign size={24} />
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">{isCurrentSelection ? 'Disbursed Today' : 'Avg Disbursement / Day'}</p>
-              <p className="text-2xl font-bold text-gray-900">{isCurrentSelection ? formatKES(disbursedTodaySelected) : formatKES(avgDisbursementPerDay)}</p>
+            
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">{isCurrentSelection ? 'Disbursed Today' : 'Avg Disbursement / Day'}</p>
+                  <p className="text-2xl font-bold text-gray-900">{isCurrentSelection ? formatKES(disbursedTodaySelected) : formatKES(avgDisbursementPerDay)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                  <Calendar size={24} />
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <Calendar size={24} />
+            
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">Number of Loans</p>
+                  <p className="text-2xl font-bold text-gray-900">{numLoansMonth.toLocaleString()}</p>
+                  <p className={`text-sm mt-1 ${changeColor(numLoansMoM)}`}>{numLoansMoM}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
+                  <TrendingUp size={24} />
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Number of Loans</p>
-              <p className="text-2xl font-bold text-gray-900">{numLoansMonth.toLocaleString()}</p>
-              <p className={`text-sm mt-1 ${changeColor(numLoansMoM)}`}>{numLoansMoM}</p>
-            </div>
-            <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
-              <TrendingUp size={24} />
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Disbursement vs Target</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(overallActual)}</p>
-              {overallTarget > 0 ? (
-                <>
-                  <p className={`text-sm mt-1 ${overallPercentage >= 100 ? 'text-green-700' : 'text-red-700'}`}>
-                    {overallPercentage.toFixed(1)}% of {formatKES(overallTarget)}
-                  </p>
-                  <p className={`text-xs mt-1 ${overallVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {overallVariance >= 0 ? '+' : ''}{formatKES(overallVariance)}
-                  </p>
-                </>
-              ) : (
-                <p className="text-sm mt-1 text-gray-500">No target set</p>
-              )}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">Disbursement vs Target</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatKES(overallActual)}</p>
+                  {overallTarget > 0 ? (
+                    <>
+                      <p className={`text-sm mt-1 ${overallPercentage >= 100 ? 'text-green-700' : 'text-red-700'}`}>
+                        {overallPercentage.toFixed(1)}% of {formatKES(overallTarget)}
+                      </p>
+                      <p className={`text-xs mt-1 ${overallVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {overallVariance >= 0 ? '+' : ''}{formatKES(overallVariance)}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm mt-1 text-gray-500">No target set</p>
+                  )}
+                </div>
+                <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
+                  <Target size={24} />
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
-              <Target size={24} />
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

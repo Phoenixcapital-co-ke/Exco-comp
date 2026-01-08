@@ -20,13 +20,20 @@ function SignIn() {
     e.preventDefault()
     setSubmitting(true)
     setError(null)
+    
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+    
     try {
       const res = await fetch(API_URLS.auth.login, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
         credentials: 'include',
+        signal: controller.signal,
       })
+      clearTimeout(timeoutId)
+      
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Login failed')
@@ -36,7 +43,12 @@ function SignIn() {
       const target = location.state?.from?.pathname || '/logbook/dashboard'
       navigate(target, { replace: true })
     } catch (err) {
-      setError(err.message)
+      clearTimeout(timeoutId)
+      if (err.name === 'AbortError') {
+        setError('Request timed out. Please check your connection and try again.')
+      } else {
+        setError(err.message)
+      }
     } finally {
       setSubmitting(false)
     }

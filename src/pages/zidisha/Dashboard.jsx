@@ -46,8 +46,11 @@ function ZidishaDashboard() {
     const load = async () => {
       try {
         setLoading(true)
-        const all = await fetchAllZidishaRows({ signal: controller.signal })
-        const filtered = filterRows(all)
+        // Use backend filtering to exclude Advans Branch
+        const filtered = await fetchAllZidishaRows({ 
+          signal: controller.signal,
+          excludeBranch: 'Advans Branch'
+        })
         setRows(filtered)
       } catch (e) {
         if (e.name === 'AbortError') return
@@ -362,10 +365,6 @@ function ZidishaDashboard() {
     }
   ]
 
-  if (loading) {
-    return <div className="h-64 flex items-center justify-center text-gray-600">Loading...</div>
-  }
-
   if (error) {
     return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
   }
@@ -384,30 +383,47 @@ function ZidishaDashboard() {
       </header>
 
       <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {summaryCards.map((card, idx) => {
-          const Icon = card.icon
-          const TrendIcon = card.trend === 'down' ? ArrowDownRight : ArrowUpRight
-          const trendColor = card.trend === 'down' ? 'text-red-500 bg-red-50' : 'text-emerald-500 bg-emerald-50'
-          return (
+        {loading ? (
+          Array.from({ length: 4 }).map((_, idx) => (
             <div key={idx} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
               <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-500">{card.title}</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-2">{card.value}</p>
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-200 rounded animate-pulse mb-3 w-24"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 w-32"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-20"></div>
                 </div>
-                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-                  <Icon size={20} />
+                <div className="p-3 rounded-lg bg-gray-100">
+                  <div className="w-5 h-5 bg-gray-200 rounded animate-pulse"></div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2 mt-4">
-                <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${trendColor}`}>
-                  <TrendIcon size={14} />
-                  {card.change}
-                </span>
               </div>
             </div>
-          )
-        })}
+          ))
+        ) : (
+          summaryCards.map((card, idx) => {
+            const Icon = card.icon
+            const TrendIcon = card.trend === 'down' ? ArrowDownRight : ArrowUpRight
+            const trendColor = card.trend === 'down' ? 'text-red-500 bg-red-50' : 'text-emerald-500 bg-emerald-50'
+            return (
+              <div key={idx} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-sm text-gray-500">{card.title}</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-2">{card.value}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                    <Icon size={20} />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mt-4">
+                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${trendColor}`}>
+                    <TrendIcon size={14} />
+                    {card.change}
+                  </span>
+                </div>
+              </div>
+            )
+          })
+        )}
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">

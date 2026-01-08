@@ -69,10 +69,12 @@ export default function ZidishaDemographics() {
     const controller = new AbortController()
     const load = async () => {
       try {
-        const all = await fetchAllZidishaRows({ signal: controller.signal })
-        const filtered = all.filter(
-          (row) => (row['Branch Name'] || row.branch_name || '').trim().toLowerCase() !== 'advans branch'
-        )
+        setLoading(true)
+        // Use backend filtering to exclude Advans Branch
+        const filtered = await fetchAllZidishaRows({ 
+          signal: controller.signal,
+          excludeBranch: 'Advans Branch'
+        })
         setRows(filtered)
         setLoading(false)
       } catch (e) {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react'
-import { BarChart3, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
+import { BarChart3, DollarSign, TrendingUp, AlertTriangle, Loader2 } from 'lucide-react'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
@@ -10,21 +10,30 @@ function AdvansDashboard() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const data = await fetchAllZidishaRows()
-        const advans = data.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() === 'advans branch')
+        setLoading(true)
+        // Use backend filtering for Advans Branch only
+        const advans = await fetchAllZidishaRows({
+          signal: controller.signal,
+          branch: 'Advans Branch'
+        })
         setRows(advans)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
-  const totalLoaned = rows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
+  const totalLoaned = useMemo(() => {
+    return rows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
+  }, [rows])
 
   // Calculate current year collection rate for Advans Branch
   const currentYearCollectionRate = useMemo(() => {
@@ -57,12 +66,12 @@ function AdvansDashboard() {
     return '—'
   }, [rows])
 
-  const stats = [
+  const stats = useMemo(() => [
     { title: 'Total loaned', value: formatKES(totalLoaned), change: '', icon: DollarSign, color: 'text-green-600' },
     { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
     { title: 'Current Year Collection Rate', value: currentYearCollectionRate, change: '', icon: TrendingUp, color: 'text-purple-600' },
     { title: 'PAR', value: '—', change: '', icon: AlertTriangle, color: 'text-orange-600' }
-  ]
+  ], [totalLoaned, rows.length, currentYearCollectionRate])
 
   return (
     <div className="space-y-6">
@@ -71,33 +80,62 @@ function AdvansDashboard() {
         <p className="text-gray-600 mt-2">Overview of Advans business unit performance</p>
       </div>
 
-      {loading && (
-        <div className="h-24 flex items-center text-gray-600">Loading...</div>
-      )}
       {error && (
-        <div className="h-24 flex items-center text-red-600">{error}</div>
+        <div className="h-24 flex items-center justify-center text-red-600">{error}</div>
       )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((stat, index) => (
-          <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">{stat.title}</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{stat.value}</p>
-                {stat.change ? (<p className={`text-sm mt-1 ${stat.color}`}>{stat.change}</p>) : null}
-              </div>
-              <div className={`p-3 rounded-lg bg-gray-50 ${stat.color}`}>
-                <stat.icon size={24} />
+        {loading ? (
+          Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-200 rounded animate-pulse mb-3 w-24"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 w-32"></div>
+                </div>
+                <div className="p-3 rounded-lg bg-gray-100">
+                  <div className="w-6 h-6 bg-gray-200 rounded animate-pulse"></div>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))
+        ) : (
+          stats.map((stat, index) => (
+            <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">{stat.title}</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{stat.value}</p>
+                  {stat.change ? (<p className={`text-sm mt-1 ${stat.color}`}>{stat.change}</p>) : null}
+                </div>
+                <div className={`p-3 rounded-lg bg-gray-50 ${stat.color}`}>
+                  <stat.icon size={24} />
+                </div>
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
       {/* Charts */}
-      {(() => {
+      {loading ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="h-4 bg-gray-200 rounded animate-pulse mb-4 w-48"></div>
+            <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="h-4 bg-gray-200 rounded animate-pulse mb-4 w-48"></div>
+            <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        (() => {
         // Portfolio Growth - last 12 months, disbursed vs collected (area chart)
         const now = new Date()
         const months = [null, 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -190,7 +228,8 @@ function AdvansDashboard() {
             </div>
           </div>
         )
-      })()}
+      })()
+      )}
     </div>
   )
 }

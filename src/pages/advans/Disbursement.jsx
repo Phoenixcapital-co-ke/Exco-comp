@@ -26,20 +26,25 @@ function AdvansDisbursement() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const data = await fetchAllZidishaRows()
-        const advans = data.filter(
-          (row) => (row['Branch Name'] || row.branch_name || '').trim().toLowerCase() === 'advans branch'
-        )
+        setLoading(true)
+        // Use backend filtering for Advans Branch only
+        const advans = await fetchAllZidishaRows({
+          signal: controller.signal,
+          branch: 'Advans Branch'
+        })
         setRows(advans)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   const now = new Date()

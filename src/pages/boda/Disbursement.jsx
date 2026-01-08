@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { DollarSign, Calendar, TrendingUp, Users } from 'lucide-react'
+import { DollarSign, Calendar, TrendingUp, Users, Loader2 } from 'lucide-react'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -31,23 +31,26 @@ function BodaDisbursement() {
   const [selectedDay, setSelectedDay] = useState(null)
 
   useEffect(() => {
+    const controller = new AbortController()
     const load = async () => {
       try {
-        const data = await fetchAllZidishaRows()
-        const boda = data.filter((row) => {
-          const product = (row['Product Name'] || row.product_name || '').trim().toLowerCase()
-          const clientId = (row['Client Id'] || row.client_id || '').trim()
-          if (clientId === '3926') return false
-          return product === 'zidisha boda'
+        setLoading(true)
+        // Use backend filtering for faster data loading
+        const boda = await fetchAllZidishaRows({
+          signal: controller.signal,
+          product: 'Zidisha Boda',
+          excludeClientIds: ['3926']
         })
         setRows(boda)
         setLoading(false)
       } catch (e) {
+        if (e.name === 'AbortError') return
         setError(e.message)
         setLoading(false)
       }
     }
     load()
+    return () => controller.abort()
   }, [])
 
   const now = new Date()
@@ -249,10 +252,6 @@ function BodaDisbursement() {
       .slice(0, 10)
   }, [rows])
 
-  if (loading) {
-    return <div className="h-64 flex items-center justify-center text-gray-600">Loading disbursements...</div>
-  }
-
   if (error) {
     return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
   }
@@ -302,88 +301,125 @@ function BodaDisbursement() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">
-                Total Disbursed ({selectedYear || '—'})
-              </p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedYTD)}</p>
+        {loading ? (
+          Array.from({ length: 4 }).map((_, idx) => (
+            <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-200 rounded animate-pulse mb-3 w-32"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 w-28"></div>
+                </div>
+                <div className="p-3 rounded-lg bg-gray-100">
+                  <div className="w-6 h-6 bg-gray-200 rounded animate-pulse"></div>
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-green-50 text-green-600">
-              <DollarSign size={24} />
+          ))
+        ) : (
+          <>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Total Disbursed ({selectedYear || '—'})
+                  </p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedYTD)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-green-50 text-green-600">
+                  <DollarSign size={24} />
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Disbursed This Month</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedThisMonth)}</p>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">Disbursed This Month</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedThisMonth)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                  <Calendar size={24} />
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <Calendar size={24} />
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">
-                Average Loan Size ({selectedYear || '—'})
-              </p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.avgLoanSize)}</p>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Average Loan Size ({selectedYear || '—'})
+                  </p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.avgLoanSize)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
+                  <TrendingUp size={24} />
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
-              <TrendingUp size={24} />
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Loans This Month</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{summary.loanCountThisMonth.toLocaleString()}</p>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">Loans This Month</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{summary.loanCountThisMonth.toLocaleString()}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-rose-50 text-rose-600">
+                  <Users size={24} />
+                </div>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-rose-50 text-rose-600">
-              <Users size={24} />
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Monthly Disbursement Trend (Last 12 Months)</h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={monthlyTrend}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" />
-              <YAxis tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} />
-              <Tooltip formatter={(v) => formatKES(v)} />
-              <Area type="monotone" dataKey="amount" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} name="Disbursed" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+        {loading ? (
+          <>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="h-4 bg-gray-200 rounded animate-pulse mb-4 w-56"></div>
+              <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+                <Loader2 className="animate-spin text-gray-400" size={24} />
+              </div>
+            </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="h-4 bg-gray-200 rounded animate-pulse mb-4 w-48"></div>
+              <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+                <Loader2 className="animate-spin text-gray-400" size={24} />
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Monthly Disbursement Trend (Last 12 Months)</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <AreaChart data={monthlyTrend}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} />
+                  <Tooltip formatter={(v) => formatKES(v)} />
+                  <Area type="monotone" dataKey="amount" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} name="Disbursed" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Daily Disbursements ({selectedMonth && selectedYear ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
-          </h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={dailyTrend}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="day" />
-              <YAxis tickFormatter={(v) => `${(v / 1000).toFixed(1)}K`} />
-              <Tooltip formatter={(v) => formatKES(v)} />
-              <Area type="monotone" dataKey="amount" stroke="#10b981" fill="#10b981" fillOpacity={0.3} name="Disbursed" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Daily Disbursements ({selectedMonth && selectedYear ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
+              </h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <AreaChart data={dailyTrend}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis tickFormatter={(v) => `${(v / 1000).toFixed(1)}K`} />
+                  <Tooltip formatter={(v) => formatKES(v)} />
+                  <Area type="monotone" dataKey="amount" stroke="#10b981" fill="#10b981" fillOpacity={0.3} name="Disbursed" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
