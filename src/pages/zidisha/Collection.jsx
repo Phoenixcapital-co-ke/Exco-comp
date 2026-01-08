@@ -12,6 +12,9 @@ function ZidishaCollection() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  
+  // Track if data is ready to prevent showing zeros
+  const [dataReady, setDataReady] = useState(false)
   const [selectedBranch, setSelectedBranch] = useState('All')
   const [selectedDay, setSelectedDay] = useState(() => {
     const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
@@ -23,13 +26,23 @@ function ZidishaCollection() {
     const controller = new AbortController()
     const load = async () => {
       try {
-        const all = await fetchAllZidishaRows({ signal: controller.signal })
-        const filteredRows = all.filter(r => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
+        setLoading(true)
+        setDataReady(false)
+        // Filter for Zidisha products only using backend filtering
+        const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+        // Use backend filtering for products and exclude Advans branch
+        const filteredRows = await fetchAllZidishaRows({ 
+          signal: controller.signal,
+          products: zidishaProducts,
+          excludeBranch: 'Advans Branch'
+        })
         setRows(filteredRows)
+        setDataReady(true)
         setLoading(false)
       } catch (e) {
         if (e.name === 'AbortError') return
         setError(e.message)
+        setDataReady(false)
         setLoading(false)
       }
     }
@@ -152,6 +165,21 @@ function ZidishaCollection() {
       default:
         return 'bg-gray-100 text-gray-800'
     }
+  }
+
+  // Show loading state until data is ready
+  if (loading || !dataReady) {
+    return (
+      <div className="h-64 flex flex-col items-center justify-center text-gray-600">
+        <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-sm">Loading collection data...</p>
+        <p className="text-xs text-gray-500 mt-2">Fetching Zidisha loan data</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
   }
 
   return (

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { AlertTriangle, TrendingUp, Loader2, Play } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 import { formatKES } from '../../utils/format.js'
@@ -8,17 +8,18 @@ function LogbookPAR() {
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState(null)
   const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
   const [branchData, setBranchData] = useState([])
-  const [branchLoading, setBranchLoading] = useState(false)
+  const [branchLoading, setBranchLoading] = useState(true)
   const [borrowerData, setBorrowerData] = useState([])
-  const [borrowerLoading, setBorrowerLoading] = useState(false)
+  const [borrowerLoading, setBorrowerLoading] = useState(true)
   const [borrowerBranchFilter, setBorrowerBranchFilter] = useState('ALL')
   const [progress, setProgress] = useState(null)
   const [lastRunTime, setLastRunTime] = useState(null)
   const [loanOfficers, setLoanOfficers] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
 
-  const loadLoanOfficers = async () => {
+  const loadLoanOfficers = useCallback(async () => {
     try {
       const res = await fetch(API_URLS.loanOfficers.list, { credentials: 'include' })
       if (!res.ok) throw new Error('Failed to load loan officers')
@@ -28,9 +29,9 @@ function LogbookPAR() {
       console.error('Error loading loan officers:', e)
       setLoanOfficers([])
     }
-  }
+  }, [])
 
-  const loadLastRunTime = async () => {
+  const loadLastRunTime = useCallback(async () => {
     try {
       const res = await fetch(API_URLS.par.lastRun, { credentials: 'include' })
       if (res.ok) {
@@ -40,9 +41,9 @@ function LogbookPAR() {
     } catch (e) {
       console.error('Error loading last run time:', e)
     }
-  }
+  }, [])
 
-  const loadBranchData = async () => {
+  const loadBranchData = useCallback(async () => {
     try {
       setBranchLoading(true)
       const res = await fetch(API_URLS.par.branches, { credentials: 'include' })
@@ -57,9 +58,23 @@ function LogbookPAR() {
     } finally {
       setBranchLoading(false)
     }
-  }
+  }, [])
 
-  const loadBorrowerData = async () => {
+  const loadHistory = useCallback(async () => {
+    try {
+      setHistoryLoading(true)
+      const historyRes = await fetch(API_URLS.par.history, { credentials: 'include' })
+      const historyData = await historyRes.json().catch(() => [])
+      setHistory(Array.isArray(historyData) ? historyData : [])
+    } catch (e) {
+      console.error('Error loading history:', e)
+      setHistory([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
+
+  const loadBorrowerData = useCallback(async () => {
     try {
       setBorrowerLoading(true)
       const res = await fetch(API_URLS.par.borrowerAccess, { credentials: 'include' })
@@ -74,7 +89,7 @@ function LogbookPAR() {
     } finally {
       setBorrowerLoading(false)
     }
-  }
+  }, [])
 
   const triggerSnapshot = async () => {
     let eventSource = null
@@ -109,12 +124,8 @@ function LogbookPAR() {
         throw new Error(error?.error || `Request failed (${res.status})`)
       }
       const data = await res.json()
-      // Removed triggerMessage - no longer displaying the recorded message
-      const historyRes = await fetch(API_URLS.par.history, { credentials: 'include' })
-      const historyData = await historyRes.json().catch(() => [])
-      setHistory(Array.isArray(historyData) ? historyData : [])
-      // Reload branch data after snapshot
-      await Promise.all([loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()])
+      // Reload all data after snapshot
+      await Promise.all([loadHistory(), loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()])
       
       // Wait a bit for final progress event
       setTimeout(() => {
@@ -133,25 +144,21 @@ function LogbookPAR() {
   }
 
   useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const historyRes = await fetch(API_URLS.par.history, { credentials: 'include' })
-        const historyData = await historyRes.json().catch(() => [])
-        setHistory(Array.isArray(historyData) ? historyData : [])
-      } catch (e) {
-        // ignore initial load errors
-      }
-    }
-    loadHistory()
-    loadBranchData()
-    loadBorrowerData()
-    loadLoanOfficers()
-    loadLastRunTime()
+    // Load all data in parallel for better performance
+    Promise.all([
+      loadHistory(),
+      loadBranchData(),
+      loadBorrowerData(),
+      loadLoanOfficers(),
+      loadLastRunTime()
+    ]).catch(e => {
+      console.error('Error loading initial data:', e)
+    })
     
     // Refresh last run time every 30 seconds
     const interval = setInterval(loadLastRunTime, 30000)
     return () => clearInterval(interval)
-  }, [])
+  }, [loadHistory, loadBranchData, loadBorrowerData, loadLoanOfficers, loadLastRunTime])
 
   const latestPastMissed = history.length ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0) : null
   const latestOpenLoans = history.length ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0) : null
@@ -388,13 +395,22 @@ function LogbookPAR() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">PAR </p>
-              <p className="text-2xl font-bold text-gray-900">
-                {par30Plus != null ? `${par30Plus}%` : '—'}
-              </p>
-              {par30Plus != null && (
-                <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
+              {historyLoading ? (
+                <>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {par30Plus != null ? `${par30Plus}%` : '—'}
+                  </p>
+                  {par30Plus != null && (
+                    <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
+                  )}
+                </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
@@ -405,13 +421,22 @@ function LogbookPAR() {
         
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">Open Loans</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {latestOpenLoans != null ? formatKES(latestOpenLoans) : '—'}
-              </p>
-              {latestOpenLoans != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
+              {historyLoading ? (
+                <>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40"></div>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {latestOpenLoans != null ? formatKES(latestOpenLoans) : '—'}
+                  </p>
+                  {latestOpenLoans != null && (
+                    <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
+                  )}
+                </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
@@ -422,13 +447,22 @@ function LogbookPAR() {
         
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">High Risk Loans</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {latestPastMissed != null ? formatKES(latestPastMissed) : '2'}
-              </p>
-              {latestPastMissed != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
+              {historyLoading ? (
+                <>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-44"></div>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {latestPastMissed != null ? formatKES(latestPastMissed) : '—'}
+                  </p>
+                  {latestPastMissed != null && (
+                    <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
+                  )}
+                </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-red-50 text-red-600">
@@ -448,7 +482,10 @@ function LogbookPAR() {
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex-1 overflow-x-auto">
               {branchLoading ? (
-                <div className="p-6 text-center text-gray-600">Loading branch data...</div>
+                <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
+                  <Loader2 className="animate-spin mb-3" size={24} />
+                  <p className="text-sm">Loading branch data...</p>
+                </div>
               ) : (
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
@@ -529,7 +566,10 @@ function LogbookPAR() {
           </div>
           <div className="flex-1 overflow-x-auto overflow-y-auto">
             {borrowerLoading ? (
-              <div className="p-6 text-center text-gray-600">Loading borrower access data...</div>
+              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
+                <Loader2 className="animate-spin mb-3" size={24} />
+                <p className="text-sm">Loading borrower access data...</p>
+              </div>
             ) : (
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">

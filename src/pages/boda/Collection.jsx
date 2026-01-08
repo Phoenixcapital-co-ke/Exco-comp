@@ -218,7 +218,7 @@ function BodaCollection() {
         const repaymentKey = `${clientId}|${loanId}`
         const repaidCurrentMonth = repaymentMap[repaymentKey] || 0
 
-        return {
+      return {
           client: r['Client Name'] || r.client_name || 'Unknown',
           clientId,
           loanId,
@@ -308,7 +308,7 @@ function BodaCollection() {
   // Branch Breakdown Table
   const branchBreakdown = useMemo(() => {
     const branchMap = new Map()
-    
+
     for (const r of rows) {
       const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
       
@@ -360,7 +360,7 @@ function BodaCollection() {
         entry.repaidCurrentMonth += clientData.repaidCurrentMonth || 0
       }
     }
-    
+
     // Calculate average daily installment per branch
     const result = Array.from(branchMap.values()).map(entry => ({
       ...entry,
@@ -419,7 +419,7 @@ function BodaCollection() {
     if (currentMonthTarget > 0) {
       const pct = (totalCollectedMonth / currentMonthTarget) * 100
       return { value: pct, display: `${pct.toFixed(1)}%` }
-    }
+        }
     return { value: 0, display: '0.0%' }
   }, [totalCollectedMonth, currentMonthTarget])
 
@@ -517,21 +517,21 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
-                <p className="text-3xl font-bold text-gray-900">{formatKES(totalCollectedMonth)}</p>
+              <p className="text-3xl font-bold text-gray-900">{formatKES(totalCollectedMonth)}</p>
               )}
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-24 mt-2"></div>
               ) : (
-                <div className="flex items-center mt-2 space-x-2">
-                  {collectionChange.value >= 0 ? (
-                    <TrendingUp className="text-green-600" size={16} />
-                  ) : (
-                    <TrendingDown className="text-red-600" size={16} />
-                  )}
-                  <span className={`text-xs font-medium ${collectionChange.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {collectionChange.display} vs last month
-                  </span>
-                </div>
+              <div className="flex items-center mt-2 space-x-2">
+                {collectionChange.value >= 0 ? (
+                  <TrendingUp className="text-green-600" size={16} />
+                ) : (
+                  <TrendingDown className="text-red-600" size={16} />
+                )}
+                <span className={`text-xs font-medium ${collectionChange.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {collectionChange.display} vs last month
+                </span>
+              </div>
               )}
             </div>
             <div className="p-4 rounded-xl bg-green-500 text-white">
@@ -547,12 +547,12 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
-                <p className="text-3xl font-bold text-gray-900">{collectionRatePct.display}</p>
+              <p className="text-3xl font-bold text-gray-900">{collectionRatePct.display}</p>
               )}
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-32 mt-2"></div>
               ) : (
-                <p className="text-xs text-gray-500 mt-2">Efficiency: {collectionEfficiency.toFixed(1)}%</p>
+              <p className="text-xs text-gray-500 mt-2">Efficiency: {collectionEfficiency.toFixed(1)}%</p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-blue-500 text-white">
@@ -568,14 +568,14 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
-                <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
+              <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
               )}
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-28 mt-2"></div>
               ) : (
-                <p className="text-xs text-gray-500 mt-2">
+              <p className="text-xs text-gray-500 mt-2">
                   {currentMonthTarget > 0 ? `${((totalOutstandingMonth / currentMonthTarget) * 100).toFixed(1)}% of target` : '0.0% of target'}
-                </p>
+              </p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-red-500 text-white">
@@ -596,9 +596,9 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-40 mt-2"></div>
               ) : (
-                <p className="text-xs text-gray-500 mt-2">
+              <p className="text-xs text-gray-500 mt-2">
                   Sum of MTD targets for all clients in {new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear}
-                </p>
+              </p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-purple-500 text-white">
@@ -780,7 +780,7 @@ function BodaCollection() {
                     })}
                   </tbody>
                 </table>
-              </div>
+            </div>
           ) : (
             <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
               <p className="text-gray-500">No branch data available</p>

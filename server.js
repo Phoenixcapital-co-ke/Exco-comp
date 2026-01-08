@@ -712,9 +712,50 @@ app.get('/api/zidisha/data', (req, res) => {
     const pageSize = Math.min(Math.max(pageSizeRaw || 2000, 100), 10000)
     const offset = (page - 1) * pageSize
 
-    const totalRow = db.prepare('SELECT COUNT(*) as count FROM zidisha_data').get()
+    // Support filtering by product name (exact match or list)
+    const product = req.query.product
+    const products = req.query.products ? req.query.products.split(',').map(p => p.trim()) : null
+    
+    // Support filtering by branch (exact match)
+    const branch = req.query.branch
+    
+    // Support excluding a branch
+    const excludeBranch = req.query.excludeBranch
+
+    // Build WHERE clause
+    const whereConditions = []
+    const params = []
+
+    if (product) {
+      whereConditions.push('LOWER(TRIM("Product Name")) = LOWER(?)')
+      params.push(product.trim())
+    } else if (products && products.length > 0) {
+      // Filter by multiple products
+      const placeholders = products.map(() => '?').join(', ')
+      whereConditions.push(`LOWER(TRIM("Product Name")) IN (${placeholders})`)
+      params.push(...products.map(p => p.toLowerCase().trim()))
+    }
+
+    if (branch) {
+      whereConditions.push('LOWER(TRIM("Branch Name")) = LOWER(?)')
+      params.push(branch.trim())
+    }
+
+    if (excludeBranch) {
+      whereConditions.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+      params.push(excludeBranch.trim())
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+
+    // Get total count with filters
+    const countQuery = `SELECT COUNT(*) as count FROM zidisha_data ${whereClause}`
+    const totalRow = db.prepare(countQuery).get(...params)
     const total = totalRow?.count || 0
-    const rows = db.prepare('SELECT * FROM zidisha_data ORDER BY rowid DESC LIMIT ? OFFSET ?').all(pageSize, offset)
+
+    // Get rows with filters
+    const dataQuery = `SELECT * FROM zidisha_data ${whereClause} ORDER BY rowid DESC LIMIT ? OFFSET ?`
+    const rows = db.prepare(dataQuery).all(...params, pageSize, offset)
 
     res.json({
       meta: {
