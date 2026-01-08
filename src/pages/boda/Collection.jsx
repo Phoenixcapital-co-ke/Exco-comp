@@ -13,6 +13,8 @@ function BodaCollection() {
   const [repaymentMap, setRepaymentMap] = useState({})
   const [dailyRepayments, setDailyRepayments] = useState({})
   const [loading, setLoading] = useState(true)
+  const [loadingRepayments, setLoadingRepayments] = useState(true)
+  const [loadingDailyRepayments, setLoadingDailyRepayments] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -38,6 +40,7 @@ function BodaCollection() {
   // Fetch repayment data for the selected month/year
   useEffect(() => {
     const loadRepayments = async () => {
+      setLoadingRepayments(true)
       try {
         const params = new URLSearchParams({
           month: String(selectedMonth),
@@ -49,13 +52,16 @@ function BodaCollection() {
         if (!res.ok) {
           console.warn('Failed to load repayment data:', res.status)
           setRepaymentMap({})
+          setLoadingRepayments(false)
           return
         }
         const data = await res.json()
         setRepaymentMap(data || {})
+        setLoadingRepayments(false)
       } catch (e) {
         console.warn('Error loading repayment data:', e.message)
         setRepaymentMap({})
+        setLoadingRepayments(false)
       }
     }
     if (selectedMonth && selectedYear) {
@@ -66,6 +72,7 @@ function BodaCollection() {
   // Fetch daily repayment data for the selected month/year
   useEffect(() => {
     const loadDailyRepayments = async () => {
+      setLoadingDailyRepayments(true)
       try {
         const params = new URLSearchParams({
           month: String(selectedMonth),
@@ -77,14 +84,17 @@ function BodaCollection() {
         if (!res.ok) {
           console.warn('Failed to load daily repayment data:', res.status)
           setDailyRepayments({})
+          setLoadingDailyRepayments(false)
           return
         }
         const data = await res.json()
         console.log(`[Boda Collection] Daily repayments for ${selectedMonth}/${selectedYear}:`, data)
         setDailyRepayments(data || {})
+        setLoadingDailyRepayments(false)
       } catch (e) {
         console.warn('Error loading daily repayment data:', e.message)
         setDailyRepayments({})
+        setLoadingDailyRepayments(false)
       }
     }
     if (selectedMonth && selectedYear) {
@@ -448,12 +458,16 @@ function BodaCollection() {
     }
   }
 
-  if (loading) {
-    return <div className="h-64 flex items-center justify-center text-gray-600">Loading collection data...</div>
-  }
+  // Progressive rendering: show what's ready, skeleton loaders for what's not
+  // Main data must be loaded before showing anything
+  const mainDataReady = !loading && rows.length > 0
 
   if (error) {
     return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
+  }
+
+  if (!mainDataReady) {
+    return <div className="h-64 flex items-center justify-center text-gray-600">Loading collection data...</div>
   }
 
   return (
@@ -490,17 +504,25 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">Total Collected</p>
-              <p className="text-3xl font-bold text-gray-900">{formatKES(totalCollectedMonth)}</p>
-              <div className="flex items-center mt-2 space-x-2">
-                {collectionChange.value >= 0 ? (
-                  <TrendingUp className="text-green-600" size={16} />
-                ) : (
-                  <TrendingDown className="text-red-600" size={16} />
-                )}
-                <span className={`text-xs font-medium ${collectionChange.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {collectionChange.display} vs last month
-                </span>
-              </div>
+              {loadingRepayments ? (
+                <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
+              ) : (
+                <p className="text-3xl font-bold text-gray-900">{formatKES(totalCollectedMonth)}</p>
+              )}
+              {loadingRepayments ? (
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-24 mt-2"></div>
+              ) : (
+                <div className="flex items-center mt-2 space-x-2">
+                  {collectionChange.value >= 0 ? (
+                    <TrendingUp className="text-green-600" size={16} />
+                  ) : (
+                    <TrendingDown className="text-red-600" size={16} />
+                  )}
+                  <span className={`text-xs font-medium ${collectionChange.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {collectionChange.display} vs last month
+                  </span>
+                </div>
+              )}
             </div>
             <div className="p-4 rounded-xl bg-green-500 text-white">
               <CheckCircle size={28} />
@@ -512,8 +534,16 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">Collection Rate</p>
-              <p className="text-3xl font-bold text-gray-900">{collectionRatePct.display}</p>
-              <p className="text-xs text-gray-500 mt-2">Efficiency: {collectionEfficiency.toFixed(1)}%</p>
+              {loadingRepayments ? (
+                <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
+              ) : (
+                <p className="text-3xl font-bold text-gray-900">{collectionRatePct.display}</p>
+              )}
+              {loadingRepayments ? (
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-32 mt-2"></div>
+              ) : (
+                <p className="text-xs text-gray-500 mt-2">Efficiency: {collectionEfficiency.toFixed(1)}%</p>
+              )}
             </div>
             <div className="p-4 rounded-xl bg-blue-500 text-white">
               <Target size={28} />
@@ -525,10 +555,18 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">Outstanding</p>
-              <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
-              <p className="text-xs text-gray-500 mt-2">
-                {currentMonthTarget > 0 ? `${((totalOutstandingMonth / currentMonthTarget) * 100).toFixed(1)}% of target` : '0.0% of target'}
-              </p>
+              {loadingRepayments ? (
+                <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
+              ) : (
+                <p className="text-3xl font-bold text-gray-900">{formatKES(totalOutstandingMonth)}</p>
+              )}
+              {loadingRepayments ? (
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-28 mt-2"></div>
+              ) : (
+                <p className="text-xs text-gray-500 mt-2">
+                  {currentMonthTarget > 0 ? `${((totalOutstandingMonth / currentMonthTarget) * 100).toFixed(1)}% of target` : '0.0% of target'}
+                </p>
+              )}
             </div>
             <div className="p-4 rounded-xl bg-red-500 text-white">
               <AlertCircle size={28} />
@@ -540,10 +578,18 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">MTD Target</p>
-              <p className="text-3xl font-bold text-gray-900">{formatKES(mtdTargetTotal)}</p>
-              <p className="text-xs text-gray-500 mt-2">
-                Sum of MTD targets for all clients in {new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear}
-              </p>
+              {loadingRepayments ? (
+                <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
+              ) : (
+                <p className="text-3xl font-bold text-gray-900">{formatKES(mtdTargetTotal)}</p>
+              )}
+              {loadingRepayments ? (
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-40 mt-2"></div>
+              ) : (
+                <p className="text-xs text-gray-500 mt-2">
+                  Sum of MTD targets for all clients in {new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear}
+                </p>
+              )}
             </div>
             <div className="p-4 rounded-xl bg-purple-500 text-white">
               <Target size={28} />
@@ -738,7 +784,14 @@ function BodaCollection() {
         <h3 className="text-lg font-semibold text-gray-900 mb-4">
           Daily Expected vs Collected ({new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear})
         </h3>
-        {dailyExpectedVsCollected.length > 0 ? (
+        {loadingDailyRepayments ? (
+          <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+            <div className="text-center">
+              <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+              <p className="text-gray-500">Loading daily data...</p>
+            </div>
+          </div>
+        ) : dailyExpectedVsCollected.length > 0 ? (
           <ResponsiveContainer width="100%" height={320}>
             <ComposedChart data={dailyExpectedVsCollected}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
