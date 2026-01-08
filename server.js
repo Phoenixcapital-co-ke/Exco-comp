@@ -1004,6 +1004,7 @@ const mapTargetRow = (row) => {
     year,
     disbursementTarget: Number(row.disbursement_target) || 0,
     collectionTarget: Number(row.collection_target) || 0,
+    newClientsAmountPerMonth: Number(row.new_clients_amount_per_month) || 0,
     workingDays,
     holidays,
     active: !!row.active,
