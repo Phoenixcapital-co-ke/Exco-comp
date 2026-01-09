@@ -96,5 +96,8 @@ export const API_URLS = {
     stats: `${API_BASE}/api/kajea/stats`,
     clients: `${API_BASE}/api/kajea/clients`,
   },
+  hr: {
+    employees: `${API_BASE}/api/hr/employees`,
+  },
 }
 

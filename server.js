@@ -1993,9 +1993,9 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
           // Optimize principal extraction - check number type first
           const rawPrincipal = loan.principal_balance_amount ?? 
-                              loan.PrincipalBalanceAmount ?? 
-                              loan['principal_balance_amount'] ?? 
-                              loan['Principal Balance Amount'] ?? 
+            loan.PrincipalBalanceAmount ??
+            loan['principal_balance_amount'] ??
+            loan['Principal Balance Amount'] ??
                               loan['Principal Balance'] ?? 0
           const principal = typeof rawPrincipal === 'number' 
             ? rawPrincipal 
@@ -2390,6 +2390,55 @@ app.get('/api/kajea/stats', (req, res) => {
 })
 
 // Kajea clients list endpoint
+// HR Management - Wingubox Employees
+app.get('/api/hr/employees', (req, res) => {
+  try {
+    const rows = db
+      .prepare(`
+        SELECT 
+          id,
+          employee_id,
+          employee_number,
+          active,
+          full_name,
+          first_name,
+          middle_name,
+          last_name,
+          employment_type,
+          job_title,
+          department,
+          department_code,
+          region,
+          region_code,
+          contract_start,
+          contract_end,
+          residential_status,
+          gender,
+          date_of_birth,
+          id_no,
+          pin,
+          telephone,
+          official_email,
+          personal_email,
+          address_1,
+          address_2,
+          city,
+          state_province_county,
+          country,
+          postal_code,
+          zip_code,
+          created_at,
+          updated_at
+        FROM wingubox_employees
+        ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE
+      `)
+      .all()
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/kajea/clients', (req, res) => {
   try {
     const clients = []
@@ -2602,6 +2651,25 @@ cron.schedule('*/30 * * * *', () => {
   })
   proc.on('error', (err) => {
     console.error('[CRON] GPSIoT clients/assets fetch failed to start:', err.message)
+  })
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Cron job: Fetch Wingubox employees every 30 minutes
+cron.schedule('*/30 * * * *', () => {
+  console.log('[CRON] Starting Wingubox employees fetch...')
+  const proc = spawn('node', ['scripts/fetch_wingubox_employees.mjs'], {
+    cwd: __dirname,
+    stdio: 'inherit',
+    shell: true
+  })
+  proc.on('close', (code) => {
+    console.log(`[CRON] Wingubox employees fetch completed with code ${code}`)
+  })
+  proc.on('error', (err) => {
+    console.error('[CRON] Wingubox employees fetch failed to start:', err.message)
   })
 }, {
   scheduled: true,

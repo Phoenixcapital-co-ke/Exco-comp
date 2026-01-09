@@ -14,7 +14,12 @@ import {
   AlertTriangle,
   Activity,
   LogOut,
-  Target
+  Target,
+  PieChart,
+  MapPin,
+  Calendar,
+  FileText,
+  Search
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -100,6 +105,21 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       icon: Shield,
       items: [
         { path: '/insurance/dashboard', label: 'Dashboard', icon: BarChart3 }
+      ]
+    },
+    {
+      id: 'hr',
+      label: 'HR Management',
+      icon: Users,
+      items: [
+        { path: '/hr/dashboard', label: 'Dashboard', icon: BarChart3 },
+        { path: '/hr/analytics', label: 'Analytics', icon: PieChart },
+        { path: '/hr/demographics', label: 'Demographics', icon: MapPin },
+        { path: '/hr/departments', label: 'Departments', icon: Building2 },
+        { path: '/hr/branches', label: 'Branches', icon: Building2 },
+        { path: '/hr/contracts', label: 'Contracts', icon: Calendar },
+        { path: '/hr/directory', label: 'Directory', icon: Search },
+        { path: '/hr/reports', label: 'Reports', icon: FileText }
       ]
     },
     // --- Data nav ---
