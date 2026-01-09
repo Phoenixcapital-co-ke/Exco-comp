@@ -96,8 +96,8 @@ function LogbookPAR() {
         console.error('Borrower access data request timed out')
         setBorrowerData([])
       } else {
-        console.error('Error loading borrower access data:', e)
-        setBorrowerData([])
+      console.error('Error loading borrower access data:', e)
+      setBorrowerData([])
       }
     } finally {
       setBorrowerLoading(false)
@@ -163,7 +163,7 @@ function LogbookPAR() {
       loadBranchData(),
       loadBorrowerData(),
       loadLoanOfficers(),
-      loadLastRunTime()
+    loadLastRunTime()
     ]).catch(e => {
       console.error('Error loading initial data:', e)
     })
@@ -224,7 +224,7 @@ function LogbookPAR() {
   // Extract available months from PAR history (use string month key derived from time column)
   const monthOptions = useMemo(() => {
     if (!history.length) return []
-
+    
     const map = new Map()
 
     for (const entry of history) {
@@ -417,11 +417,11 @@ function LogbookPAR() {
                 </>
               ) : (
                 <>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {par30Plus != null ? `${par30Plus}%` : '—'}
-                  </p>
-                  {par30Plus != null && (
-                    <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {par30Plus != null ? `${par30Plus}%` : '—'}
+              </p>
+              {par30Plus != null && (
+                <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
                   )}
                 </>
               )}
@@ -443,11 +443,11 @@ function LogbookPAR() {
                 </>
               ) : (
                 <>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {latestOpenLoans != null ? formatKES(latestOpenLoans) : '—'}
-                  </p>
-                  {latestOpenLoans != null && (
-                    <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {latestOpenLoans != null ? formatKES(latestOpenLoans) : '—'}
+              </p>
+              {latestOpenLoans != null && (
+                <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
                   )}
                 </>
               )}
@@ -469,11 +469,11 @@ function LogbookPAR() {
                 </>
               ) : (
                 <>
-                  <p className="text-2xl font-bold text-gray-900">
+              <p className="text-2xl font-bold text-gray-900">
                     {latestPastMissed != null ? formatKES(latestPastMissed) : '—'}
-                  </p>
-                  {latestPastMissed != null && (
-                    <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
+              </p>
+              {latestPastMissed != null && (
+                <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
                   )}
                 </>
               )}
@@ -692,43 +692,43 @@ function LogbookPAR() {
             </div>
           </div>
           {dailyParData.length > 0 ? (
-            <div className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={dailyParData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
-                  <YAxis
-                    stroke="#6b7280"
-                    tick={{ fontSize: 12 }}
-                    label={{ value: 'PAR %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
-                  />
-                  <Tooltip
-                    formatter={(value, name) => {
-                      if (name === 'parRate') {
-                        return [`${value.toFixed(2)}%`, 'PAR %']
-                      }
-                      return [value, name]
-                    }}
-                    contentStyle={{
-                      backgroundColor: 'white',
-                      border: '2px solid #e5e7eb',
-                      borderRadius: '8px',
-                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                    }}
-                  />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="parRate"
-                    name="PAR %"
-                    stroke="#ef4444"
-                    fill="#fee2e2"
-                    fillOpacity={0.6}
-                    strokeWidth={2}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+          <div className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={dailyParData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                <YAxis
+                  stroke="#6b7280"
+                  tick={{ fontSize: 12 }}
+                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
+                />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === 'parRate') {
+                      return [`${value.toFixed(2)}%`, 'PAR %']
+                    }
+                    return [value, name]
+                  }}
+                  contentStyle={{
+                    backgroundColor: 'white',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                  }}
+                />
+                <Legend />
+                <Area
+                  type="monotone"
+                  dataKey="parRate"
+                  name="PAR %"
+                  stroke="#ef4444"
+                  fill="#fee2e2"
+                  fillOpacity={0.6}
+                  strokeWidth={2}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
           ) : (
             <div className="h-72 flex items-center justify-center text-gray-500">
               <p>No data available for the selected month.</p>

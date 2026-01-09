@@ -45,17 +45,17 @@ function ZidishaDashboard() {
     const controller = new AbortController()
     const load = async () => {
       try {
-        setLoading(true)
+      setLoading(true)
         // Use backend filtering to exclude Advans Branch
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
-      } catch (e) {
+    } catch (e) {
         if (e.name === 'AbortError') return
-        setError(e.message)
-      } finally {
+      setError(e.message)
+    } finally {
         setLoading(false)
       }
     }
@@ -400,28 +400,28 @@ function ZidishaDashboard() {
           ))
         ) : (
           summaryCards.map((card, idx) => {
-            const Icon = card.icon
-            const TrendIcon = card.trend === 'down' ? ArrowDownRight : ArrowUpRight
-            const trendColor = card.trend === 'down' ? 'text-red-500 bg-red-50' : 'text-emerald-500 bg-emerald-50'
-            return (
-              <div key={idx} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">{card.title}</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">{card.value}</p>
-                  </div>
-                  <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-                    <Icon size={20} />
-                  </div>
+          const Icon = card.icon
+          const TrendIcon = card.trend === 'down' ? ArrowDownRight : ArrowUpRight
+          const trendColor = card.trend === 'down' ? 'text-red-500 bg-red-50' : 'text-emerald-500 bg-emerald-50'
+          return (
+            <div key={idx} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">{card.title}</p>
+                  <p className="text-3xl font-bold text-gray-900 mt-2">{card.value}</p>
                 </div>
-                <div className="flex items-center gap-2 mt-4">
-                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${trendColor}`}>
-                    <TrendIcon size={14} />
-                    {card.change}
-                  </span>
+                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                  <Icon size={20} />
                 </div>
               </div>
-            )
+              <div className="flex items-center gap-2 mt-4">
+                <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${trendColor}`}>
+                  <TrendIcon size={14} />
+                  {card.change}
+                </span>
+              </div>
+            </div>
+          )
           })
         )}
       </section>

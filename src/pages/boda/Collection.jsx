@@ -11,9 +11,11 @@ function BodaCollection() {
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
   const [rows, setRows] = useState([])
   const [repaymentMap, setRepaymentMap] = useState({})
+  const [allRepaymentsMap, setAllRepaymentsMap] = useState({})
   const [dailyRepayments, setDailyRepayments] = useState({})
   const [loading, setLoading] = useState(true)
   const [loadingRepayments, setLoadingRepayments] = useState(true)
+  const [loadingAllRepayments, setLoadingAllRepayments] = useState(true)
   const [loadingDailyRepayments, setLoadingDailyRepayments] = useState(true)
   const [error, setError] = useState(null)
 
@@ -39,6 +41,32 @@ function BodaCollection() {
     }
     load()
     return () => controller.abort()
+  }, [])
+
+  // Fetch all repayments (all time) - load once on mount
+  useEffect(() => {
+    const loadAllRepayments = async () => {
+      setLoadingAllRepayments(true)
+      try {
+        const res = await fetch(API_URLS.boda.repaymentsAll, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          console.warn('Failed to load all repayment data:', res.status)
+          setAllRepaymentsMap({})
+          setLoadingAllRepayments(false)
+          return
+        }
+        const data = await res.json()
+        setAllRepaymentsMap(data || {})
+        setLoadingAllRepayments(false)
+      } catch (e) {
+        console.warn('Error loading all repayment data:', e.message)
+        setAllRepaymentsMap({})
+        setLoadingAllRepayments(false)
+      }
+    }
+    loadAllRepayments()
   }, [])
 
   // Fetch repayment data for the selected month/year
@@ -217,6 +245,10 @@ function BodaCollection() {
         const loanId = (r['Loan ID'] || r.loan_id || '').trim()
         const repaymentKey = `${clientId}|${loanId}`
         const repaidCurrentMonth = repaymentMap[repaymentKey] || 0
+        const totalRepaid = allRepaymentsMap[repaymentKey] || 0
+
+      // Calculate Total Expected Collection = Total Expected Repayment - Total Charges Due At Disbursement
+      const totalExpectedCollection = expected - charges
 
       return {
           client: r['Client Name'] || r.client_name || 'Unknown',
@@ -227,12 +259,13 @@ function BodaCollection() {
           activeDays,
           mtdTarget,
           eomTarget,
-          totalExpected: expected,
-          repaidCurrentMonth
+          totalExpected: totalExpectedCollection,
+          repaidCurrentMonth,
+          totalRepaid
         }
       })
       .sort((a, b) => b.totalExpected - a.totalExpected)
-  }, [rows, selectedMonth, selectedYear, repaymentMap, MS_PER_DAY])
+  }, [rows, selectedMonth, selectedYear, repaymentMap, allRepaymentsMap, MS_PER_DAY])
 
   // Daily Expected vs Collected (Current Month) - based on active days and daily installments
   const dailyExpectedVsCollected = useMemo(() => {
@@ -333,7 +366,8 @@ function BodaCollection() {
       const maturedDate = r['Expected Matured On Date'] || r.expected_matured_on_date
       
       entry.totalLoans += 1
-      entry.totalExpected += expected
+      // Total Expected Collection = Total Expected Repayment - Total Charges Due At Disbursement
+      entry.totalExpected += (expected - charges)
       entry.totalChargesAtDisbursement += charges
       
       // Calculate daily installment for this loan
@@ -625,7 +659,7 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">
-                {new Date(selectedYear, selectedMonth - 1).toLocaleString('en-US', { month: 'long' })} Total Expected Repayment
+                {new Date(selectedYear, selectedMonth - 1).toLocaleString('en-US', { month: 'long' })} Total Expected Collection
               </p>
               <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(currentMonthTarget)}</p>
             </div>
@@ -847,7 +881,8 @@ function BodaCollection() {
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">MTD Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Repaid Current Month</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Expected Repayment</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Repaid</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Expected Collection</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -860,12 +895,13 @@ function BodaCollection() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{formatKES(item.repaidCurrentMonth)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-blue-600 text-right">{formatKES(item.totalRepaid)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatKES(item.totalExpected)}</td>
                 </tr>
               ))}
-              {clientPerformanceData.length === 0 && (
+                {clientPerformanceData.length === 0 && (
                 <tr>
-                  <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No client data available</td>
+                    <td className="px-6 py-6 text-center text-gray-500" colSpan={9}>No client data available</td>
                 </tr>
               )}
             </tbody>

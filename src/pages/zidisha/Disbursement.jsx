@@ -29,9 +29,12 @@ function ZidishaDisbursement() {
     const load = async () => {
       try {
         setLoading(true)
-        // Use backend filtering to exclude Advans Branch
+        // Filter for Zidisha products only using backend filtering (same as Collection page)
+        const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+        // Use backend filtering for products and exclude Advans branch
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
+          products: zidishaProducts,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)

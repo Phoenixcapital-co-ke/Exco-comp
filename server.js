@@ -830,6 +830,34 @@ app.get('/api/boda/repayments', (req, res) => {
   }
 })
 
+// Boda all repayments endpoint - get all repayments (all time) grouped by Client Id and Loan Id
+app.get('/api/boda/repayments/all', (req, res) => {
+  try {
+    // Query: sum Transaction Amount grouped by Client Id and Loan Id (all time)
+    const rows = db.prepare(`
+      SELECT 
+        "Client Id" as clientId,
+        "Loan Id" as loanId,
+        SUM("Transaction Amount") as totalRepaid
+      FROM boda_repayments
+      WHERE "Transaction Amount" IS NOT NULL
+      GROUP BY "Client Id", "Loan Id"
+    `).all()
+
+    // Convert to a map for easy lookup: key = "clientId|loanId", value = totalRepaid
+    const repaymentMap = {}
+    for (const row of rows) {
+      const key = `${row.clientId}|${row.loanId}`
+      repaymentMap[key] = Number(row.totalRepaid || 0)
+    }
+
+    res.json(repaymentMap)
+  } catch (e) {
+    console.error('[Boda All Repayments API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Boda daily repayments endpoint - get daily repayment breakdown for a month
 app.get('/api/boda/repayments/daily', (req, res) => {
   try {
