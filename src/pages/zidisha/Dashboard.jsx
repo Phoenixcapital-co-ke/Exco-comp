@@ -10,7 +10,8 @@ import {
   ShieldAlert,
   Target,
   Clock,
-  Activity
+  Activity,
+  Loader2
 } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -45,17 +46,20 @@ function ZidishaDashboard() {
     const controller = new AbortController()
     const load = async () => {
       try {
-      setLoading(true)
-        // Use backend filtering to exclude Advans Branch
+        setLoading(true)
+        // Filter for Zidisha products only using backend filtering (same as other Zidisha pages)
+        const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+        // Use backend filtering for products and exclude Advans branch
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
+          products: zidishaProducts,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
-    } catch (e) {
+      } catch (e) {
         if (e.name === 'AbortError') return
-      setError(e.message)
-    } finally {
+        setError(e.message)
+      } finally {
         setLoading(false)
       }
     }
@@ -434,6 +438,14 @@ function ZidishaDashboard() {
               <p className="text-sm text-gray-500">Disbursements vs collections with collection rate trend</p>
             </div>
           </div>
+          {loading ? (
+            <div className="h-80 flex items-center justify-center">
+              <div className="text-center">
+                <Loader2 className="animate-spin text-gray-400 mx-auto mb-2" size={32} />
+                <p className="text-gray-500 text-sm">Loading chart data...</p>
+              </div>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={320}>
             <ComposedChart data={portfolioSeries}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -456,6 +468,7 @@ function ZidishaDashboard() {
               <Line yAxisId="right" type="monotone" dataKey="rate" name="Collection Rate" stroke="#6366f1" strokeWidth={2} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
+          )}
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
@@ -463,6 +476,14 @@ function ZidishaDashboard() {
             <h3 className="text-lg font-semibold text-gray-900">Branch Performance</h3>
             <Target className="text-gray-400" size={18} />
           </div>
+          {loading ? (
+            <div className="h-80 flex items-center justify-center">
+              <div className="text-center">
+                <Loader2 className="animate-spin text-gray-400 mx-auto mb-2" size={24} />
+                <p className="text-gray-500 text-sm">Loading branch data...</p>
+              </div>
+            </div>
+          ) : (
           <div className="space-y-3">
             {branchPerformance.map((branch) => (
               <div key={branch.branch} className="flex items-center">
@@ -485,13 +506,18 @@ function ZidishaDashboard() {
               </div>
             ))}
           </div>
+          )}
         </div>
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Average Loan Size</h3>
-          {avgLoanSizeData.length ? (
+          {loading ? (
+            <div className="h-60 flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          ) : avgLoanSizeData.length ? (
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
                 <Pie data={avgLoanSizeData} dataKey="value" innerRadius={60} outerRadius={90} paddingAngle={4}>
@@ -519,7 +545,11 @@ function ZidishaDashboard() {
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Collections &amp; Risk</h3>
-          {collectionsRisk.length ? (
+          {loading ? (
+            <div className="h-60 flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          ) : collectionsRisk.length ? (
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
                 <Pie data={collectionsRisk} dataKey="value" innerRadius={60} outerRadius={90} paddingAngle={4}>
@@ -541,6 +571,11 @@ function ZidishaDashboard() {
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Loan Volume by Category</h3>
+          {loading ? (
+            <div className="h-60 flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={240}>
             <RBarChart data={loanVolumeByCategory}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -551,6 +586,7 @@ function ZidishaDashboard() {
               <Bar dataKey="count" fill="#6366f1" radius={[6, 6, 0, 0]} />
             </RBarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </section>
 
@@ -560,6 +596,11 @@ function ZidishaDashboard() {
             <h3 className="text-lg font-semibold text-gray-900">Operational Insights</h3>
             <Clock className="text-gray-400" size={18} />
           </div>
+          {loading ? (
+            <div className="h-48 flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          ) : (
           <div className="grid grid-cols-1 gap-3">
             {operationalInsights.map((insight, idx) => (
               <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -568,6 +609,7 @@ function ZidishaDashboard() {
               </div>
             ))}
           </div>
+          )}
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
@@ -575,6 +617,11 @@ function ZidishaDashboard() {
             <h3 className="text-lg font-semibold text-gray-900">Alerts &amp; Exceptions</h3>
             <ShieldAlert className="text-gray-400" size={18} />
           </div>
+          {loading ? (
+            <div className="h-48 flex items-center justify-center">
+              <Loader2 className="animate-spin text-gray-400" size={24} />
+            </div>
+          ) : (
           <ul className="space-y-3">
             {alerts.map((alert, idx) => (
               <li key={idx} className="flex items-start gap-3">
@@ -588,6 +635,7 @@ function ZidishaDashboard() {
               </li>
             ))}
           </ul>
+          )}
         </div>
       </section>
     </div>
