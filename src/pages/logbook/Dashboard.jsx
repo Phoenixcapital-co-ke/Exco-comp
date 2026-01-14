@@ -655,7 +655,12 @@ function LogbookDashboard() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(v) => [formatKES(v), 'Amount']} />
+            <Tooltip
+              formatter={(value, _rawName, entry) => {
+                const seriesName = entry && entry.name ? entry.name : _rawName
+                return [formatKES(value), seriesName]
+              }}
+            />
             <Legend />
             <Area type="monotone" dataKey="disbursed" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Disbursed" />
             <Area type="monotone" dataKey="collected" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
