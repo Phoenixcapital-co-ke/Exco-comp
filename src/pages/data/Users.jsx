@@ -11,7 +11,8 @@ const defaultDraft = {
   role: 'user',
   password: '',
   active: true,
-  allowedPages: []
+  allowedPages: [],
+  allowedZidishaBranches: []
 }
 
 function UsersPage() {
@@ -22,6 +23,7 @@ function UsersPage() {
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [availablePages, setAvailablePages] = useState([])
+  const [availableZidishaBranches, setAvailableZidishaBranches] = useState([])
   const { user: currentUser } = useAuth()
 
   const loadUsers = async () => {
@@ -48,6 +50,7 @@ function UsersPage() {
   useEffect(() => {
     loadUsers()
     loadAvailablePages()
+    loadAvailableZidishaBranches()
   }, [])
 
   const loadAvailablePages = async () => {
@@ -62,6 +65,18 @@ function UsersPage() {
     }
   }
 
+  const loadAvailableZidishaBranches = async () => {
+    try {
+      const res = await fetch(API_URLS.zidisha.branches, { credentials: 'include' })
+      if (res.ok) {
+        const data = await res.json()
+        setAvailableZidishaBranches(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Failed to load Zidisha branches:', e)
+    }
+  }
+
   const handleEdit = (user) => {
     setDraft({
       id: user.id,
@@ -71,7 +86,8 @@ function UsersPage() {
       role: user.role || 'user',
       password: '',
       active: !!user.active,
-      allowedPages: Array.isArray(user.allowedPages) ? user.allowedPages : []
+      allowedPages: Array.isArray(user.allowedPages) ? user.allowedPages : [],
+      allowedZidishaBranches: Array.isArray(user.allowedZidishaBranches) ? user.allowedZidishaBranches : [],
     })
     setShowForm(true)
   }
@@ -126,6 +142,17 @@ function UsersPage() {
       setError('At least one page must be selected for custom role users')
       return
     }
+    if (draft.role === 'custom') {
+      const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+      const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
+      if (hasZidishaPages) {
+        const branchesArr = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+        if (branchesArr.length === 0) {
+          setError('At least one Zidisha branch must be selected for Zidisha page access')
+          return
+        }
+      }
+    }
 
     try {
       setSaving(true)
@@ -141,6 +168,7 @@ function UsersPage() {
       }
       if (draft.role === 'custom') {
         payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+        payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
       }
 
       const url = draft.id ? API_URLS.users.update(draft.id) : API_URLS.users.create
@@ -286,7 +314,8 @@ function UsersPage() {
                   setDraft((prev) => ({ 
                     ...prev, 
                     role: newRole,
-                    allowedPages: newRole === 'custom' ? (prev.allowedPages || []) : []
+                    allowedPages: newRole === 'custom' ? (prev.allowedPages || []) : [],
+                    allowedZidishaBranches: newRole === 'custom' ? (prev.allowedZidishaBranches || []) : []
                   }))
                 }}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
@@ -388,6 +417,49 @@ function UsersPage() {
               </div>
               {draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0) && (
                 <p className="text-xs text-red-600 mt-2">At least one page must be selected for custom role users</p>
+              )}
+            </div>
+          )}
+
+          {draft.role === 'custom' && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/zidisha/')) && (
+            <div className="border-t border-gray-200 pt-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-3">
+                Zidisha Branch Access <span className="text-red-500">*</span>
+              </label>
+              <p className="text-xs text-gray-500 mb-4">Select which Zidisha branches this user can see</p>
+              <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                {availableZidishaBranches.length === 0 ? (
+                  <p className="text-sm text-gray-500">Loading branches...</p>
+                ) : (
+                  availableZidishaBranches.map((branch) => {
+                    const isChecked =
+                      Array.isArray(draft.allowedZidishaBranches) && draft.allowedZidishaBranches.includes(branch)
+                    return (
+                      <label
+                        key={branch}
+                        className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const current = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+                            if (e.target.checked) {
+                              setDraft((prev) => ({ ...prev, allowedZidishaBranches: [...current, branch] }))
+                            } else {
+                              setDraft((prev) => ({ ...prev, allowedZidishaBranches: current.filter((b) => b !== branch) }))
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        />
+                        <span className="text-sm text-gray-700">{branch}</span>
+                      </label>
+                    )
+                  })
+                )}
+              </div>
+              {(!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
+                <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
               )}
             </div>
           )}

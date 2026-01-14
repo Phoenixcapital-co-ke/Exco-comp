@@ -15,6 +15,7 @@ import ZidishaCollection from './pages/zidisha/Collection.jsx'
 import ZidishaPAR from './pages/zidisha/PAR.jsx'
 import ZidishaProductivity from './pages/zidisha/Productivity.jsx'
 import ZidishaDemographics from './pages/zidisha/Demographics.jsx'
+import { ZidishaBranchProvider } from './context/ZidishaBranchContext.jsx'
 
 import AdvansDashboard from './pages/advans/Dashboard.jsx'
 import AdvansDisbursement from './pages/advans/Disbursement.jsx'
@@ -73,11 +74,11 @@ function Routes() {
       <Route path="/logbook/demographics" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDemographics /></RequireAuth>} />
       
       {/* Zidisha routes */}
-      <Route path="/zidisha/dashboard" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDashboard /></RequireAuth>} />
-      <Route path="/zidisha/disbursement" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDisbursement /></RequireAuth>} />
-      <Route path="/zidisha/collection" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaCollection /></RequireAuth>} />
-      <Route path="/zidisha/productivity" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaProductivity /></RequireAuth>} />
-      <Route path="/zidisha/demographics" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaDemographics /></RequireAuth>} />
+      <Route path="/zidisha/dashboard" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDashboard /></ZidishaBranchProvider></RequireAuth>} />
+      <Route path="/zidisha/disbursement" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDisbursement /></ZidishaBranchProvider></RequireAuth>} />
+      <Route path="/zidisha/collection" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaCollection /></ZidishaBranchProvider></RequireAuth>} />
+      <Route path="/zidisha/productivity" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaProductivity /></ZidishaBranchProvider></RequireAuth>} />
+      <Route path="/zidisha/demographics" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDemographics /></ZidishaBranchProvider></RequireAuth>} />
       
       {/* Advans routes */}
       <Route path="/advans/dashboard" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansDashboard /></RequireAuth>} />

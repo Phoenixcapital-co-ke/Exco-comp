@@ -3,6 +3,8 @@ import { TrendingUp, Clock, CheckCircle, AlertCircle } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { useZidishaBranch } from '../../context/ZidishaBranchContext.jsx'
+import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
 function ZidishaCollection() {
   const now = new Date()
@@ -15,7 +17,7 @@ function ZidishaCollection() {
   
   // Track if data is ready to prevent showing zeros
   const [dataReady, setDataReady] = useState(false)
-  const [selectedBranch, setSelectedBranch] = useState('All')
+  const { selectedBranch } = useZidishaBranch()
   const [selectedDay, setSelectedDay] = useState(() => {
     const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
     const todayD = new Date().getDate()
@@ -34,6 +36,7 @@ function ZidishaCollection() {
         const filteredRows = await fetchAllZidishaRows({ 
           signal: controller.signal,
           products: zidishaProducts,
+          branch: selectedBranch !== 'All' ? selectedBranch : undefined,
           excludeBranch: 'Advans Branch'
         })
         setRows(filteredRows)
@@ -48,7 +51,7 @@ function ZidishaCollection() {
     }
     load()
     return () => controller.abort()
-  }, [])
+  }, [selectedBranch])
 
   const filtered = useMemo(() => {
     const inMonth = (iso) => {
@@ -132,14 +135,8 @@ function ZidishaCollection() {
     return arr
   }, [rows, selectedMonth, selectedYear, selectedBranch])
 
-  const branchOptions = useMemo(() => {
-    const set = new Set()
-    for (const r of rows) {
-      const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-      if (b && b.toLowerCase() !== 'unknown' && b.toLowerCase() !== 'advans branch') set.add(b)
-    }
-    return ['All', ...Array.from(set).sort((a, b) => a.localeCompare(b))]
-  }, [rows])
+  const selectedBranchLabel =
+    selectedBranch === 'All' ? 'Overall' : String(selectedBranch || '').replace(/\s*branch\s*$/i, '').trim()
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -205,6 +202,9 @@ function ZidishaCollection() {
                 <option key={y} value={y}>{y}</option>
               ))}
             </select>
+          </div>
+          <div className="pb-0.5">
+            <ZidishaBranchFilter />
           </div>
         </div>
       </div>
@@ -352,6 +352,7 @@ function ZidishaCollection() {
             for (const r of filtered) {
               const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
               if (!b || b.toLowerCase() === 'unknown') continue
+              if (selectedBranch !== 'All' && b !== selectedBranch) continue
               const exp = Number(r['Total Expected Repayment Derived']) || 0
               const rep = Number(r['Total Repayment Derived']) || 0
               if (!agg.has(b)) agg.set(b, { expected: 0, collected: 0 })
@@ -485,11 +486,7 @@ function ZidishaCollection() {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Daily Expected vs Collected (Selected Month)</h3>
-          <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
-            {branchOptions.map(b => (
-              <option key={b} value={b}>{b}</option>
-            ))}
-          </select>
+          <div className="text-sm text-gray-600">{selectedBranchLabel}</div>
         </div>
         <div className="w-full h-72">
           <ResponsiveContainer width="100%" height="100%">
@@ -498,23 +495,24 @@ function ZidishaCollection() {
               <XAxis dataKey="day" />
               <YAxis />
               <Tooltip formatter={(v, n) => [formatKES(v),
-                n === 'expected_overall' ? 'Expected (Overall)'
-                : n === 'collected_overall' ? 'Repayed (Overall)'
-                : n === 'expected_branch' ? `Expected (${selectedBranch})`
-                : `Repayed (${selectedBranch})`
+                selectedBranch === 'All'
+                  ? (n === 'expected_overall' ? 'Expected' : 'Repayed')
+                  : (n === 'expected_branch' ? 'Expected' : 'Repayed')
               ]} />
               <Legend formatter={(v) => (
-                v === 'expected_overall' ? 'Expected (Overall)'
-                : v === 'collected_overall' ? 'Repayed (Overall)'
-                : v === 'expected_branch' ? `Expected (${selectedBranch})`
-                : `Repayed (${selectedBranch})`
+                selectedBranch === 'All'
+                  ? (v === 'expected_overall' ? 'Expected' : 'Repayed')
+                  : (v === 'expected_branch' ? 'Expected' : 'Repayed')
               )} />
-              <Area type="monotone" dataKey="expected_overall" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Expected (Overall)" />
-              <Area type="monotone" dataKey="collected_overall" stroke="#10b981" fill="#10b981" fillOpacity={0.2} name="Repayed (Overall)" />
-              {selectedBranch !== 'All' && (
+              {selectedBranch === 'All' ? (
                 <>
-                  <Area type="monotone" dataKey="expected_branch" stroke="#f97316" fill="#f97316" fillOpacity={0.2} name={`Expected (${selectedBranch})`} />
-                  <Area type="monotone" dataKey="collected_branch" stroke="#22c55e" fill="#22c55e" fillOpacity={0.25} name={`Repayed (${selectedBranch})`} />
+                  <Area type="monotone" dataKey="expected_overall" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Expected" />
+                  <Area type="monotone" dataKey="collected_overall" stroke="#10b981" fill="#10b981" fillOpacity={0.2} name="Repayed" />
+                </>
+              ) : (
+                <>
+                  <Area type="monotone" dataKey="expected_branch" stroke="#f97316" fill="#f97316" fillOpacity={0.2} name="Expected" />
+                  <Area type="monotone" dataKey="collected_branch" stroke="#22c55e" fill="#22c55e" fillOpacity={0.25} name="Repayed" />
                 </>
               )}
             </AreaChart>

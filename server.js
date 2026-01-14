@@ -434,6 +434,18 @@ dbRW.exec(`
   );
 `);
 
+// Table to store Zidisha branch permissions for custom role users
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS User_Zidisha_Branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    branch_name TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, branch_name)
+  );
+`);
+
 // Targets tables
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS Logbook_Targets (
@@ -713,7 +725,7 @@ app.get('/api/events', (req, res) => {
 })
 
 // Zidisha data endpoint
-app.get('/api/zidisha/data', (req, res) => {
+app.get('/api/zidisha/data', requireAuth, (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
     const pageSizeRaw = parseInt(req.query.pageSize, 10)
@@ -736,6 +748,26 @@ app.get('/api/zidisha/data', (req, res) => {
     // Build WHERE clause
     const whereConditions = []
     const params = []
+
+    // Enforce branch restrictions for custom users
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    if (authRole === 'custom') {
+      const allowed = Array.isArray(req.authUser?.allowedZidishaBranches) ? req.authUser.allowedZidishaBranches : []
+      if (allowed.length === 0) {
+        return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+      }
+      const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      if (branch) {
+        const bNorm = String(branch || '').trim().toLowerCase()
+        if (!allowedNorm.has(bNorm)) {
+          return res.status(403).json({ error: 'Branch not allowed for this user' })
+        }
+      } else {
+        const placeholders = allowed.map(() => '?').join(', ')
+        whereConditions.push(`LOWER(TRIM("Branch Name")) IN (${placeholders})`)
+        params.push(...allowed.map((b) => String(b || '').trim().toLowerCase()))
+      }
+    }
 
     if (product) {
       whereConditions.push('LOWER(TRIM("Product Name")) = LOWER(?)')
@@ -783,6 +815,42 @@ app.get('/api/zidisha/data', (req, res) => {
       },
       results: rows
     })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Zidisha branches endpoint (distinct branches for Zidisha products)
+app.get('/api/zidisha/branches', requireAuth, (req, res) => {
+  try {
+    const zidishaProducts = [
+      'Zidisha Kifaru',
+      'Zidisha Nyati',
+      'Zidisha Simba',
+      'Zidisha Tembo',
+      'Zidisha Express',
+    ]
+
+    const placeholders = zidishaProducts.map(() => '?').join(', ')
+    const sql = `
+      SELECT DISTINCT TRIM("Branch Name") AS branch
+      FROM zidisha_data
+      WHERE TRIM("Branch Name") IS NOT NULL
+        AND TRIM("Branch Name") != ''
+        AND LOWER(TRIM("Product Name")) IN (${placeholders})
+      ORDER BY branch COLLATE NOCASE
+    `
+    let branches = db.prepare(sql).all(...zidishaProducts.map((p) => p.toLowerCase())).map((r) => r.branch).filter(Boolean)
+
+    // Enforce branch restrictions for custom users
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    if (authRole === 'custom') {
+      const allowed = Array.isArray(req.authUser?.allowedZidishaBranches) ? req.authUser.allowedZidishaBranches : []
+      const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      branches = branches.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
+    }
+
+    res.json(branches)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -990,6 +1058,12 @@ const mapUserRow = (user) => {
       .all(user.id)
       .map(row => row.page_path)
     base.allowedPages = pages
+
+    const branches = dbRW
+      .prepare('SELECT branch_name FROM User_Zidisha_Branches WHERE user_id = ? ORDER BY branch_name COLLATE NOCASE')
+      .all(user.id)
+      .map(row => row.branch_name)
+    base.allowedZidishaBranches = branches
   }
   return base
 }
@@ -1128,7 +1202,7 @@ app.get('/api/users', (req, res) => {
 
 app.post('/api/users', (req, res) => {
   try {
-    const { username, fullName, email, role = 'user', password, active = 1, allowedPages = [] } = req.body || {}
+    const { username, fullName, email, role = 'user', password, active = 1, allowedPages = [], allowedZidishaBranches = [] } = req.body || {}
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' })
     }
@@ -1166,6 +1240,30 @@ app.post('/api/users', (req, res) => {
         }
       }
     }
+
+    // If custom role, save Zidisha branch permissions (required if any Zidisha page is assigned)
+    if (roleStr === 'custom') {
+      const pagesArr = Array.isArray(allowedPages) ? allowedPages : []
+      const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
+      const branchesArr = Array.isArray(allowedZidishaBranches) ? allowedZidishaBranches : []
+
+      if (hasZidishaPages && branchesArr.length === 0) {
+        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha page access' })
+      }
+
+      if (branchesArr.length > 0) {
+        const insertBranch = dbRW.prepare('INSERT INTO User_Zidisha_Branches (user_id, branch_name) VALUES (?, ?)')
+        for (const b of branchesArr) {
+          const branchName = String(b || '').trim()
+          if (!branchName) continue
+          try {
+            insertBranch.run(userId, branchName)
+          } catch (e) {
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+    }
     
     res.json({ ok: true })
   } catch (e) {
@@ -1186,7 +1284,7 @@ app.put('/api/users/:id', (req, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    const { fullName, email, role, active, password, allowedPages } = req.body || {}
+    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -1211,7 +1309,7 @@ app.put('/api/users/:id', (req, res) => {
       params.password_hash = hashPassword(password)
     }
 
-    if (!fields.length && typeof allowedPages === 'undefined') {
+    if (!fields.length && typeof allowedPages === 'undefined' && typeof allowedZidishaBranches === 'undefined') {
       return res.status(400).json({ error: 'No updates provided' })
     }
 
@@ -1243,6 +1341,38 @@ app.put('/api/users/:id', (req, res) => {
     } else if (roleStr !== 'custom') {
       // If role changed from custom to something else, remove page permissions
       dbRW.prepare('DELETE FROM User_Pages WHERE user_id = ?').run(id)
+    }
+
+    // Handle Zidisha branch permissions for custom role
+    if (roleStr === 'custom' && typeof allowedZidishaBranches !== 'undefined') {
+      // Delete existing branches
+      dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
+
+      const branchesArr = Array.isArray(allowedZidishaBranches) ? allowedZidishaBranches : []
+      if (branchesArr.length > 0) {
+        const insertBranch = dbRW.prepare('INSERT INTO User_Zidisha_Branches (user_id, branch_name) VALUES (?, ?)')
+        for (const b of branchesArr) {
+          const branchName = String(b || '').trim()
+          if (!branchName) continue
+          try {
+            insertBranch.run(id, branchName)
+          } catch (e) {
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+
+      // Validate: if user has Zidisha pages, they must have at least one Zidisha branch
+      const pagesNow = typeof allowedPages !== 'undefined'
+        ? (Array.isArray(allowedPages) ? allowedPages : [])
+        : dbRW.prepare('SELECT page_path FROM User_Pages WHERE user_id = ?').all(id).map(r => r.page_path)
+      const hasZidishaPages = pagesNow.some((p) => String(p || '').startsWith('/zidisha/'))
+      if (hasZidishaPages && branchesArr.length === 0) {
+        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha page access' })
+      }
+    } else if (roleStr !== 'custom') {
+      // If role changed away from custom, remove branch permissions
+      dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
     }
     
     res.json({ ok: true })

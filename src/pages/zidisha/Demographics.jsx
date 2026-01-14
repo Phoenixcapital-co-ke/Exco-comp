@@ -17,6 +17,8 @@ import {
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { useZidishaBranch } from '../../context/ZidishaBranchContext.jsx'
+import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
 const GENDER_COLORS = {
   Female: '#ec4899',
@@ -63,16 +65,19 @@ export default function ZidishaDemographics() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [selectedBranch, setSelectedBranch] = useState('All')
+  const { selectedBranch } = useZidishaBranch()
 
   useEffect(() => {
     const controller = new AbortController()
     const load = async () => {
       try {
         setLoading(true)
-        // Use backend filtering to exclude Advans Branch
+        // Use backend filtering for Zidisha products and branch, and exclude Advans Branch
+        const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
+          products: zidishaProducts,
+          branch: selectedBranch !== 'All' ? selectedBranch : undefined,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
@@ -85,16 +90,7 @@ export default function ZidishaDemographics() {
     }
     load()
     return () => controller.abort()
-  }, [])
-
-  const branches = useMemo(() => {
-    const set = new Set()
-    for (const row of rows) {
-      const b = normalizeString(row['Branch Name'] || row.branch_name)
-      if (b && b !== 'Unknown') set.add(b)
-    }
-    return ['All', ...Array.from(set).sort()]
-  }, [rows])
+  }, [selectedBranch])
 
   const filteredRows = useMemo(() => {
     if (selectedBranch === 'All') return rows
@@ -284,18 +280,7 @@ export default function ZidishaDemographics() {
           </div>
           <div className="flex items-center space-x-3">
             <Building2 size={20} className="text-indigo-600" />
-            <span className="text-sm font-medium text-gray-700">Branch</span>
-            <select
-              value={selectedBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              className="text-sm border-2 border-indigo-200 rounded-lg px-4 py-2 bg-white font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition-all"
-            >
-              {branches.map((branch) => (
-                <option key={branch} value={branch}>
-                  {branch}
-                </option>
-              ))}
-            </select>
+            <ZidishaBranchFilter />
           </div>
         </div>
       </div>

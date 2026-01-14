@@ -27,6 +27,8 @@ function LogbookDashboard() {
   const [error, setError] = useState(null)
   const [openLoans, setOpenLoans] = useState(null)
   const [openLoansChange, setOpenLoansChange] = useState('—')
+  const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear())
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().getMonth() + 1)
   const esRef = useRef()
 
   // Refactor loadData so it can be called repeatedly
@@ -180,6 +182,52 @@ function LogbookDashboard() {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
+
+  // Available years in dataset (for Year filter)
+  const yearSet = new Set()
+  ;(processor.disbursementsData || []).forEach((loan) => {
+    const dateStr = loan.disbursed_date || ''
+    const parts = String(dateStr).split('/')
+    const yyyy = parts[2]
+    const y = Number(yyyy)
+    if (Number.isFinite(y) && y > 1900) yearSet.add(y)
+  })
+  ;(processor.repaymentsData || []).forEach((r) => {
+    const dateStr = r.repayment_collected_date || ''
+    const parts = String(dateStr).split('/')
+    const yyyy = parts[2]
+    const y = Number(yyyy)
+    if (Number.isFinite(y) && y > 1900) yearSet.add(y)
+  })
+  if (!yearSet.size) yearSet.add(currentYear)
+  const yearOptions = Array.from(yearSet).sort((a, b) => b - a)
+  const effectiveYear = yearSet.has(Number(selectedYear)) ? Number(selectedYear) : currentYear
+
+  // Available months in selected year (for Month filter)
+  const monthSet = new Set()
+  ;(processor.disbursementsData || []).forEach((loan) => {
+    const dateStr = loan.disbursed_date || ''
+    const [dd, mm, yyyy] = String(dateStr).split('/')
+    const y = Number(yyyy)
+    const m = Number(mm)
+    if (Number.isFinite(y) && Number.isFinite(m) && y === effectiveYear && m >= 1 && m <= 12) {
+      monthSet.add(m)
+    }
+  })
+  ;(processor.repaymentsData || []).forEach((r) => {
+    const dateStr = r.repayment_collected_date || ''
+    const [dd, mm, yyyy] = String(dateStr).split('/')
+    const y = Number(yyyy)
+    const m = Number(mm)
+    if (Number.isFinite(y) && Number.isFinite(m) && y === effectiveYear && m >= 1 && m <= 12) {
+      monthSet.add(m)
+    }
+  })
+  if (!monthSet.size) monthSet.add(currentMonth)
+  const monthOptions = Array.from(monthSet).sort((a, b) => a - b)
+  const effectiveMonth = monthSet.has(Number(selectedMonth))
+    ? Number(selectedMonth)
+    : monthOptions[monthOptions.length - 1]
   
   // Total Disbursed This Month
   const totalDisbursedCurrentMonth = (processor.disbursementsData || []).reduce((sum, loan) => {
@@ -212,15 +260,15 @@ function LogbookDashboard() {
   const productData = (monthlyDisb?.byProduct || []).map(p => ({ name: p.name, value: p.amount }))
 
   // Rebuild daily trend for the current month (dynamic)
-  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
-  const disbByDay = Array(daysInMonth + 1).fill(0);
-  const collByDay = Array(daysInMonth + 1).fill(0);
+  const daysInSelectedMonth = new Date(effectiveYear, effectiveMonth, 0).getDate();
+  const disbByDay = Array(daysInSelectedMonth + 1).fill(0);
+  const collByDay = Array(daysInSelectedMonth + 1).fill(0);
   (processor.disbursementsData || []).forEach(loan => {
     const dateStr = loan.disbursed_date || '';
     const [dd, mm, yyyy] = String(dateStr).split('/');
-    if (yyyy && mm && Number(yyyy) === currentYear && Number(mm) === currentMonth) {
+    if (yyyy && mm && Number(yyyy) === effectiveYear && Number(mm) === effectiveMonth) {
       const day = Number(dd);
-      if (day >= 1 && day <= daysInMonth) {
+      if (day >= 1 && day <= daysInSelectedMonth) {
         disbByDay[day] += Number(loan.disbursed) || 0;
       }
     }
@@ -228,15 +276,15 @@ function LogbookDashboard() {
   (processor.repaymentsData || []).forEach(r => {
     const dateStr = r.repayment_collected_date || '';
     const [dd, mm, yyyy] = String(dateStr).split('/');
-    if (yyyy && mm && Number(yyyy) === currentYear && Number(mm) === currentMonth) {
+    if (yyyy && mm && Number(yyyy) === effectiveYear && Number(mm) === effectiveMonth) {
       const day = Number(dd);
-      if (day >= 1 && day <= daysInMonth) {
+      if (day >= 1 && day <= daysInSelectedMonth) {
         collByDay[day] += Number(r.repayment_amount) || 0;
       }
     }
   });
   const dailyTrendData = [];
-  for (let day = 1; day <= daysInMonth; day++) {
+  for (let day = 1; day <= daysInSelectedMonth; day++) {
     dailyTrendData.push({
       day: String(day),
       disbursed: disbByDay[day],
@@ -308,7 +356,7 @@ function LogbookDashboard() {
   (processor.disbursementsData || []).forEach(loan => {
     const dateStr = loan.disbursed_date || '';
     const [dd, mm, yyyy] = String(dateStr).split('/');
-    if (yyyy && mm && Number(yyyy) === currentYear && Number(mm) === currentMonth) {
+    if (yyyy && mm && Number(yyyy) === effectiveYear && Number(mm) === effectiveMonth) {
       const branchCode = loan.branch || loan.Branch;
       if (!branchCode) return;
       branchAgg[branchCode] = (branchAgg[branchCode] || 0) + (Number(loan.disbursed) || 0);
@@ -420,7 +468,7 @@ function LogbookDashboard() {
   (processor.disbursementsData || []).forEach(loan => {
     const dateStr = loan.disbursed_date || '';
     const [dd, mm, yyyy] = String(dateStr).split('/');
-    if (yyyy && mm && Number(yyyy) === currentYear) {
+    if (yyyy && mm && Number(yyyy) === effectiveYear) {
       const month = Number(mm);
       if (month >= 1 && month <= 12) yearlyDisb[month] += Number(loan.disbursed) || 0;
     }
@@ -428,7 +476,7 @@ function LogbookDashboard() {
   (processor.repaymentsData || []).forEach(r => {
     const dateStr = r.repayment_collected_date || '';
     const [dd, mm, yyyy] = String(dateStr).split('/');
-    if (yyyy && mm && Number(yyyy) === currentYear) {
+    if (yyyy && mm && Number(yyyy) === effectiveYear) {
       const month = Number(mm);
       if (month >= 1 && month <= 12) yearlyColl[month] += Number(r.repayment_amount) || 0;
     }
@@ -461,9 +509,39 @@ function LogbookDashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Logbook Dashboard</h1>
-        <p className="text-gray-600 mt-2">Real-time overview of Logbook business unit performance</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Logbook Dashboard</h1>
+          <p className="text-gray-600 mt-2">Real-time overview of Logbook business unit performance</p>
+        </div>
+        <div className="flex items-end gap-3">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Year</label>
+            <select
+              className="border border-gray-300 rounded px-2 py-1 text-sm bg-white"
+              value={effectiveYear}
+              onChange={(e) => setSelectedYear(Number(e.target.value))}
+            >
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Month</label>
+            <select
+              className="border border-gray-300 rounded px-2 py-1 text-sm bg-white"
+              value={effectiveMonth}
+              onChange={(e) => setSelectedMonth(Number(e.target.value))}
+            >
+              {monthOptions.map((m) => (
+                <option key={m} value={m}>
+                  {new Date(2000, m - 1, 1).toLocaleString('en-US', { month: 'short' })}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -571,7 +649,7 @@ function LogbookDashboard() {
 
       {/* Collection Trend */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Disbursement vs Collection (Yearly Trend)</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Disbursement vs Collection (Yearly Trend – {effectiveYear})</h3>
         <ResponsiveContainer width="100%" height={260}>
           <AreaChart data={yearlyTrend}>
             <CartesianGrid strokeDasharray="3 3" />

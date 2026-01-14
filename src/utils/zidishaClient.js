@@ -34,7 +34,16 @@ export async function fetchAllZidishaRows({ signal, pageSize = 5000, product, pr
       signal,
     })
     if (!res.ok) {
-      throw new Error(`Failed to load data (${res.status})`)
+      let details = ''
+      try {
+        const body = await res.json()
+        if (body && typeof body.error === 'string' && body.error.trim()) {
+          details = body.error.trim()
+        }
+      } catch {
+        // ignore
+      }
+      throw new Error(details ? `${details} (${res.status})` : `Failed to load data (${res.status})`)
     }
     const payload = await res.json()
     const rows = normalizeZidishaResponse(payload)

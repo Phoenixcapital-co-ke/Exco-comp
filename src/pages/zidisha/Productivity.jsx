@@ -1,5 +1,6 @@
 import React from 'react'
 import { Activity, Users, Target, Award } from 'lucide-react'
+import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
 function ZidishaProductivity() {
   const productivityData = [
@@ -12,9 +13,14 @@ function ZidishaProductivity() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Zidisha Productivity</h1>
-        <p className="text-gray-600 mt-2">Track Zidisha staff performance and productivity metrics</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Zidisha Productivity</h1>
+          <p className="text-gray-600 mt-2">Track Zidisha staff performance and productivity metrics</p>
+        </div>
+        <div className="pt-1">
+          <ZidishaBranchFilter />
+        </div>
       </div>
 
       {/* Summary Cards */}

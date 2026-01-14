@@ -113,7 +113,6 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       icon: Users,
       items: [
         { path: '/hr/dashboard', label: 'Dashboard', icon: BarChart3 },
-        { path: '/hr/analytics', label: 'Analytics', icon: PieChart },
         { path: '/hr/demographics', label: 'Demographics', icon: MapPin },
         { path: '/hr/departments', label: 'Departments', icon: Building2 },
         { path: '/hr/branches', label: 'Branches', icon: Building2 },

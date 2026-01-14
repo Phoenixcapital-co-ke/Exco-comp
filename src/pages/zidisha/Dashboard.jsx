@@ -33,14 +33,14 @@ import {
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { useZidishaBranch } from '../../context/ZidishaBranchContext.jsx'
+import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
 function ZidishaDashboard() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-
-  const filterRows = (data) =>
-    data.filter((r) => (r['Branch Name'] || r.branch_name || '').trim().toLowerCase() !== 'advans branch')
+  const { selectedBranch } = useZidishaBranch()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -53,6 +53,7 @@ function ZidishaDashboard() {
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
           products: zidishaProducts,
+          branch: selectedBranch !== 'All' ? selectedBranch : undefined,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
@@ -65,7 +66,7 @@ function ZidishaDashboard() {
     }
     load()
     return () => controller.abort()
-  }, [])
+  }, [selectedBranch])
   // Compute Active Loans: Expected Matured On Date is today or in the future
   const today = new Date()
   const isActive = (row) => {
@@ -383,6 +384,9 @@ function ZidishaDashboard() {
           <p className="text-gray-600 mt-2">
             Real-time overview of performance, collections, and risk across Zidisha branches.
           </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ZidishaBranchFilter />
         </div>
       </header>
 

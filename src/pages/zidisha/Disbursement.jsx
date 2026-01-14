@@ -4,6 +4,8 @@ import { formatKES } from '../../utils/format.js'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { API_URLS } from '../../utils/api.js'
+import { useZidishaBranch } from '../../context/ZidishaBranchContext.jsx'
+import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
 function ZidishaDisbursement() {
   const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#6366f1']
@@ -14,9 +16,9 @@ function ZidishaDisbursement() {
   const now = new Date()
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
-  const [selectedBranch, setSelectedBranch] = useState('All')
   const [selectedDay, setSelectedDay] = useState(now.getDate())
   const [expandedBranch, setExpandedBranch] = useState(null)
+  const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useZidishaBranch()
 
   const cleanBranchName = (name = '') => {
     const trimmed = String(name || '').trim()
@@ -35,6 +37,7 @@ function ZidishaDisbursement() {
         const filtered = await fetchAllZidishaRows({ 
           signal: controller.signal,
           products: zidishaProducts,
+          branch: selectedBranch !== 'All' ? selectedBranch : undefined,
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
@@ -47,7 +50,7 @@ function ZidishaDisbursement() {
     }
     load()
     return () => controller.abort()
-  }, [])
+  }, [selectedBranch])
 
   useEffect(() => {
     const loadTargets = async () => {
@@ -269,11 +272,7 @@ function ZidishaDisbursement() {
     const ys = new Set(rows.map(r => new Date(r['Disbursed On Date'] || r.disbursed_on_date).getFullYear()).filter(y => !isNaN(y)))
     return Array.from(ys).sort((a, b) => a - b)
   })()
-  const branchOptions = (() => {
-    const bs = new Set(rows.map(r => cleanBranchName((r['Branch Name'] || r.branch_name || 'Unknown').trim())).filter(Boolean))
-    const arr = Array.from(bs).sort((a, b) => a.localeCompare(b))
-    return ['All', ...arr]
-  })()
+  const selectedBranchLabel = selectedBranch === 'All' ? 'All' : cleanBranchName(selectedBranch)
 
   return (
     <div className="space-y-6">
@@ -299,7 +298,9 @@ function ZidishaDisbursement() {
               ))}
             </select>
           </div>
-          
+          <div className="pb-0.5">
+            <ZidishaBranchFilter />
+          </div>
         </div>
       </div>
 
@@ -394,7 +395,7 @@ function ZidishaDisbursement() {
         const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
         const overallByDay = Array(daysIn + 1).fill(0)
         const branchByDay = Array(daysIn + 1).fill(0)
-        const branchFilter = selectedBranch
+        const branchFilter = selectedBranchLabel
         for (const r of monthRows) {
           const ds = r['Disbursed On Date'] || r.disbursed_on_date
           if (!ds) continue
@@ -418,8 +419,10 @@ function ZidishaDisbursement() {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">Daily Disbursements ({monthLabel} {selectedYear})</h3>
               <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
-                {branchOptions.map(b => (
-                  <option key={b} value={b}>{b}</option>
+                {branchOptions.map((b) => (
+                  <option key={b} value={b}>
+                    {b === 'All' ? 'All branches' : (cleanBranchLabel ? cleanBranchLabel(b) : b)}
+                  </option>
                 ))}
               </select>
             </div>
@@ -429,11 +432,15 @@ function ZidishaDisbursement() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="day" />
                   <YAxis />
-                  <Tooltip formatter={(v, n) => [formatKES(v), n === 'overall' ? 'Overall' : selectedBranch]} />
-                  <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
-                  {selectedBranch !== 'All' && (
-                    <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
-                  )}
+                  <Tooltip formatter={(v) => [formatKES(v), selectedBranchLabel === 'All' ? 'Overall' : selectedBranchLabel]} />
+                  <Area
+                    type="monotone"
+                    dataKey={selectedBranch === 'All' ? 'overall' : 'branch'}
+                    stroke={selectedBranch === 'All' ? '#3b82f6' : '#ef4444'}
+                    fill={selectedBranch === 'All' ? '#3b82f6' : '#ef4444'}
+                    fillOpacity={0.25}
+                    name={selectedBranchLabel === 'All' ? 'Overall' : selectedBranchLabel}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
