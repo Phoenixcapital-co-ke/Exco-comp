@@ -8,7 +8,7 @@ const defaultDraft = {
   username: '',
   fullName: '',
   email: '',
-  role: 'user',
+  role: 'logbook',
   password: '',
   active: true,
   allowedPages: [],
@@ -151,8 +151,8 @@ function UsersPage() {
       setError('Username is required')
       return
     }
-    if (!draft.id && !draft.password.trim()) {
-      setError('Password is required for new users')
+    if (!draft.email.trim()) {
+      setError('Email is required')
       return
     }
     if (draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0)) {
@@ -199,12 +199,16 @@ function UsersPage() {
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Save failed')
+        throw new Error(data.error || `Save failed (${res.status})`)
       }
       await loadUsers()
       setDraft(defaultDraft)
       setShowForm(false)
-      setSuccess(isCreate ? 'User created successfully.' : 'User updated successfully.')
+      if (isCreate) {
+        setSuccess('User created successfully. A confirmation email was sent (if email is configured).')
+      } else {
+        setSuccess('User updated successfully.')
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -379,7 +383,7 @@ function UsersPage() {
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">
                     Password {draft.id && <span className="text-gray-500 font-normal">(leave blank to keep existing)</span>}
-                    {!draft.id && <span className="text-red-500">*</span>}
+                    {!draft.id && <span className="text-gray-500 font-normal">(optional — user will set via email confirmation)</span>}
                   </label>
                   <input
                     type="password"
@@ -388,7 +392,7 @@ function UsersPage() {
                     className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                     placeholder="Enter password"
                     autoComplete="new-password"
-                    required={!draft.id}
+                    required={false}
                   />
                 </div>
                 <div className="flex items-center">

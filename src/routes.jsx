@@ -48,9 +48,11 @@ import LogbookTargets from './pages/data/LogbookTargets.jsx'
 import ZidishaTargets from './pages/data/ZidishaTargets.jsx'
 import SignIn from './pages/auth/SignIn.jsx'
 import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
+import ForgotPassword from './pages/auth/ForgotPassword.jsx'
+import ConfirmAccount from './pages/auth/ConfirmAccount.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 
-const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook']
+const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook', 'user']
 const ZIDISHA_ROLES = ['superuser', 'admin', 'manager', 'zidisha']
 const ADVANS_ROLES = ['superuser', 'admin', 'manager', 'advans']
 const BODA_ROLES = ['superuser', 'admin', 'manager', 'boda']
@@ -60,7 +62,10 @@ function Routes() {
   return (
     <RouterRoutes>
       <Route path="/login" element={<SignIn />} />
+      <Route path="/auth/signin" element={<SignIn />} />
       <Route path="/done" element={<SuperuserSignIn />} />
+      <Route path="/auth/forgot-password" element={<ForgotPassword />} />
+      <Route path="/auth/confirm" element={<ConfirmAccount />} />
 
       {/* Default route */}
       <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard /></RequireAuth>} />

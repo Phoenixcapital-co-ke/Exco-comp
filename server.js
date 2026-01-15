@@ -11,6 +11,10 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync } from 'fs'
 import cron from 'node-cron'
+import nodemailer from 'nodemailer'
+import dotenv from 'dotenv'
+
+dotenv.config()
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -20,10 +24,14 @@ const isProduction = process.env.NODE_ENV === 'production'
 const JWT_SECRET = process.env.JWT_SECRET || 'please-change-me-in-production'
 const JWT_TTL_HOURS = Number(process.env.AUTH_TOKEN_TTL_HOURS || 24)
 const AUTH_COOKIE_NAME = 'pcdash_auth'
+const COOKIE_SECURE =
+  typeof process.env.COOKIE_SECURE !== 'undefined'
+    ? ['1', 'true', 'yes'].includes(String(process.env.COOKIE_SECURE).toLowerCase())
+    : isProduction
 const AUTH_COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'lax',
-  secure: isProduction,
+  secure: COOKIE_SECURE,
   maxAge: JWT_TTL_HOURS * 60 * 60 * 1000,
   path: '/'
 }
@@ -103,7 +111,14 @@ dbRW.exec(`
   );
 `);
 
-const PUBLIC_API_PATHS = new Set(['/auth/login', '/auth/logout', '/system/status'])
+const PUBLIC_API_PATHS = new Set([
+  '/auth/login',
+  '/auth/logout',
+  '/auth/confirm-email',
+  '/auth/forgot-password',
+  '/auth/reset-password',
+  '/system/status',
+])
 
 // Settings helpers
 const getSettingStmt = dbRW.prepare('SELECT value FROM System_Settings WHERE key = ? LIMIT 1')
@@ -417,10 +432,64 @@ dbRW.exec(`
     role TEXT,
     active INTEGER DEFAULT 1,
     password_hash TEXT NOT NULL,
+    email_verified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Email verification + password reset tables
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Email_Verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+  );
+`);
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Password_Reset_Codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+  );
+`);
+
+// Migrations for older DBs
+try {
+  dbRW.exec(`ALTER TABLE Users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // ignore if exists
+}
+
+// Ensure existing privileged accounts are not locked out (they may predate email verification flow)
+try {
+  dbRW
+    .prepare(
+      `UPDATE Users
+       SET email_verified = 1, updated_at = CURRENT_TIMESTAMP
+       WHERE email_verified = 0
+         AND lower(role) IN ('admin', 'superuser')`
+    )
+    .run()
+} catch (e) {
+  // ignore
+}
+
+// Unique email (case-insensitive) when email is not empty
+try {
+  dbRW.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON Users(lower(email)) WHERE email <> '';`)
+} catch (e) {
+  // ignore
+}
 
 // Table to store page permissions for custom role users
 dbRW.exec(`
@@ -502,13 +571,49 @@ try {
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
 
+const hashToken = (token) => crypto.createHash('sha256').update(String(token ?? '')).digest('hex')
+
+const normalizeEmail = (email) => String(email ?? '').trim().toLowerCase()
+
+const nowIso = () => new Date().toISOString()
+
+const addMinutesIso = (minutes) => new Date(Date.now() + minutes * 60 * 1000).toISOString()
+
+const getAppBaseUrl = () => String(process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, '')
+
+const getMailer = () => {
+  const host = process.env.SMTP_HOST
+  if (!host) return null
+  const port = Number(process.env.SMTP_PORT || 587)
+  const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true'
+  const user = process.env.SMTP_USER
+  const pass = process.env.SMTP_PASS
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: user && pass ? { user, pass } : undefined,
+  })
+}
+
+const sendEmail = async ({ to, subject, text, html }) => {
+  const from = process.env.SMTP_FROM || 'no-reply@phoenixcapitalkenya.com'
+  const mailer = getMailer()
+  if (!mailer) {
+    console.log('[email] SMTP not configured. Would send:', { to, subject, text })
+    return { ok: false, skipped: true }
+  }
+  await mailer.sendMail({ from, to, subject, text, html })
+  return { ok: true }
+}
+
 try {
   const userCount = dbRW.prepare('SELECT COUNT(*) as c FROM Users').get().c
   if (userCount === 0) {
     dbRW
       .prepare(
-        `INSERT INTO Users (username, full_name, email, role, active, password_hash)
-         VALUES (@username, @full_name, @email, @role, 1, @password_hash)`
+        `INSERT INTO Users (username, full_name, email, role, active, password_hash, email_verified)
+         VALUES (@username, @full_name, @email, @role, 1, @password_hash, 1)`
       )
       .run({
         username: 'admin',
@@ -523,8 +628,8 @@ try {
   if (!existingDev) {
     dbRW
       .prepare(
-        `INSERT INTO Users (username, full_name, email, role, active, password_hash)
-         VALUES (@username, @full_name, @email, @role, 1, @password_hash)`
+        `INSERT INTO Users (username, full_name, email, role, active, password_hash, email_verified)
+         VALUES (@username, @full_name, @email, @role, 1, @password_hash, 1)`
       )
       .run({
         username: 'dev',
@@ -1141,16 +1246,21 @@ app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password, superuserOnly } = req.body || {}
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' })
+      return res.status(400).json({ error: 'Username/email and password are required' })
     }
+    const loginId = String(username).trim()
+    const loginIdLower = loginId.toLowerCase()
     const user = dbRW
-      .prepare('SELECT * FROM Users WHERE username = ? LIMIT 1')
-      .get(String(username).trim())
+      .prepare('SELECT * FROM Users WHERE username = ? OR lower(email) = ? LIMIT 1')
+      .get(loginId, loginIdLower)
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
     if (!user.active) {
       return res.status(403).json({ error: 'User is deactivated' })
+    }
+    if (!user.email_verified) {
+      return res.status(403).json({ error: 'Account not confirmed. Please check your email to confirm your account.' })
     }
     const isSuperuser = String(user.role || '').toLowerCase() === 'superuser'
     
@@ -1171,6 +1281,116 @@ app.post('/api/auth/login', (req, res) => {
     const token = signAuthToken(user)
     setAuthCookie(res, token)
     res.json({ user: mapUserRow(user) })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/auth/confirm-email', async (req, res) => {
+  try {
+    const { token, password } = req.body || {}
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' })
+    }
+    const tokenHash = hashToken(token)
+    const row = dbRW
+      .prepare(
+        `SELECT ev.*, u.id as user_id, u.email as email, u.active as active
+         FROM Email_Verifications ev
+         JOIN Users u ON u.id = ev.user_id
+         WHERE ev.token_hash = ?
+         LIMIT 1`
+      )
+      .get(tokenHash)
+    if (!row) return res.status(400).json({ error: 'Invalid or expired token' })
+    if (row.used_at) return res.status(400).json({ error: 'Token already used' })
+    if (!row.active) return res.status(403).json({ error: 'User is deactivated' })
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Token expired' })
+    }
+
+    dbRW.prepare(`UPDATE Users SET email_verified = 1, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
+      hashPassword(password),
+      row.user_id
+    )
+    dbRW.prepare(`UPDATE Email_Verifications SET used_at = ? WHERE id = ?`).run(nowIso(), row.id)
+
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body || {}
+    const emailNorm = normalizeEmail(email)
+    if (!emailNorm) return res.status(400).json({ error: 'Email is required' })
+
+    const user = dbRW.prepare('SELECT * FROM Users WHERE lower(email) = ? LIMIT 1').get(emailNorm)
+    if (!user) return res.status(404).json({ error: 'Email not found' })
+    if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
+    if (!user.email_verified) {
+      return res.status(403).json({ error: 'Account not confirmed. Please confirm your account first.' })
+    }
+
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const codeHash = hashToken(code)
+    const expiresAt = addMinutesIso(15)
+    dbRW.prepare(`INSERT INTO Password_Reset_Codes (user_id, code_hash, expires_at) VALUES (?, ?, ?)`).run(
+      user.id,
+      codeHash,
+      expiresAt
+    )
+
+    const subject = 'Password reset code'
+    const text = `Your Phoenix Capital Dashboard password reset code is: ${code}\n\nThis code expires in 15 minutes.`
+    const html = `<p>Your Phoenix Capital Dashboard password reset code is:</p><p style="font-size:20px;font-weight:bold;letter-spacing:2px">${code}</p><p>This code expires in 15 minutes.</p>`
+    const sendResult = await sendEmail({ to: user.email, subject, text, html })
+
+    res.json({ ok: true, emailSent: !!sendResult.ok })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/auth/reset-password', (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body || {}
+    const emailNorm = normalizeEmail(email)
+    if (!emailNorm || !code || !newPassword) {
+      return res.status(400).json({ error: 'Email, code, and newPassword are required' })
+    }
+    const user = dbRW.prepare('SELECT * FROM Users WHERE lower(email) = ? LIMIT 1').get(emailNorm)
+    if (!user) return res.status(404).json({ error: 'Email not found' })
+    if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
+    if (!user.email_verified) {
+      return res.status(403).json({ error: 'Account not confirmed. Please confirm your account first.' })
+    }
+
+    const latest = dbRW
+      .prepare(
+        `SELECT * FROM Password_Reset_Codes
+         WHERE user_id = ?
+           AND used_at IS NULL
+         ORDER BY id DESC
+         LIMIT 1`
+      )
+      .get(user.id)
+    if (!latest) return res.status(400).json({ error: 'No reset code found. Request a new one.' })
+    if (new Date(latest.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Reset code expired. Request a new one.' })
+    }
+    if (hashToken(code) !== latest.code_hash) {
+      return res.status(400).json({ error: 'Invalid reset code' })
+    }
+
+    dbRW.prepare(`UPDATE Users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
+      hashPassword(newPassword),
+      user.id
+    )
+    dbRW.prepare(`UPDATE Password_Reset_Codes SET used_at = ? WHERE id = ?`).run(nowIso(), latest.id)
+    res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1202,11 +1422,12 @@ app.get('/api/users', (req, res) => {
 
 app.post('/api/users', (req, res) => {
   try {
-    const { username, fullName, email, role = 'user', password, active = 1, allowedPages = [], allowedZidishaBranches = [] } = req.body || {}
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' })
-    }
+    const { username, fullName, email, role = 'logbook', password, active = 1, allowedPages = [], allowedZidishaBranches = [] } = req.body || {}
+    if (!username) return res.status(400).json({ error: 'Username is required' })
+    const emailNorm = normalizeEmail(email)
+    if (!emailNorm) return res.status(400).json({ error: 'Email is required' })
     const roleStr = String(role || 'user').trim().toLowerCase()
+    const tempPassword = password ? String(password) : crypto.randomBytes(24).toString('hex')
     
     // Insert user
     const result = dbRW
@@ -1217,10 +1438,10 @@ app.post('/api/users', (req, res) => {
       .run({
         username: String(username).trim(),
         full_name: fullName ? String(fullName).trim() : '',
-        email: email ? String(email).trim() : '',
+        email: emailNorm,
         role: roleStr,
         active: active ? 1 : 0,
-        password_hash: hashPassword(password)
+        password_hash: hashPassword(tempPassword)
       })
     
     const userId = result.lastInsertRowid
@@ -1265,10 +1486,43 @@ app.post('/api/users', (req, res) => {
       }
     }
     
-    res.json({ ok: true })
+    // Create confirmation token and send email
+    const token = crypto.randomBytes(32).toString('hex')
+    const tokenHash = hashToken(token)
+    const expiresAt = addMinutesIso(60 * 24) // 24 hours
+    dbRW
+      .prepare(`INSERT INTO Email_Verifications (user_id, token_hash, expires_at) VALUES (?, ?, ?)`)
+      .run(userId, tokenHash, expiresAt)
+
+    const confirmUrl = `${getAppBaseUrl()}/auth/confirm?token=${encodeURIComponent(token)}`
+    const subject = 'Confirm your account'
+    const text =
+      `Your Phoenix Capital Dashboard account was created.\n\n` +
+      `Please confirm your account and set your password using this link:\n${confirmUrl}\n\n` +
+      `This link expires in 24 hours.`
+    const html =
+      `<p>Your Phoenix Capital Dashboard account was created.</p>` +
+      `<p>Please confirm your account and set your password:</p>` +
+      `<p><a href="${confirmUrl}">Confirm account</a></p>` +
+      `<p>This link expires in 24 hours.</p>`
+
+    sendEmail({ to: emailNorm, subject, text, html })
+      .then((r) => res.json({ ok: true, emailSent: !!r.ok }))
+      .catch((err) => {
+        console.error('Failed to send confirmation email:', err)
+        // User is created; surface email failure to admin
+        res.json({ ok: true, emailSent: false })
+      })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: 'Username already exists' })
+      const msg = String(e.message || '')
+      if (msg.includes('Users.username')) {
+        return res.status(409).json({ error: 'Username already exists' })
+      }
+      if (msg.includes('idx_users_email_unique') || msg.includes('Users.email')) {
+        return res.status(409).json({ error: 'Email already exists' })
+      }
+      return res.status(409).json({ error: 'Duplicate user' })
     }
     res.status(500).json({ error: e.message })
   }

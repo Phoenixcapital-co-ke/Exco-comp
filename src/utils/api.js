@@ -55,6 +55,9 @@ export const API_URLS = {
     login: `${API_BASE}/api/auth/login`,
     logout: `${API_BASE}/api/auth/logout`,
     me: `${API_BASE}/api/auth/me`,
+    confirmEmail: `${API_BASE}/api/auth/confirm-email`,
+    forgotPassword: `${API_BASE}/api/auth/forgot-password`,
+    resetPassword: `${API_BASE}/api/auth/reset-password`,
   },
   users: {
     list: `${API_BASE}/api/users`,
