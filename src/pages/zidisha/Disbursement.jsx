@@ -323,43 +323,43 @@ function ZidishaDisbursement() {
           ))
         ) : (
           <>
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} ${selectedYear} Disbursed`}</p>
-                  <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedMonth)}</p>
-                  <p className={`text-sm mt-1 ${changeColor(totalDisbursedMoM)}`}>{totalDisbursedMoM}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-green-50 text-green-600">
-                  <DollarSign size={24} />
-                </div>
-              </div>
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} ${selectedYear} Disbursed`}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedMonth)}</p>
+              <p className={`text-sm mt-1 ${changeColor(totalDisbursedMoM)}`}>{totalDisbursedMoM}</p>
             </div>
-            
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">{isCurrentSelection ? 'Disbursed Today' : 'Avg Disbursement / Day'}</p>
-                  <p className="text-2xl font-bold text-gray-900">{isCurrentSelection ? formatKES(disbursedTodaySelected) : formatKES(avgDisbursementPerDay)}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-                  <Calendar size={24} />
-                </div>
-              </div>
+            <div className="p-3 rounded-lg bg-green-50 text-green-600">
+              <DollarSign size={24} />
             </div>
-            
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Number of Loans</p>
-                  <p className="text-2xl font-bold text-gray-900">{numLoansMonth.toLocaleString()}</p>
-                  <p className={`text-sm mt-1 ${changeColor(numLoansMoM)}`}>{numLoansMoM}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
-                  <TrendingUp size={24} />
-                </div>
-              </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">{isCurrentSelection ? 'Disbursed Today' : 'Avg Disbursement / Day'}</p>
+              <p className="text-2xl font-bold text-gray-900">{isCurrentSelection ? formatKES(disbursedTodaySelected) : formatKES(avgDisbursementPerDay)}</p>
             </div>
+            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+              <Calendar size={24} />
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Number of Loans</p>
+              <p className="text-2xl font-bold text-gray-900">{numLoansMonth.toLocaleString()}</p>
+              <p className={`text-sm mt-1 ${changeColor(numLoansMoM)}`}>{numLoansMoM}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
+              <TrendingUp size={24} />
+            </div>
+          </div>
+        </div>
 
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">

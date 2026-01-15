@@ -51,7 +51,7 @@ export function AuthProvider({ children }) {
   const refreshUser = useCallback(async (showLoading = true, forceCheck = false) => {
     // Set loading only if explicitly requested
     if (showLoading) {
-      setIsLoading(true)
+    setIsLoading(true)
     }
     
     const controller = new AbortController()
