@@ -575,6 +575,21 @@ const hashToken = (token) => crypto.createHash('sha256').update(String(token ?? 
 
 const normalizeEmail = (email) => String(email ?? '').trim().toLowerCase()
 
+const validatePasswordOrThrow = (pw) => {
+  const p = String(pw || '')
+  if (p.length < 6) {
+    const err = new Error('Password must be at least 6 characters.')
+    err.statusCode = 400
+    throw err
+  }
+  // Basic requirement: at least 1 letter + 1 number
+  if (!/[A-Za-z]/.test(p) || !/[0-9]/.test(p)) {
+    const err = new Error('Password must contain at least one letter and one number.')
+    err.statusCode = 400
+    throw err
+  }
+}
+
 const nowIso = () => new Date().toISOString()
 
 const addMinutesIso = (minutes) => new Date(Date.now() + minutes * 60 * 1000).toISOString()
@@ -1153,6 +1168,7 @@ const mapUserRow = (user) => {
   email: user.email,
   role: user.role,
   active: !!user.active,
+  emailVerified: !!user.email_verified,
   createdAt: user.created_at,
   updatedAt: user.updated_at
   }
@@ -1256,11 +1272,11 @@ app.post('/api/auth/login', (req, res) => {
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
-    if (!user.active) {
-      return res.status(403).json({ error: 'User is deactivated' })
-    }
     if (!user.email_verified) {
       return res.status(403).json({ error: 'Account not confirmed. Please check your email to confirm your account.' })
+    }
+    if (!user.active) {
+      return res.status(403).json({ error: 'User is deactivated' })
     }
     const isSuperuser = String(user.role || '').toLowerCase() === 'superuser'
     
@@ -1292,10 +1308,11 @@ app.post('/api/auth/confirm-email', async (req, res) => {
     if (!token || !password) {
       return res.status(400).json({ error: 'Token and password are required' })
     }
+    validatePasswordOrThrow(password)
     const tokenHash = hashToken(token)
     const row = dbRW
       .prepare(
-        `SELECT ev.*, u.id as user_id, u.email as email, u.active as active
+        `SELECT ev.*, u.id as user_id, u.email as email, u.active as active, u.email_verified as email_verified
          FROM Email_Verifications ev
          JOIN Users u ON u.id = ev.user_id
          WHERE ev.token_hash = ?
@@ -1304,12 +1321,15 @@ app.post('/api/auth/confirm-email', async (req, res) => {
       .get(tokenHash)
     if (!row) return res.status(400).json({ error: 'Invalid or expired token' })
     if (row.used_at) return res.status(400).json({ error: 'Token already used' })
-    if (!row.active) return res.status(403).json({ error: 'User is deactivated' })
+    // Before confirmation, users are created as active=0. Allow confirmation in that state.
+    // Only treat active=0 as "deactivated" if the account was already verified.
+    if (Number(row.email_verified) === 1 && !row.active) return res.status(403).json({ error: 'User is deactivated' })
     if (new Date(row.expires_at).getTime() < Date.now()) {
       return res.status(400).json({ error: 'Token expired' })
     }
 
-    dbRW.prepare(`UPDATE Users SET email_verified = 1, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
+    // Confirm account and activate it
+    dbRW.prepare(`UPDATE Users SET email_verified = 1, active = 1, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
       hashPassword(password),
       row.user_id
     )
@@ -1317,6 +1337,9 @@ app.post('/api/auth/confirm-email', async (req, res) => {
 
     res.json({ ok: true })
   } catch (e) {
+    if (e && e.statusCode) {
+      return res.status(e.statusCode).json({ error: e.message })
+    }
     res.status(500).json({ error: e.message })
   }
 })
@@ -1411,7 +1434,7 @@ app.get('/api/auth/me', (req, res) => {
 app.get('/api/users', (req, res) => {
   try {
     const rows = dbRW
-      .prepare('SELECT id, username, full_name, email, role, active, created_at, updated_at FROM Users ORDER BY username COLLATE NOCASE')
+      .prepare('SELECT id, username, full_name, email, role, active, email_verified, created_at, updated_at FROM Users ORDER BY username COLLATE NOCASE')
       .all()
       .map(mapUserRow)
     res.json(rows)
@@ -1440,7 +1463,8 @@ app.post('/api/users', (req, res) => {
         full_name: fullName ? String(fullName).trim() : '',
         email: emailNorm,
         role: roleStr,
-        active: active ? 1 : 0,
+        // New users are inactive until they confirm their email + set password
+        active: 0,
         password_hash: hashPassword(tempPassword)
       })
     

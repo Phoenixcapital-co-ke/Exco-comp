@@ -7,7 +7,7 @@ import { useInactivityLogout } from '../hooks/useInactivityLogout.js'
 import { API_URLS } from '../utils/api.js'
 import { useAuth } from '../context/AuthContext.jsx'
 
-const NO_CHROME_ROUTES = ['/login', '/done']
+const NO_CHROME_ROUTES = ['/login', '/done', '/auth/signin', '/auth/forgot-password', '/auth/confirm']
 const DESKTOP_BREAKPOINT = 1024
 
 function Layout({ children }) {
@@ -60,6 +60,7 @@ function Layout({ children }) {
   const isLoggedIn = !!user
   const isOnLoginPage = location.pathname === '/login'
   const isOnSuperuserPage = location.pathname === '/done'
+  const isAuthFlowRoute = location.pathname.startsWith('/auth/')
 
   // Show maintenance screen on /login when maintenance is ON (even if not logged in)
   if (!statusLoading && maintenance && isOnLoginPage && !isLoggedIn) {
@@ -104,7 +105,7 @@ function Layout({ children }) {
     )
   }
 
-  if (NO_CHROME_ROUTES.includes(location.pathname)) {
+  if (NO_CHROME_ROUTES.includes(location.pathname) || isAuthFlowRoute) {
     return <div className="min-h-screen bg-gray-50">{children}</div>
   }
 

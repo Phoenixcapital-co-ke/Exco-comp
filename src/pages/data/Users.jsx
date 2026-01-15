@@ -10,7 +10,8 @@ const defaultDraft = {
   email: '',
   role: 'logbook',
   password: '',
-  active: true,
+  // New users start inactive until they confirm their account
+  active: false,
   allowedPages: [],
   allowedZidishaBranches: []
 }
@@ -173,14 +174,17 @@ function UsersPage() {
 
     try {
       setSaving(true)
+      const createdUsername = draft.username.trim()
       const payload = {
         username: draft.username.trim(),
         fullName: draft.fullName.trim(),
         email: draft.email.trim(),
         role: draft.role,
-        active: draft.active,
+        ...(draft.id ? { active: draft.active } : {}),
       }
-      if (draft.password.trim()) {
+      // Only allow setting password when editing an existing user.
+      // New users will set their password via the email confirmation link.
+      if (draft.id && draft.password.trim()) {
         payload.password = draft.password
       }
       if (draft.role === 'custom') {
@@ -205,7 +209,7 @@ function UsersPage() {
       setDraft(defaultDraft)
       setShowForm(false)
       if (isCreate) {
-        setSuccess('User created successfully. A confirmation email was sent (if email is configured).')
+        setSuccess(`User created successfully. A confirmation email was sent to ${createdUsername}.`)
       } else {
         setSuccess('User updated successfully.')
       }
@@ -218,6 +222,10 @@ function UsersPage() {
 
   const toggleActive = async (user) => {
     try {
+      if (!user.emailVerified) {
+        setError('This user has not confirmed their account yet.')
+        return
+      }
       const res = await fetch(API_URLS.users.update(user.id), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -380,35 +388,38 @@ function UsersPage() {
                     <option value="custom">Custom</option>
                   </select>
                 </div>
+              {draft.id && (
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Password {draft.id && <span className="text-gray-500 font-normal">(leave blank to keep existing)</span>}
-                    {!draft.id && <span className="text-gray-500 font-normal">(optional — user will set via email confirmation)</span>}
+                    Password <span className="text-gray-500 font-normal">(leave blank to keep existing)</span>
                   </label>
                   <input
                     type="password"
                     value={draft.password}
                     onChange={(e) => setDraft((prev) => ({ ...prev, password: e.target.value }))}
                     className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                    placeholder="Enter password"
+                    placeholder="Enter new password"
                     autoComplete="new-password"
                     required={false}
                   />
                 </div>
-                <div className="flex items-center">
-                  <div className="flex items-center space-x-3 mt-8">
-                    <input
-                      id="user-active"
-                      type="checkbox"
-                      className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                      checked={draft.active}
-                      onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
-                    />
-                    <label htmlFor="user-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
-                      Active User
-                    </label>
+              )}
+                {draft.id && (
+                  <div className="flex items-center">
+                    <div className="flex items-center space-x-3 mt-8">
+                      <input
+                        id="user-active"
+                        type="checkbox"
+                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        checked={draft.active}
+                        onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
+                      />
+                      <label htmlFor="user-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                        Active User
+                      </label>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {draft.role === 'custom' && (
@@ -595,7 +606,11 @@ function UsersPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      {user.active ? (
+                      {!user.emailVerified ? (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+                          Pending confirmation
+                        </span>
+                      ) : user.active ? (
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
                           Active
                         </span>
