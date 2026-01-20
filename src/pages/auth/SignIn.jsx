@@ -47,7 +47,7 @@ function SignIn() {
       if (err.name === 'AbortError') {
         setError('Request timed out. Please check your connection and try again.')
       } else {
-        setError(err.message)
+      setError(err.message)
       }
     } finally {
       setSubmitting(false)

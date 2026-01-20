@@ -298,72 +298,72 @@ function UsersPage() {
           <div className="absolute inset-0 flex items-center justify-center p-4">
             <div className="w-full max-w-3xl bg-white shadow-2xl border border-gray-200 rounded-2xl overflow-hidden">
               <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between border-b border-gray-200 pb-4">
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-                    {draft.id ? (
-                      <>
-                        <Edit2 size={20} className="text-primary-600" />
-                        Edit User
-                      </>
-                    ) : (
-                      <>
-                        <Plus size={20} className="text-primary-600" />
-                        Add New User
-                      </>
-                    )}
-                  </h2>
-                  <p className="text-sm text-gray-500 mt-1">Provide user credentials and role.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={resetForm}
+          <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                {draft.id ? (
+                  <>
+                    <Edit2 size={20} className="text-primary-600" />
+                    Edit User
+                  </>
+                ) : (
+                  <>
+                    <Plus size={20} className="text-primary-600" />
+                    Add New User
+                  </>
+                )}
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">Provide user credentials and role.</p>
+            </div>
+            <button
+              type="button"
+              onClick={resetForm}
                   className="inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-                  title="Close form"
-                >
-                  <X size={18} />
-                </button>
-              </div>
+              title="Close form"
+            >
+              <X size={18} />
+            </button>
+          </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Username <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={draft.username}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, username: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                    placeholder="Enter username"
-                    required
-                    disabled={Boolean(draft.id)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
-                  <input
-                    type="text"
-                    value={draft.fullName}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, fullName: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                    placeholder="Enter full name"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
-                  <input
-                    type="email"
-                    value={draft.email}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, email: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                    placeholder="email@example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Role</label>
-                  <select
-                    value={draft.role}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Username <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={draft.username}
+                onChange={(e) => setDraft((prev) => ({ ...prev, username: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="Enter username"
+                required
+                disabled={Boolean(draft.id)}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
+              <input
+                type="text"
+                value={draft.fullName}
+                onChange={(e) => setDraft((prev) => ({ ...prev, fullName: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="Enter full name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+              <input
+                type="email"
+                value={draft.email}
+                onChange={(e) => setDraft((prev) => ({ ...prev, email: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="email@example.com"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Role</label>
+              <select
+                value={draft.role}
                     onChange={(e) => {
                       const newRole = e.target.value
                       setDraft((prev) => ({
@@ -373,54 +373,54 @@ function UsersPage() {
                         allowedZidishaBranches: newRole === 'custom' ? (prev.allowedZidishaBranches || []) : [],
                       }))
                     }}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
-                  >
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
+              >
                     {/* Only superuser can assign the superuser role */}
                     {String(currentUser?.role || '').toLowerCase() === 'superuser' && (
                       <option value="superuser">Superuser</option>
                     )}
-                    <option value="admin">Admin</option>
-                    <option value="manager">Manager</option>
-                    <option value="logbook">Logbook</option>
-                    <option value="zidisha">Zidisha</option>
-                    <option value="advans">Advans</option>
+                <option value="admin">Admin</option>
+                <option value="manager">Manager</option>
+                <option value="logbook">Logbook</option>
+                <option value="zidisha">Zidisha</option>
+                <option value="advans">Advans</option>
                     <option value="boda">Boda</option>
                     <option value="custom">Custom</option>
-                  </select>
-                </div>
+              </select>
+            </div>
               {draft.id && (
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
                     Password <span className="text-gray-500 font-normal">(leave blank to keep existing)</span>
-                  </label>
-                  <input
-                    type="password"
-                    value={draft.password}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, password: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+              </label>
+              <input
+                type="password"
+                value={draft.password}
+                onChange={(e) => setDraft((prev) => ({ ...prev, password: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                     placeholder="Enter new password"
-                    autoComplete="new-password"
+                autoComplete="new-password"
                     required={false}
-                  />
-                </div>
+              />
+            </div>
               )}
                 {draft.id && (
-                  <div className="flex items-center">
-                    <div className="flex items-center space-x-3 mt-8">
-                      <input
-                        id="user-active"
-                        type="checkbox"
-                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                        checked={draft.active}
-                        onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
-                      />
-                      <label htmlFor="user-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
-                        Active User
-                      </label>
-                    </div>
-                  </div>
-                )}
+            <div className="flex items-center">
+              <div className="flex items-center space-x-3 mt-8">
+                <input
+                  id="user-active"
+                  type="checkbox"
+                  className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  checked={draft.active}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
+                />
+                <label htmlFor="user-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                  Active User
+                </label>
               </div>
+            </div>
+                )}
+          </div>
 
               {draft.role === 'custom' && (
                 <div className="border-t border-gray-200 pt-5">
@@ -539,24 +539,24 @@ function UsersPage() {
 
               <div className="sticky bottom-0 bg-white pt-4 border-t border-gray-200">
                 <div className="flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={resetForm}
-                    className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
-                  >
-                    <Save size={16} />
-                    {saving ? 'Saving...' : draft.id ? 'Update User' : 'Create User'}
-                  </button>
+            <button
+              type="button"
+              onClick={resetForm}
+              className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+            >
+              <Save size={16} />
+              {saving ? 'Saving...' : draft.id ? 'Update User' : 'Create User'}
+            </button>
                 </div>
-              </div>
-              </form>
+          </div>
+        </form>
             </div>
           </div>
         </div>

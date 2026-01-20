@@ -46,7 +46,7 @@ function ZidishaDashboard() {
     const controller = new AbortController()
     const load = async () => {
       try {
-        setLoading(true)
+      setLoading(true)
         // Filter for Zidisha products only using backend filtering (same as other Zidisha pages)
         const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
         // Use backend filtering for products and exclude Advans branch
@@ -57,10 +57,10 @@ function ZidishaDashboard() {
           excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
-      } catch (e) {
+    } catch (e) {
         if (e.name === 'AbortError') return
-        setError(e.message)
-      } finally {
+      setError(e.message)
+    } finally {
         setLoading(false)
       }
     }

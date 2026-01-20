@@ -940,6 +940,210 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
   }
 })
 
+// Report generation endpoint - processes data and returns aggregated monthly report
+app.post('/api/reports/generate', requireAuth, async (req, res) => {
+  try {
+    const { type, fromMonth, toMonth } = req.body || {}
+    
+    if (!type || !fromMonth || !toMonth) {
+      return res.status(400).json({ error: 'type, fromMonth, and toMonth are required' })
+    }
+
+    // Simulate processing delay (3 seconds)
+    await new Promise(resolve => setTimeout(resolve, 3000))
+
+    const [fromYear, fromMonthNum] = fromMonth.split('-').map(Number)
+    const [toYear, toMonthNum] = toMonth.split('-').map(Number)
+
+    // Build base query filters based on report type
+    const whereConditions = []
+    const params = []
+
+    if (type === 'zidisha') {
+      const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+      const placeholders = zidishaProducts.map(() => '?').join(', ')
+      whereConditions.push(`LOWER(TRIM("Product Name")) IN (${placeholders})`)
+      params.push(...zidishaProducts.map(p => p.toLowerCase()))
+      whereConditions.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+      params.push('Advans Branch')
+    } else if (type === 'advans') {
+      whereConditions.push('LOWER(TRIM("Branch Name")) = LOWER(?)')
+      params.push('Advans Branch')
+    } else if (type === 'boda') {
+      whereConditions.push('LOWER(TRIM("Product Name")) = LOWER(?)')
+      params.push('Zidisha Boda')
+      whereConditions.push('TRIM("Client Id") != ?')
+      params.push('3926')
+    } else if (type === 'zidisha-branchwise') {
+      const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+      const placeholders = zidishaProducts.map(() => '?').join(', ')
+      whereConditions.push(`LOWER(TRIM("Product Name")) IN (${placeholders})`)
+      params.push(...zidishaProducts.map(p => p.toLowerCase()))
+      whereConditions.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+      params.push('Advans Branch')
+    } else {
+      return res.status(400).json({ error: 'Invalid report type' })
+    }
+
+    // Enforce branch restrictions for custom users
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    if (authRole === 'custom' && (type === 'zidisha' || type === 'zidisha-branchwise')) {
+      const allowed = Array.isArray(req.authUser?.allowedZidishaBranches) ? req.authUser.allowedZidishaBranches : []
+      if (allowed.length === 0) {
+        return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+      }
+      const placeholders = allowed.map(() => '?').join(', ')
+      whereConditions.push(`LOWER(TRIM("Branch Name")) IN (${placeholders})`)
+      params.push(...allowed.map((b) => String(b || '').trim().toLowerCase()))
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
+
+    // Get all rows matching filters
+    const rows = db.prepare(`SELECT * FROM zidisha_data ${whereClause}`).all(...params)
+
+    const monthMap = new Map()
+
+    // Process each row for monthly aggregation
+    rows.forEach(row => {
+      // Process disbursements
+      const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
+      if (disbursedDate) {
+        const d = new Date(disbursedDate)
+        if (!isNaN(d.getTime())) {
+          const rowYear = d.getFullYear()
+          const rowMonth = d.getMonth() + 1
+          
+          if (rowYear < fromYear || (rowYear === fromYear && rowMonth < fromMonthNum)) return
+          if (rowYear > toYear || (rowYear === toYear && rowMonth > toMonthNum)) return
+          
+          const monthKey = `${rowYear}-${String(rowMonth).padStart(2, '0')}`
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+          const monthLabel = `${monthNames[d.getMonth()]}-${d.getFullYear()}`
+          
+          if (!monthMap.has(monthKey)) {
+            monthMap.set(monthKey, {
+              month: monthLabel,
+              year: rowYear,
+              monthNum: rowMonth,
+              totalCollected: 0,
+              totalDisbursed: 0,
+              totalExpectedRepayment: 0
+            })
+          }
+          const principal = Number(row['Principal Amount'] || row.principal_amount || 0)
+          monthMap.get(monthKey).totalDisbursed += principal
+        }
+      }
+
+      // Process collections
+      const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
+      if (maturedDate) {
+        const d = new Date(maturedDate)
+        if (!isNaN(d.getTime())) {
+          const rowYear = d.getFullYear()
+          const rowMonth = d.getMonth() + 1
+          
+          if (rowYear < fromYear || (rowYear === fromYear && rowMonth < fromMonthNum)) return
+          if (rowYear > toYear || (rowYear === toYear && rowMonth > toMonthNum)) return
+          
+          const monthKey = `${rowYear}-${String(rowMonth).padStart(2, '0')}`
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+          const monthLabel = `${monthNames[d.getMonth()]}-${d.getFullYear()}`
+          
+          if (!monthMap.has(monthKey)) {
+            monthMap.set(monthKey, {
+              month: monthLabel,
+              year: rowYear,
+              monthNum: rowMonth,
+              totalCollected: 0,
+              totalDisbursed: 0,
+              totalExpectedRepayment: 0
+            })
+          }
+          const repayment = Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
+          const expectedRepayment = Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
+          monthMap.get(monthKey).totalCollected += repayment
+          monthMap.get(monthKey).totalExpectedRepayment += expectedRepayment
+        }
+      }
+    })
+
+    let reportData = Array.from(monthMap.values())
+      .sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year
+        return a.monthNum - b.monthNum
+      })
+
+    // For branchwise report, aggregate by branch instead
+    if (type === 'zidisha-branchwise') {
+      const branchMap = new Map()
+      
+      rows.forEach(row => {
+        const branchName = (row['Branch Name'] || row.branch_name || 'Unknown').trim()
+        
+        // Process disbursements
+        const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
+        if (disbursedDate) {
+          const d = new Date(disbursedDate)
+          if (!isNaN(d.getTime())) {
+            const rowYear = d.getFullYear()
+            const rowMonth = d.getMonth() + 1
+            
+            if (rowYear < fromYear || (rowYear === fromYear && rowMonth < fromMonthNum)) return
+            if (rowYear > toYear || (rowYear === toYear && rowMonth > toMonthNum)) return
+            
+            if (!branchMap.has(branchName)) {
+              branchMap.set(branchName, {
+                branch: branchName,
+                totalCollected: 0,
+                totalDisbursed: 0,
+                totalExpectedRepayment: 0
+              })
+            }
+            const principal = Number(row['Principal Amount'] || row.principal_amount || 0)
+            branchMap.get(branchName).totalDisbursed += principal
+          }
+        }
+
+        // Process collections
+        const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
+        if (maturedDate) {
+          const d = new Date(maturedDate)
+          if (!isNaN(d.getTime())) {
+            const rowYear = d.getFullYear()
+            const rowMonth = d.getMonth() + 1
+            
+            if (rowYear < fromYear || (rowYear === fromYear && rowMonth < fromMonthNum)) return
+            if (rowYear > toYear || (rowYear === toYear && rowMonth > toMonthNum)) return
+            
+            if (!branchMap.has(branchName)) {
+              branchMap.set(branchName, {
+                branch: branchName,
+                totalCollected: 0,
+                totalDisbursed: 0,
+                totalExpectedRepayment: 0
+              })
+            }
+            const repayment = Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
+            const expectedRepayment = Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
+            branchMap.get(branchName).totalCollected += repayment
+            branchMap.get(branchName).totalExpectedRepayment += expectedRepayment
+          }
+        }
+      })
+
+      reportData = Array.from(branchMap.values())
+        .sort((a, b) => a.branch.localeCompare(b.branch))
+    }
+
+    res.json({ data: reportData })
+  } catch (e) {
+    console.error('[Report Generation API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Zidisha branches endpoint (distinct branches for Zidisha products)
 app.get('/api/zidisha/branches', requireAuth, (req, res) => {
   try {

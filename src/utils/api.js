@@ -36,6 +36,9 @@ export const API_URLS = {
   },
   events: `${API_BASE}/api/events`,
   ingest: `${API_BASE}/api/ingest`,
+  reports: {
+    generate: `${API_BASE}/api/reports/generate`,
+  },
   par: {
     history: `${API_BASE}/api/par`,
     fetchPastMissed: `${API_BASE}/api/par/past-missed`,
