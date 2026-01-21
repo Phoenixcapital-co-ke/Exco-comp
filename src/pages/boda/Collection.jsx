@@ -18,6 +18,7 @@ function BodaCollection() {
   const [loadingAllRepayments, setLoadingAllRepayments] = useState(true)
   const [loadingDailyRepayments, setLoadingDailyRepayments] = useState(true)
   const [error, setError] = useState(null)
+  const [clientSearchFilter, setClientSearchFilter] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -876,32 +877,35 @@ function BodaCollection() {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Daily Installment</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Period (Days)</th>
-                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Active Days (Selected Month)</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">MTD Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Repaid Current Month</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Rate %</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Repaid</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total Expected Collection</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {clientPerformanceData.map((item, idx) => (
-                <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.dailyInstallment)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{item.period.toLocaleString()}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{item.activeDays.toLocaleString()}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{formatKES(item.repaidCurrentMonth)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-blue-600 text-right">{formatKES(item.totalRepaid)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatKES(item.totalExpected)}</td>
-                </tr>
-              ))}
+              {clientPerformanceData.map((item, idx) => {
+                const eomRate = item.eomTarget > 0 ? (item.repaidCurrentMonth / item.eomTarget) * 100 : 0
+                return (
+                  <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.dailyInstallment)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{formatKES(item.repaidCurrentMonth)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-right" style={{ color: eomRate >= 100 ? '#10b981' : eomRate >= 80 ? '#f59e0b' : '#ef4444' }}>
+                      {eomRate.toFixed(2)}%
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-blue-600 text-right">{formatKES(item.totalRepaid)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatKES(item.totalExpected)}</td>
+                  </tr>
+                )
+              })}
                 {clientPerformanceData.length === 0 && (
                 <tr>
-                    <td className="px-6 py-6 text-center text-gray-500" colSpan={9}>No client data available</td>
+                    <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No client data available</td>
                 </tr>
               )}
             </tbody>
