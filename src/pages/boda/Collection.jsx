@@ -268,6 +268,17 @@ function BodaCollection() {
       .sort((a, b) => b.totalExpected - a.totalExpected)
   }, [rows, selectedMonth, selectedYear, repaymentMap, allRepaymentsMap, MS_PER_DAY])
 
+  // Filter client performance data by search term
+  const filteredClientPerformanceData = useMemo(() => {
+    if (!clientSearchFilter.trim()) {
+      return clientPerformanceData
+    }
+    const searchTerm = clientSearchFilter.toLowerCase().trim()
+    return clientPerformanceData.filter(item => 
+      item.client.toLowerCase().includes(searchTerm)
+    )
+  }, [clientPerformanceData, clientSearchFilter])
+
   // Daily Expected vs Collected (Current Month) - based on active days and daily installments
   const dailyExpectedVsCollected = useMemo(() => {
     const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
@@ -868,8 +879,17 @@ function BodaCollection() {
 
       {/* Client Performance Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search client name..."
+              value={clientSearchFilter}
+              onChange={(e) => setClientSearchFilter(e.target.value)}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent w-64"
+            />
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
@@ -886,7 +906,7 @@ function BodaCollection() {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {clientPerformanceData.map((item, idx) => {
+              {filteredClientPerformanceData.map((item, idx) => {
                 const eomRate = item.eomTarget > 0 ? (item.repaidCurrentMonth / item.eomTarget) * 100 : 0
                 return (
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
@@ -903,9 +923,11 @@ function BodaCollection() {
                   </tr>
                 )
               })}
-                {clientPerformanceData.length === 0 && (
+              {filteredClientPerformanceData.length === 0 && (
                 <tr>
-                    <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>No client data available</td>
+                    <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>
+                      {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No client data available'}
+                    </td>
                 </tr>
               )}
             </tbody>
