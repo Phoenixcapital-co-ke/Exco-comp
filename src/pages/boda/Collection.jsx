@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useCallback } from 'react'
 import { TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle, DollarSign, Target, Zap, Calendar, Users, BarChart3 } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
@@ -187,6 +187,13 @@ function BodaCollection() {
     return totalCollectedMonth / loansWithCollection.length
   }, [filtered, totalCollectedMonth])
 
+  // Helper function to clean branch name
+  const cleanBranchName = useCallback((name = '') => {
+    const trimmed = String(name || '').trim()
+    const noSuffix = trimmed.replace(/\s*branch\s*$/i, '').trim()
+    return noSuffix || trimmed || 'Unknown'
+  }, [])
+
   // Client Performance Data (with active days in selected month)
   const clientPerformanceData = useMemo(() => {
     const monthStart = new Date(selectedYear, selectedMonth - 1, 1)
@@ -251,10 +258,14 @@ function BodaCollection() {
       // Calculate Total Expected Collection = Total Expected Repayment - Total Charges Due At Disbursement
       const totalExpectedCollection = expected - charges
 
+      // Extract and clean branch name
+      const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
+
       return {
           client: r['Client Name'] || r.client_name || 'Unknown',
           clientId,
           loanId,
+          branch: branchName,
           dailyInstallment,
           period,
           activeDays,
@@ -266,7 +277,7 @@ function BodaCollection() {
         }
       })
       .sort((a, b) => b.totalExpected - a.totalExpected)
-  }, [rows, selectedMonth, selectedYear, repaymentMap, allRepaymentsMap, MS_PER_DAY])
+  }, [rows, selectedMonth, selectedYear, repaymentMap, allRepaymentsMap, MS_PER_DAY, cleanBranchName])
 
   // Filter client performance data by search term
   const filteredClientPerformanceData = useMemo(() => {
@@ -343,13 +354,6 @@ function BodaCollection() {
     return arr
   }, [clientPerformanceData, rows, selectedMonth, selectedYear, dailyRepayments])
 
-  // Helper function to clean branch name
-  const cleanBranchName = (name = '') => {
-    const trimmed = String(name || '').trim()
-    const noSuffix = trimmed.replace(/\s*branch\s*$/i, '').trim()
-    return noSuffix || trimmed || 'Unknown'
-  }
-
   // Branch Breakdown Table
   const branchBreakdown = useMemo(() => {
     const branchMap = new Map()
@@ -414,7 +418,7 @@ function BodaCollection() {
     }))
     
     return result.sort((a, b) => b.totalExpected - a.totalExpected)
-  }, [rows, clientPerformanceData])
+  }, [rows, clientPerformanceData, cleanBranchName])
 
   // Top performing loan officers by collection
   const topOfficers = useMemo(() => {
@@ -896,6 +900,7 @@ function BodaCollection() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Branch</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Daily Installment</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">MTD Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Target</th>
@@ -911,6 +916,7 @@ function BodaCollection() {
                 return (
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{item.branch}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.dailyInstallment)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
@@ -925,7 +931,7 @@ function BodaCollection() {
               })}
               {filteredClientPerformanceData.length === 0 && (
                 <tr>
-                    <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>
+                    <td className="px-6 py-6 text-center text-gray-500" colSpan={9}>
                       {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No client data available'}
                     </td>
                 </tr>
