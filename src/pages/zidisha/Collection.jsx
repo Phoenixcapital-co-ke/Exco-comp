@@ -280,6 +280,8 @@ function ZidishaCollection() {
         {(() => {
           const today = new Date()
           const isCurrentMonth = (selectedYear === today.getFullYear()) && (selectedMonth === (today.getMonth() + 1))
+          // For past months, use the last day of the selected month (day 0 of next month)
+          // For current month, use today as cutoff
           const cutoff = isCurrentMonth ? today : new Date(selectedYear, selectedMonth, 0)
           const agg = new Map()
           for (const r of rows) {
@@ -288,7 +290,9 @@ function ZidishaCollection() {
             const d = new Date(exp)
             if (isNaN(d.getTime())) continue
             if (d.getFullYear() !== selectedYear || (d.getMonth() + 1) !== selectedMonth) continue
-            if (d > cutoff) continue
+            // For past months, include all loans (no date cutoff needed since month is complete)
+            // For current month, only include loans maturing up to today
+            if (isCurrentMonth && d > cutoff) continue
             const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
             if (!b || b.toLowerCase() === 'unknown' || b.toLowerCase() === 'advans branch') continue
             const expAmt = Number(r['Total Expected Repayment Derived']) || 0
@@ -351,7 +355,7 @@ function ZidishaCollection() {
             const agg = new Map()
             for (const r of filtered) {
               const b = (r['Branch Name'] || r.branch_name || 'Unknown').trim()
-              if (!b || b.toLowerCase() === 'unknown') continue
+              if (!b || b.toLowerCase() === 'unknown' || b.toLowerCase() === 'advans branch') continue
               if (selectedBranch !== 'All' && b !== selectedBranch) continue
               const exp = Number(r['Total Expected Repayment Derived']) || 0
               const rep = Number(r['Total Repayment Derived']) || 0

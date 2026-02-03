@@ -45,6 +45,7 @@ import DataBranches from './pages/data/Branches.jsx'
 import DataUsers from './pages/data/Users.jsx'
 import DataLoanOfficers from './pages/data/LoanOfficers.jsx'
 import LogbookTargets from './pages/data/LogbookTargets.jsx'
+import ROTargets from './pages/data/ROTargets.jsx'
 import ZidishaTargets from './pages/data/ZidishaTargets.jsx'
 import SignIn from './pages/auth/SignIn.jsx'
 import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
@@ -122,6 +123,7 @@ function Routes() {
       <Route path="/data/logbook/branches" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataBranches /></RequireAuth>} />
       <Route path="/data/logbook/loan-officers" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataLoanOfficers /></RequireAuth>} />
       <Route path="/data/logbook/targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><LogbookTargets /></RequireAuth>} />
+      <Route path="/data/logbook/ro-targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><ROTargets /></RequireAuth>} />
       {/* Zidisha Data routes */}
       <Route path="/data/zidisha/targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><ZidishaTargets /></RequireAuth>} />
     </RouterRoutes>

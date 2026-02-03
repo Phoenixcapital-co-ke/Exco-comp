@@ -41,6 +41,18 @@ function BodaDashboard() {
     return rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
   }, [rows])
 
+  // Calculate PAR (Portfolio at Risk): sum(Principal Overdue Derived) / sum(Principal Outstanding Derived)
+  const par = useMemo(() => {
+    const totalOverdue = rows.reduce((sum, r) => sum + (Number(r['Principal Overdue Derived'] || r.principal_overdue_derived || 0)), 0)
+    const totalOutstanding = rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
+    
+    if (totalOutstanding > 0) {
+      const parRate = (totalOverdue / totalOutstanding) * 100
+      return `${parRate.toFixed(1)}%`
+    }
+    return '—'
+  }, [rows])
+
   // Calculate current year collection rate for Nairobi Boda
   const currentYearCollectionRate = useMemo(() => {
     const now = new Date()
@@ -77,8 +89,8 @@ function BodaDashboard() {
     { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
     { title: 'Portfolio size', value: formatKES(portfolioSize), change: '', icon: Wallet, color: 'text-indigo-600' },
     { title: 'Current Year Collection Rate', value: currentYearCollectionRate, change: '', icon: TrendingUp, color: 'text-purple-600' },
-    { title: 'PAR', value: '—', change: '', icon: AlertTriangle, color: 'text-orange-600' }
-  ], [totalLoaned, rows.length, portfolioSize, currentYearCollectionRate])
+    { title: 'PAR', value: par, change: '', icon: AlertTriangle, color: 'text-orange-600' }
+  ], [totalLoaned, rows.length, portfolioSize, currentYearCollectionRate, par])
 
   return (
     <div className="space-y-6">

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
-import { Plus, Save, Trash2, XCircle } from 'lucide-react'
+import { Plus, Save, Trash2, XCircle, RefreshCw, Users } from 'lucide-react'
 
 const emptyDraft = {
   id: null,
@@ -16,6 +16,9 @@ function LoanOfficersPage() {
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState(emptyDraft)
   const [showForm, setShowForm] = useState(false)
+  const [collectors, setCollectors] = useState([])
+  const [collectorsLoading, setCollectorsLoading] = useState(true)
+  const [fetchingCollectors, setFetchingCollectors] = useState(false)
 
   const loadOfficers = async () => {
     try {
@@ -33,7 +36,48 @@ function LoanOfficersPage() {
 
   useEffect(() => {
     loadOfficers()
+    loadCollectors()
   }, [])
+
+  const loadCollectors = async () => {
+    try {
+      setCollectorsLoading(true)
+      const res = await fetch(API_URLS.collectors.list, { credentials: 'include' })
+      if (!res.ok) throw new Error(`Failed to load collectors (${res.status})`)
+      const data = await res.json()
+      setCollectors(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error('Error loading collectors:', e)
+      setCollectors([])
+    } finally {
+      setCollectorsLoading(false)
+    }
+  }
+
+  const handleFetchCollectors = async () => {
+    if (!window.confirm('This will fetch collectors from Loandisk for all active branches. This may take a few minutes. Continue?')) {
+      return
+    }
+    try {
+      setFetchingCollectors(true)
+      setError(null)
+      const res = await fetch(API_URLS.collectors.fetch, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to fetch collectors')
+      }
+      const result = await res.json()
+      alert(`Successfully fetched collectors!\nBranches processed: ${result.branchesProcessed}\nTotal fetched: ${result.totalFetched}\nTotal saved: ${result.totalSaved}`)
+      await loadCollectors()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setFetchingCollectors(false)
+    }
+  }
 
   const resetForm = () => {
     setDraft(emptyDraft)
@@ -312,6 +356,80 @@ function LoanOfficersPage() {
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Collectors Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <Users size={20} className="text-primary-600" />
+              Collectors ({collectors.length})
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">Collectors fetched from Loandisk for all active branches</p>
+          </div>
+          <button
+            onClick={handleFetchCollectors}
+            disabled={fetchingCollectors}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <RefreshCw size={16} className={fetchingCollectors ? 'animate-spin' : ''} />
+            {fetchingCollectors ? 'Fetching...' : 'Fetch from Loandisk'}
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Collector ID</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Name</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Branch Code</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600">Updated</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-100">
+              {collectorsLoading ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-gray-500">
+                    Loading collectors...
+                  </td>
+                </tr>
+              ) : collectors.length ? (
+                collectors.map((collector, index) => {
+                  // Extract common fields from collector data
+                  // The API spreads the parsed collector_data JSON, so fields like collector_name should be directly accessible
+                  const collectorId = collector.collector_id || collector.id || collector.CollectorId || collector['Collector Id'] || 'N/A'
+                  // Check collector_name first (from Loandisk API), then fallback to other name fields
+                  const name = collector.collector_name || 
+                               collector['collector_name'] || 
+                               collector.name || 
+                               collector.Name || 
+                               collector.full_name || 
+                               collector.FullName || 
+                               collector['Full Name'] || 
+                               '—'
+                  
+                  return (
+                    <tr key={collector.id || index} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{collectorId}</td>
+                      <td className="px-4 py-3 text-gray-700">{name}</td>
+                      <td className="px-4 py-3 text-gray-700">{collector.branch_code || '—'}</td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {collector.updated_at ? new Date(collector.updated_at).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  )
+                })
+              ) : (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-gray-500">
+                    No collectors found. Click &quot;Fetch from Loandisk&quot; to load collectors for all active branches.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )

@@ -66,11 +66,28 @@ dbRW.prepare(`
     time TEXT NOT NULL
   )
 `).run();
-// Add indexes for faster queries on time column
+// History table: daily last record per Borrower Access ID for PAR
+dbRW.prepare(`
+  CREATE TABLE IF NOT EXISTS PAR_Borrower_Access_History (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_time TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    officer_id TEXT NOT NULL,
+    open_loans REAL NOT NULL,
+    past_missed REAL NOT NULL,
+    par_rate REAL NOT NULL,
+    branches TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(officer_id, snapshot_date)
+  )
+`).run();
+// Add indexes for faster queries on time/date columns
 try {
   dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_open_loans_time ON Open_loans(time)').run();
   dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_past_missed_time ON Past_Missed_repayment(time)').run();
   dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_par_time ON PAR(time)').run();
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_par_borrower_hist_date ON PAR_Borrower_Access_History(snapshot_date)').run();
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_par_borrower_hist_officer ON PAR_Borrower_Access_History(officer_id)').run();
 } catch (e) {
   // Indexes might already exist, ignore
 }
@@ -413,6 +430,199 @@ async function fetchLoanPrincipalSum(branchCode, loanStatusId) {
 
   return { sum: grandTotal, fetched, totalResults, loans: allLoans }
 }
+
+// Fetch collectors from Loandisk API for a specific branch
+async function fetchCollectors(branchCode) {
+  const branchCodeClean = String(branchCode ?? '').trim()
+  if (!branchCodeClean) {
+    throw new Error('Missing branch code')
+  }
+
+  let page = 1
+  let allCollectors = []
+  let totalResults = 0
+  const pageSize = 100
+
+  for (;;) {
+    const pageUrl = `${LOANDISK_BASE_URL}/${encodeURIComponent(branchCodeClean)}/collector/from/${page}/count/${pageSize}`
+    let pageSucceeded = false
+    let results = []
+    let returnResults = 0
+
+    for (let attempt = 1; attempt <= MAX_PAGE_ATTEMPTS; attempt++) {
+      try {
+        const resp = await fetchWithRetry(
+          pageUrl,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': LOANDISK_AUTH,
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+          },
+          FETCH_MAX_RETRIES,
+          FETCH_TIMEOUT_MS
+        )
+
+        const json = await resp.json()
+        if (json && json.error) {
+          const err = typeof json.error === 'string' ? json.error : JSON.stringify(json.error)
+          throw new Error(err)
+        }
+
+        const response = json?.response || {}
+        const rawResults = Array.isArray(response.Results) ? response.Results : []
+        // Handle nested array structure: Results can be [ [collector1, collector2, ...] ] or [collector1, collector2, ...]
+        results = Array.isArray(rawResults[0]) ? rawResults.flat() : rawResults
+        
+        if (typeof response.TotalResults === 'number') {
+          totalResults = response.TotalResults
+        }
+        
+        if (typeof response.ReturnResults === 'number') {
+          returnResults = response.ReturnResults
+        } else {
+          returnResults = results.length
+        }
+        
+        // Log for debugging
+        console.log(`Branch ${branchCodeClean} page ${page}: Found ${results.length} collectors (TotalResults: ${totalResults}, ReturnResults: ${returnResults})`)
+
+        // Add branch code to each collector record
+        for (const collector of results) {
+          allCollectors.push({
+            ...collector,
+            branch_code: branchCodeClean
+          })
+        }
+
+        pageSucceeded = true
+        break
+      } catch (err) {
+        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000)
+        const errorDetails = {
+          message: err.message || String(err),
+          name: err.name,
+          code: err.code,
+          cause: err.cause?.message || err.cause
+        }
+        const errMsg = `${errorDetails.message} [type: ${errorDetails.name || 'unknown'}, code: ${errorDetails.code || 'none'}]`
+        
+        console.error(
+          `Error fetching collectors page ${page} for branch ${branchCodeClean} (attempt ${attempt}/${MAX_PAGE_ATTEMPTS}):`,
+          errMsg
+        )
+        if (attempt === 1) {
+          console.error(`  Full error:`, JSON.stringify(errorDetails, null, 2))
+        }
+        if (attempt === MAX_PAGE_ATTEMPTS) {
+          throw new Error(`Failed to fetch collectors page ${page} for branch ${branchCodeClean} after ${MAX_PAGE_ATTEMPTS} attempts: ${errMsg}`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+
+    if (!pageSucceeded) {
+      throw new Error(`Failed to fetch collectors page ${page} for branch ${branchCodeClean}`)
+    }
+
+    // Check if we've fetched all results
+    if (returnResults < pageSize) break
+    if (totalResults && allCollectors.length >= totalResults) break
+    page += 1
+    if (page > 500) break // safety cap
+    
+    // Add small delay between pages to avoid rate limiting
+    if (page > 1) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
+
+  return { collectors: allCollectors, fetched: allCollectors.length, totalResults }
+}
+
+// Function to fetch and save collectors for all active branches (reusable for cron and API)
+async function fetchAndSaveCollectors() {
+  const activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()
+  
+  if (activeBranches.length === 0) {
+    throw new Error('No active branches found')
+  }
+
+  const insertStmt = dbRW.prepare(`
+    INSERT OR REPLACE INTO collectors (collector_id, branch_code, collector_data, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+  `)
+
+  let totalFetched = 0
+  let totalSaved = 0
+  const errors = []
+
+  for (const branch of activeBranches) {
+    try {
+      console.log(`Fetching collectors for branch ${branch.code} (${branch.name})...`)
+      const result = await fetchCollectors(branch.code)
+      
+      // Save collectors to database
+      const tx = dbRW.transaction((collectors) => {
+        let saved = 0
+        for (const collector of collectors) {
+          try {
+            const collectorId = collector.collector_id ?? collector.id ?? collector.CollectorId ?? collector['Collector Id'] ?? null
+            if (!collectorId) {
+              console.warn(`Skipping collector without ID for branch ${branch.code}`)
+              continue
+            }
+            
+            const collectorDataJson = JSON.stringify(collector)
+            
+            // INSERT OR REPLACE will handle uniqueness - since collector_id is unique globally,
+            // each collector will only be saved once (the last branch that processes it will update it)
+            insertStmt.run(collectorId, branch.code, collectorDataJson)
+            saved++
+          } catch (e) {
+            console.error(`Error saving collector for branch ${branch.code}:`, e.message)
+          }
+        }
+        return saved
+      })
+
+      const saved = tx(result.collectors)
+      totalFetched += result.fetched
+      totalSaved += saved
+      console.log(`✓ Branch ${branch.code}: Fetched ${result.fetched}, Saved ${saved} collectors`)
+      
+      // Small delay between branches to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200))
+    } catch (e) {
+      const errorMsg = `Failed to fetch collectors for branch ${branch.code}: ${e.message}`
+      console.error(errorMsg)
+      errors.push({ branch: branch.code, error: e.message })
+    }
+  }
+
+  return {
+    success: true,
+    branchesProcessed: activeBranches.length,
+    totalFetched,
+    totalSaved,
+    errors: errors.length > 0 ? errors : undefined
+  }
+}
+
+// Fetch and save collectors for all active branches (API endpoint)
+app.post('/api/collectors/fetch', async (req, res) => {
+  try {
+    const result = await fetchAndSaveCollectors()
+    res.json(result)
+  } catch (e) {
+    console.error('Error fetching collectors:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+
 // Ensure Logbook_Branches table exists
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS Logbook_Branches (
@@ -567,6 +777,60 @@ try {
 } catch (e) {
   // Column already exists, ignore error
 }
+
+// Collectors table
+// Note: collector_id is unique globally (not per branch) - each collector appears only once
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS collectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collector_id INTEGER UNIQUE NOT NULL,
+    branch_code TEXT NOT NULL,
+    collector_data TEXT, -- JSON string of all collector fields from API
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// Migrate existing collectors table if it has the old UNIQUE(collector_id, branch_code) constraint
+try {
+  // Check if there are duplicate collector_ids (indicating old schema)
+  const duplicates = dbRW.prepare(`
+    SELECT collector_id, COUNT(*) as count 
+    FROM collectors 
+    WHERE collector_id IS NOT NULL 
+    GROUP BY collector_id 
+    HAVING count > 1
+  `).all()
+  
+  if (duplicates.length > 0) {
+    console.log(`Migrating collectors table: Found ${duplicates.length} duplicate collector_ids, consolidating...`)
+    // Keep only the most recent record for each collector_id
+    dbRW.exec(`
+      DELETE FROM collectors
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM collectors GROUP BY collector_id
+      )
+    `)
+    console.log('✓ Collectors table migrated: removed duplicates')
+  }
+} catch (e) {
+  // Migration check failed, table might not exist or already be correct
+}
+
+// RO Targets table (Loan Officer Targets)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS RO_Targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_officer_name TEXT NOT NULL,
+    month INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    sum_of_target REAL NOT NULL DEFAULT 0,
+    sum_of_principal_balance REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(loan_officer_name, month, year)
+  );
+`);
 
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
@@ -833,6 +1097,53 @@ app.use('/api', (req, res, next) => {
 
   return next()
 })
+
+// Get all collectors (defined after CORS middleware)
+app.get('/api/collectors', (req, res) => {
+  try {
+    const { branch_code } = req.query
+    let query = 'SELECT * FROM collectors'
+    const params = []
+    
+    if (branch_code) {
+      query += ' WHERE branch_code = ?'
+      params.push(branch_code)
+    }
+    
+    query += ' ORDER BY branch_code, collector_id'
+    
+    const rows = dbRW.prepare(query).all(...params)
+    
+    // Parse collector_data JSON for each row
+    const collectors = rows.map(row => {
+      try {
+        const data = JSON.parse(row.collector_data || '{}')
+        return {
+          id: row.id,
+          collector_id: row.collector_id,
+          branch_code: row.branch_code,
+          ...data,
+          created_at: row.created_at,
+          updated_at: row.updated_at
+        }
+      } catch (e) {
+        return {
+          id: row.id,
+          collector_id: row.collector_id,
+          branch_code: row.branch_code,
+          collector_data: row.collector_data,
+          created_at: row.created_at,
+          updated_at: row.updated_at
+        }
+      }
+    })
+    
+    res.json(collectors)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // SSE endpoint for dashboard clients to receive live update notifications
 app.get('/api/events', (req, res) => {
   setEventStreamHeaders(req, res)
@@ -1308,6 +1619,220 @@ app.get('/api/logbook/disbursements', (req, res) => {
 app.get('/api/logbook/collections', (req, res) => {
   const rows = db.prepare('SELECT * FROM Logbook_collection').all();
   res.json(rows);
+});
+
+app.get('/api/logbook/collector-performance', (req, res) => {
+  try {
+    const { month, year } = req.query;
+    if (!month || !year) {
+      return res.status(400).json({ error: 'Month and year are required' });
+    }
+    
+    const monthNum = parseInt(month);
+    const yearNum = parseInt(year);
+    
+    if (isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
+      return res.status(400).json({ error: 'Invalid month' });
+    }
+    if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
+      return res.status(400).json({ error: 'Invalid year' });
+    }
+    
+    // Query to get borrower_access_ids and total repayment_amount for the selected month/year
+    // Date format in database is DD/MM/YYYY (split by '/')
+    // We'll fetch all rows and filter in JavaScript for more reliable date parsing
+    const allRows = db.prepare(`
+      SELECT 
+        repayment_amount,
+        repayment_collected_date,
+        borrower_access_ids
+      FROM Logbook_collection
+      WHERE 
+        repayment_collected_date IS NOT NULL
+        AND repayment_collected_date != ''
+        AND borrower_access_ids IS NOT NULL
+        AND borrower_access_ids != ''
+    `).all();
+    
+    // Filter and aggregate by unique borrower_access_id
+    const borrowerMap = new Map();
+    for (const row of allRows) {
+      const dateStr = String(row.repayment_collected_date || '').trim();
+      if (!dateStr) continue;
+      
+      // Parse DD/MM/YYYY format
+      const parts = dateStr.split('/');
+      if (parts.length < 3) continue;
+      
+      const day = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10);
+      const year = parseInt(parts[2], 10);
+      
+      if (isNaN(month) || isNaN(year) || month !== monthNum || year !== yearNum) continue;
+      
+      const amount = parseFloat(row.repayment_amount) || 0;
+      
+      // Parse borrower_access_ids
+      let borrowerIds = [];
+      if (row.borrower_access_ids) {
+        try {
+          const parsed = JSON.parse(row.borrower_access_ids);
+          if (Array.isArray(parsed)) {
+            borrowerIds = parsed.map(id => String(id).trim()).filter(id => id);
+          } else if (parsed) {
+            borrowerIds = [String(parsed).trim()].filter(id => id);
+          }
+        } catch (e) {
+          // If not JSON, try as string
+          const strId = String(row.borrower_access_ids).trim();
+          if (strId) {
+            borrowerIds = [strId];
+          }
+        }
+      }
+      
+      // Aggregate by each unique borrower_access_id
+      for (const borrowerId of borrowerIds) {
+        if (!borrowerId) continue;
+        
+        if (!borrowerMap.has(borrowerId)) {
+          borrowerMap.set(borrowerId, {
+            borrower_access_id: borrowerId,
+            total_repayment_amount: 0,
+            transaction_count: 0
+          });
+        }
+        
+        const entry = borrowerMap.get(borrowerId);
+        entry.total_repayment_amount += amount;
+        entry.transaction_count += 1;
+      }
+    }
+    
+    // Convert to array and sort by total repayment amount
+    let rows = Array.from(borrowerMap.values())
+      .sort((a, b) => (b.total_repayment_amount || 0) - (a.total_repayment_amount || 0));
+    
+    // Join with LOs table to get names
+    const borrowerNameMap = new Map();
+    try {
+      const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all();
+      for (const loRow of loRows) {
+        borrowerNameMap.set(String(loRow.borrower_access_id), loRow.name);
+      }
+    } catch (e) {
+      console.error('Error fetching borrower names from LOs:', e.message);
+    }
+    
+    // Add borrower names to the results
+    rows = rows.map(row => ({
+      ...row,
+      name: borrowerNameMap.get(String(row.borrower_access_id)) || null
+    }));
+
+    // Join with RO_Targets to get target by name for the selected month/year
+    const normalizeName = (v) => String(v || '').trim().toLowerCase()
+    const targetByLoanOfficerName = new Map()
+    try {
+      // Primary table name
+      const targetRows = dbRW
+        .prepare(
+          'SELECT loan_officer_name, sum_of_target FROM RO_Targets WHERE month = ? AND year = ?'
+        )
+        .all(monthNum, yearNum)
+
+      for (const t of targetRows) {
+        const key = normalizeName(t.loan_officer_name)
+        if (!key) continue
+        targetByLoanOfficerName.set(key, Number(t.sum_of_target) || 0)
+      }
+    } catch (e) {
+      // Backward-compat (if someone created RO_Target instead of RO_Targets)
+      try {
+        const targetRows = dbRW
+          .prepare(
+            'SELECT loan_officer_name, sum_of_target FROM RO_Target WHERE month = ? AND year = ?'
+          )
+          .all(monthNum, yearNum)
+
+        for (const t of targetRows) {
+          const key = normalizeName(t.loan_officer_name)
+          if (!key) continue
+          targetByLoanOfficerName.set(key, Number(t.sum_of_target) || 0)
+        }
+      } catch (e2) {
+        console.error('Error fetching RO targets:', e2.message)
+      }
+    }
+
+    rows = rows.map((row) => {
+      const key = normalizeName(row.name)
+      return {
+        ...row,
+        target: key ? (targetByLoanOfficerName.get(key) ?? null) : null,
+      }
+    })
+
+    // Attach Portfolio (Open Loans) from latest PAR snapshot, grouped by borrower_access_id
+    // Portfolio definition matches PAR per Borrower Access ID "Open Loans" calculation:
+    // sum of principal balance amounts across open loans for each borrower_access_id.
+    try {
+      const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+      const latestTime = latestPar?.time
+      if (latestTime) {
+        const openLoansRows = db.prepare('SELECT loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const portfolioMap = new Map()
+
+        for (const row of openLoansRows) {
+          let loan
+          try {
+            loan = JSON.parse(row.loan_data)
+          } catch {
+            continue
+          }
+
+          const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
+          if (!borrowerAccessIds.length) continue
+
+          const rawPrincipal =
+            loan.principal_balance_amount ??
+            loan.PrincipalBalanceAmount ??
+            loan['principal_balance_amount'] ??
+            loan['Principal Balance Amount'] ??
+            loan['Principal Balance'] ??
+            0
+
+          const principal =
+            typeof rawPrincipal === 'number'
+              ? rawPrincipal
+              : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+
+          if (principal === 0) continue
+
+          for (const officerId of borrowerAccessIds) {
+            const key = String(officerId || '').trim()
+            if (!key) continue
+            portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
+          }
+        }
+
+        rows = rows.map((r) => ({
+          ...r,
+          portfolio: portfolioMap.get(String(r.borrower_access_id || '').trim()) ?? 0,
+        }))
+      } else {
+        rows = rows.map((r) => ({ ...r, portfolio: 0 }))
+      }
+    } catch (e) {
+      console.error('Error attaching portfolio from Open_loans:', e.message)
+      rows = rows.map((r) => ({ ...r, portfolio: 0 }))
+    }
+    
+    res.json(rows);
+  } catch (e) {
+    console.error('Error fetching collector performance:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/logbook/borrowers', (req, res) => {
@@ -2284,6 +2809,212 @@ app.delete('/api/targets/zidisha/:id', (req, res) => {
   }
 })
 
+// RO Targets endpoints
+const mapROTargetRow = (row) => ({
+  id: row.id,
+  loanOfficerName: row.loan_officer_name,
+  month: row.month,
+  year: row.year,
+  sumOfTarget: row.sum_of_target || 0,
+  sumOfPrincipalBalance: row.sum_of_principal_balance || 0,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+})
+
+app.get('/api/targets/ro', (req, res) => {
+  try {
+    // Check if table exists and has correct structure
+    let tableExists = false
+    let needsRecreate = false
+    
+    try {
+      const tableInfo = dbRW.prepare("PRAGMA table_info(RO_Targets)").all()
+      if (tableInfo.length > 0) {
+        tableExists = true
+        const columnNames = tableInfo.map(col => col.name.toLowerCase())
+        const requiredColumns = ['loan_officer_name', 'month', 'year', 'sum_of_target', 'sum_of_principal_balance']
+        const missingColumns = requiredColumns.filter(col => !columnNames.includes(col))
+        
+        if (missingColumns.length > 0) {
+          console.log('RO_Targets table missing columns:', missingColumns)
+          // Table exists but has wrong structure - drop and recreate
+          needsRecreate = true
+        }
+      }
+    } catch (checkErr) {
+      // Table doesn't exist
+      tableExists = false
+    }
+    
+    // Drop and recreate if needed
+    if (needsRecreate || !tableExists) {
+      if (needsRecreate) {
+        console.log('Dropping RO_Targets table to recreate with correct structure...')
+        dbRW.exec('DROP TABLE IF EXISTS RO_Targets')
+      }
+      
+      // Create table with correct structure
+      dbRW.exec(`
+        CREATE TABLE RO_Targets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          loan_officer_name TEXT NOT NULL,
+          month INTEGER NOT NULL,
+          year INTEGER NOT NULL,
+          sum_of_target REAL NOT NULL DEFAULT 0,
+          sum_of_principal_balance REAL NOT NULL DEFAULT 0,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(loan_officer_name, month, year)
+        );
+      `)
+      console.log('RO_Targets table created successfully')
+    }
+    
+    const rows = dbRW
+      .prepare('SELECT * FROM RO_Targets ORDER BY year DESC, month DESC, loan_officer_name COLLATE NOCASE')
+      .all()
+      .map(mapROTargetRow)
+    res.json(rows)
+  } catch (e) {
+    console.error('Error fetching RO targets:', e)
+    console.error('Stack:', e.stack)
+    res.status(500).json({ error: e.message || 'Failed to fetch RO targets' })
+  }
+})
+
+app.post('/api/targets/ro', (req, res) => {
+  try {
+    const { loanOfficerName, month, year, sumOfTarget = 0, sumOfPrincipalBalance = 0 } = req.body || {}
+    const loanOfficerNameVal = String(loanOfficerName || '').trim()
+    const monthVal = Number(month)
+    const yearVal = Number(year)
+    if (!loanOfficerNameVal || !Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'loanOfficerName, month (1-12), and year are required' })
+    }
+    
+    dbRW.prepare(`
+      INSERT INTO RO_Targets (loan_officer_name, month, year, sum_of_target, sum_of_principal_balance)
+      VALUES (@loan_officer_name, @month, @year, @sum_of_target, @sum_of_principal_balance)
+      ON CONFLICT(loan_officer_name, month, year) DO UPDATE SET
+        sum_of_target = excluded.sum_of_target,
+        sum_of_principal_balance = excluded.sum_of_principal_balance,
+        updated_at = CURRENT_TIMESTAMP
+    `).run({
+      loan_officer_name: loanOfficerNameVal,
+      month: monthVal,
+      year: yearVal,
+      sum_of_target: Number(sumOfTarget) || 0,
+      sum_of_principal_balance: Number(sumOfPrincipalBalance) || 0,
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/targets/ro/bulk', (req, res) => {
+  try {
+    const { month, year, targets } = req.body || {}
+    const monthVal = Number(month)
+    const yearVal = Number(year)
+    if (!Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (!Array.isArray(targets) || targets.length === 0) {
+      return res.status(400).json({ error: 'targets array is required' })
+    }
+
+    const stmt = dbRW.prepare(`
+      INSERT INTO RO_Targets (loan_officer_name, month, year, sum_of_target, sum_of_principal_balance)
+      VALUES (@loan_officer_name, @month, @year, @sum_of_target, @sum_of_principal_balance)
+      ON CONFLICT(loan_officer_name, month, year) DO UPDATE SET
+        sum_of_target = excluded.sum_of_target,
+        sum_of_principal_balance = excluded.sum_of_principal_balance,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+
+    const tx = dbRW.transaction((items) => {
+      for (const item of items) {
+        const loanOfficerName = String(item.loanOfficerName || item['Loan Officers'] || '').trim()
+        if (!loanOfficerName) continue
+        stmt.run({
+          loan_officer_name: loanOfficerName,
+          month: monthVal,
+          year: yearVal,
+          sum_of_target: Number(item.sumOfTarget || item['Sum of Target'] || 0) || 0,
+          sum_of_principal_balance: Number(item.sumOfPrincipalBalance || item['Sum of Principal Balance'] || 0) || 0,
+        })
+      }
+    })
+
+    tx(targets)
+    res.json({ ok: true, count: targets.length })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/targets/ro/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT * FROM RO_Targets WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Target not found' })
+
+    const { loanOfficerName, month, year, sumOfTarget, sumOfPrincipalBalance } = req.body || {}
+    const fields = []
+    const params = { id }
+
+    if (loanOfficerName !== undefined) {
+      const val = String(loanOfficerName || '').trim()
+      if (!val) return res.status(400).json({ error: 'loanOfficerName cannot be empty' })
+      fields.push('loan_officer_name = @loan_officer_name')
+      params.loan_officer_name = val
+    }
+    if (month !== undefined) {
+      const val = Number(month)
+      if (!Number.isInteger(val) || val < 1 || val > 12) return res.status(400).json({ error: 'month must be 1-12' })
+      fields.push('month = @month')
+      params.month = val
+    }
+    if (year !== undefined) {
+      const val = Number(year)
+      if (!Number.isInteger(val)) return res.status(400).json({ error: 'year must be a number' })
+      fields.push('year = @year')
+      params.year = val
+    }
+    if (sumOfTarget !== undefined) {
+      fields.push('sum_of_target = @sum_of_target')
+      params.sum_of_target = Number(sumOfTarget) || 0
+    }
+    if (sumOfPrincipalBalance !== undefined) {
+      fields.push('sum_of_principal_balance = @sum_of_principal_balance')
+      params.sum_of_principal_balance = Number(sumOfPrincipalBalance) || 0
+    }
+
+    if (!fields.length) return res.status(400).json({ error: 'No updates provided' })
+
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    const sql = `UPDATE RO_Targets SET ${fields.join(', ')} WHERE id = @id`
+    dbRW.prepare(sql).run(params)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/targets/ro/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const result = dbRW.prepare('DELETE FROM RO_Targets WHERE id = ?').run(id)
+    if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.post('/api/logbook/branches', (req, res) => {
   try {
     const { code, name, active = 1 } = req.body || {}
@@ -2650,7 +3381,8 @@ app.get('/api/par/borrower-access', async (req, res) => {
         openLoans: entry.openLoans,
         pastMissed: entry.pastMissed,
         parRate,
-        branches: Array.from(entry.branches)
+        branches: Array.from(entry.branches),
+        snapshotTime: latestTime,
       }
     })
 
@@ -2809,6 +3541,108 @@ async function executePARSnapshot() {
       insertPastMissed.run(loanRecord.branch_code, loanRecord.loan_data, ts)
     }
     
+    // After saving loan-level data, also aggregate and persist per Borrower Access ID (officer) for history
+    try {
+      const officerMap = new Map()
+
+      const accumulateLoanForHistory = (records, key) => {
+        for (const rec of records) {
+          try {
+            let loan
+            try {
+              loan = JSON.parse(rec.loan_data)
+            } catch {
+              continue
+            }
+
+            const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
+            if (!borrowerAccessIds.length) continue
+
+            const rawPrincipal =
+              loan.principal_balance_amount ??
+              loan.PrincipalBalanceAmount ??
+              loan['principal_balance_amount'] ??
+              loan['Principal Balance Amount'] ??
+              loan['Principal Balance'] ??
+              0
+
+            const principal =
+              typeof rawPrincipal === 'number'
+                ? rawPrincipal
+                : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+
+            if (principal === 0) continue
+
+            borrowerAccessIds.forEach((officerId) => {
+              const officerKey = String(officerId || '').trim()
+              if (!officerKey) return
+
+              if (!officerMap.has(officerKey)) {
+                officerMap.set(officerKey, {
+                  officerId: officerKey,
+                  openLoans: 0,
+                  pastMissed: 0,
+                  branches: new Set(),
+                })
+              }
+
+              const entry = officerMap.get(officerKey)
+              entry[key] += principal
+              entry.branches.add(rec.branch_code)
+            })
+          } catch {
+            continue
+          }
+        }
+      }
+
+      accumulateLoanForHistory(allOpenLoans, 'openLoans')
+      accumulateLoanForHistory(allPastMissedLoans, 'pastMissed')
+
+      const snapshotDate = String(ts).slice(0, 10) // YYYY-MM-DD from ISO string
+      const insertHist = dbRW.prepare(`
+        INSERT INTO PAR_Borrower_Access_History (
+          snapshot_time,
+          snapshot_date,
+          officer_id,
+          open_loans,
+          past_missed,
+          par_rate,
+          branches
+        ) VALUES (
+          @snapshot_time,
+          @snapshot_date,
+          @officer_id,
+          @open_loans,
+          @past_missed,
+          @par_rate,
+          @branches
+        )
+        ON CONFLICT(officer_id, snapshot_date) DO UPDATE SET
+          snapshot_time = excluded.snapshot_time,
+          open_loans = excluded.open_loans,
+          past_missed = excluded.past_missed,
+          par_rate = excluded.par_rate,
+          branches = excluded.branches,
+          created_at = CURRENT_TIMESTAMP
+      `)
+
+      for (const entry of officerMap.values()) {
+        const parRate = entry.openLoans > 0 ? (entry.pastMissed / entry.openLoans) * 100 : 0
+        insertHist.run({
+          snapshot_time: ts,
+          snapshot_date: snapshotDate,
+          officer_id: entry.officerId,
+          open_loans: entry.openLoans,
+          past_missed: entry.pastMissed,
+          par_rate: parRate,
+          branches: JSON.stringify(Array.from(entry.branches || [])),
+        })
+      }
+    } catch (e) {
+      console.error('[PAR] Failed to update PAR_Borrower_Access_History:', e.message)
+    }
+
     // Update last run time
     const upsertLastRun = dbRW.prepare(`
       INSERT INTO PAR_Snapshot_LastRun (id, last_run_time, updated_at)
@@ -3220,6 +4054,23 @@ cron.schedule('0 0 * * *', () => {
   proc.on('error', (err) => {
     console.error('[CRON] Borrowers ingestion failed to start:', err.message)
   })
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Daily at midnight: fetch collectors from Loandisk for all active branches
+cron.schedule('0 0 * * *', async () => {
+  console.log(`[CRON] Running scheduled collectors fetch at ${new Date().toISOString()}`)
+  try {
+    const result = await fetchAndSaveCollectors()
+    console.log(`[CRON] Collectors fetch completed: ${result.branchesProcessed} branches, ${result.totalFetched} fetched, ${result.totalSaved} saved`)
+    if (result.errors && result.errors.length > 0) {
+      console.warn(`[CRON] Collectors fetch had ${result.errors.length} errors:`, result.errors)
+    }
+  } catch (e) {
+    console.error(`[CRON] Collectors fetch failed:`, e.message)
+  }
 }, {
   scheduled: true,
   timezone: 'Africa/Nairobi'

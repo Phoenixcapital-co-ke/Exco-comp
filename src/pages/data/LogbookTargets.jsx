@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Target, Plus, Save, XCircle, Trash2, Edit2, X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Target, Plus, Save, XCircle, Trash2, Edit2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 
 // Holiday Calendar Component
@@ -352,7 +352,7 @@ function LogbookTargets() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
             <Target className="text-primary-600" size={32} />
-            Logbook Targets
+            Branch Targets
           </h1>
           <p className="text-gray-600 mt-2">Manage disbursement and collection targets for Logbook branches.</p>
         </div>

@@ -24,6 +24,7 @@ export const API_URLS = {
     collections: `${API_BASE}/api/logbook/collections`,
     borrowers: `${API_BASE}/api/logbook/borrowers`,
     branches: `${API_BASE}/api/logbook/branches`,
+    collectorPerformance: (month, year) => `${API_BASE}/api/logbook/collector-performance?month=${month}&year=${year}`,
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,
@@ -74,6 +75,10 @@ export const API_URLS = {
     update: (id) => `${API_BASE}/api/loan-officers/${id}`,
     delete: (id) => `${API_BASE}/api/loan-officers/${id}`,
   },
+  collectors: {
+    list: `${API_BASE}/api/collectors`,
+    fetch: `${API_BASE}/api/collectors/fetch`,
+  },
   targets: {
     logbook: {
       list: `${API_BASE}/api/targets/logbook`,
@@ -86,6 +91,13 @@ export const API_URLS = {
       create: `${API_BASE}/api/targets/zidisha`,
       update: (id) => `${API_BASE}/api/targets/zidisha/${id}`,
       delete: (id) => `${API_BASE}/api/targets/zidisha/${id}`,
+    },
+    ro: {
+      list: `${API_BASE}/api/targets/ro`,
+      create: `${API_BASE}/api/targets/ro`,
+      bulk: `${API_BASE}/api/targets/ro/bulk`,
+      update: (id) => `${API_BASE}/api/targets/ro/${id}`,
+      delete: (id) => `${API_BASE}/api/targets/ro/${id}`,
     }
   },
   data: {

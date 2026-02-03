@@ -137,7 +137,8 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
           items: [
             { path: '/data/logbook/branches', label: 'Branches', icon: Building2 },
             { path: '/data/logbook/loan-officers', label: 'Loan Officers', icon: Users },
-            { path: '/data/logbook/targets', label: 'Targets', icon: Target }
+            { path: '/data/logbook/targets', label: 'Branch Targets', icon: Target },
+            { path: '/data/logbook/ro-targets', label: 'RO Targets', icon: Target }
           ]
         },
         {

@@ -136,20 +136,63 @@ function BodaDisbursement() {
     })
   }, [rows, selectedYear, selectedMonth])
 
-  const summary = useMemo(() => {
-    if (!selectedYear || !selectedMonth) {
+  const metrics = useMemo(() => {
+    if (!rows.length) {
       return {
-        totalDisbursedYTD: 0,
-        totalDisbursedThisMonth: 0,
-        loanCountThisMonth: 0,
-        avgLoanSize: 0,
+        weekTotal: 0,
+        weekChangePct: 0,
+        monthTotal: 0,
+        monthChangePct: 0,
+        loansTotal: 0,
+        loansChangePct: 0,
+        avgLoan: 0,
+        avgLoanChangePct: 0,
+        todayTotal: 0,
+        todayChangePct: 0,
       }
     }
 
-    let totalDisbursedYTD = 0
-    let totalDisbursedThisMonth = 0
-    let loanCountThisMonth = 0
-    let totalLoansYTD = 0
+    const todayYear = now.getFullYear()
+    const todayMonth = now.getMonth() + 1
+    const todayDay = now.getDate()
+
+    // Day boundaries
+    const startOfToday = new Date(todayYear, todayMonth - 1, todayDay)
+    const startOfTomorrow = new Date(todayYear, todayMonth - 1, todayDay + 1)
+    const startOfYesterday = new Date(todayYear, todayMonth - 1, todayDay - 1)
+
+    // Week boundaries (Monday–Sunday)
+    const startOfThisWeek = new Date(startOfToday)
+    const dayOfWeek = startOfThisWeek.getDay() // 0 (Sun) - 6 (Sat)
+    const diffToMonday = (dayOfWeek + 6) % 7
+    startOfThisWeek.setDate(startOfThisWeek.getDate() - diffToMonday)
+    const startOfPrevWeek = new Date(startOfThisWeek)
+    startOfPrevWeek.setDate(startOfPrevWeek.getDate() - 7)
+    const endOfThisWeek = new Date(startOfThisWeek)
+    endOfThisWeek.setDate(endOfThisWeek.getDate() + 7)
+    const endOfPrevWeek = new Date(startOfThisWeek)
+
+    // Month boundaries (current vs previous month)
+    const prevMonthYear = todayMonth === 1 ? todayYear - 1 : todayYear
+    const prevMonth = todayMonth === 1 ? 12 : todayMonth - 1
+
+    let weekTotal = 0
+    let prevWeekTotal = 0
+    let monthTotal = 0
+    let prevMonthTotal = 0
+    let loansTotal = 0
+    let prevMonthLoans = 0
+    let todayTotal = 0
+    let yesterdayTotal = 0
+
+    const tsStartOfToday = startOfToday.getTime()
+    const tsStartOfTomorrow = startOfTomorrow.getTime()
+    const tsStartOfYesterday = startOfYesterday.getTime()
+    const tsStartOfThisWeek = startOfThisWeek.getTime()
+    const tsEndOfThisWeek = endOfThisWeek.getTime()
+    const tsStartOfPrevWeek = startOfPrevWeek.getTime()
+    const tsEndOfPrevWeek = endOfPrevWeek.getTime()
+
     for (const row of rows) {
       const amt = Number(row['Principal Amount']) || 0
       const ds = row['Disbursed On Date'] || row.disbursed_on_date
@@ -158,23 +201,84 @@ function BodaDisbursement() {
       if (isNaN(d.getTime())) continue
       const y = d.getFullYear()
       const m = d.getMonth() + 1
-      if (y === selectedYear) {
-        totalDisbursedYTD += amt
-        totalLoansYTD += 1
-        if (m === selectedMonth) {
-          totalDisbursedThisMonth += amt
-          loanCountThisMonth += 1
-        }
+      const t = d.getTime()
+
+      // Weekly totals
+      if (t >= tsStartOfThisWeek && t < tsEndOfThisWeek) {
+        weekTotal += amt
+      } else if (t >= tsStartOfPrevWeek && t < tsEndOfPrevWeek) {
+        prevWeekTotal += amt
+      }
+
+      // Monthly totals and loan counts
+      if (y === todayYear && m === todayMonth) {
+        monthTotal += amt
+        loansTotal += 1
+      } else if (y === prevMonthYear && m === prevMonth) {
+        prevMonthTotal += amt
+        prevMonthLoans += 1
+      }
+
+      // Daily totals
+      if (t >= tsStartOfToday && t < tsStartOfTomorrow) {
+        todayTotal += amt
+      } else if (t >= tsStartOfYesterday && t < tsStartOfToday) {
+        yesterdayTotal += amt
       }
     }
-    const avgLoanSize = totalLoansYTD > 0 ? totalDisbursedYTD / totalLoansYTD : 0
-    return {
-      totalDisbursedYTD,
-      totalDisbursedThisMonth,
-      loanCountThisMonth,
-      avgLoanSize,
+
+    const avgLoan = loansTotal > 0 ? monthTotal / loansTotal : 0
+    const avgPrevLoan = prevMonthLoans > 0 ? prevMonthTotal / prevMonthLoans : 0
+
+    const pctChange = (current, previous) => {
+      if (!previous || !Number.isFinite(previous)) return 0
+      return ((current - previous) / previous) * 100
     }
-  }, [rows, selectedMonth, selectedYear])
+
+    return {
+      weekTotal,
+      weekChangePct: pctChange(weekTotal, prevWeekTotal),
+      monthTotal,
+      monthChangePct: pctChange(monthTotal, prevMonthTotal),
+      loansTotal,
+      loansChangePct: pctChange(loansTotal, prevMonthLoans),
+      avgLoan,
+      avgLoanChangePct: pctChange(avgLoan, avgPrevLoan),
+      todayTotal,
+      todayChangePct: pctChange(todayTotal, yesterdayTotal),
+    }
+  }, [rows, now])
+
+  // Branch disbursement totals for selected month
+  const branchMetrics = useMemo(() => {
+    if (!rows.length || !selectedYear || !selectedMonth) return []
+    
+    const branchMap = new Map()
+    
+    for (const row of rows) {
+      const branchName = (row['Branch Name'] || row.branch_name || 'Unknown').trim()
+      if (!branchName || branchName === 'Unknown') continue
+      
+      const amt = Number(row['Principal Amount']) || 0
+      const ds = row['Disbursed On Date'] || row.disbursed_on_date
+      if (!amt || !ds) continue
+      
+      // Filter by selected month
+      const d = new Date(ds)
+      if (isNaN(d.getTime())) continue
+      if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
+      
+      if (!branchMap.has(branchName)) {
+        branchMap.set(branchName, 0)
+      }
+      branchMap.set(branchName, branchMap.get(branchName) + amt)
+    }
+    
+    // Convert to array and sort by amount descending
+    return Array.from(branchMap.entries())
+      .map(([branch, total]) => ({ branch, total }))
+      .sort((a, b) => b.total - a.total)
+  }, [rows, selectedYear, selectedMonth])
 
   const monthlyTrend = useMemo(() => {
     // Base the 12-month window around the selected year/month, falling back to "now"
@@ -256,6 +360,14 @@ function BodaDisbursement() {
     return <div className="h-64 flex items-center justify-center text-red-600">{error}</div>
   }
 
+  const formatChange = (value) => {
+    if (!Number.isFinite(value)) return '0.0%'
+    const fixed = value.toFixed(1)
+    if (value > 0) return `+${fixed}%`
+    if (value < 0) return `${fixed}%`
+    return '0.0%'
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -300,9 +412,9 @@ function BodaDisbursement() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         {loading ? (
-          Array.from({ length: 4 }).map((_, idx) => (
+          Array.from({ length: 5 }).map((_, idx) => (
             <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div className="flex-1">
@@ -320,10 +432,9 @@ function BodaDisbursement() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">
-                    Total Disbursed ({selectedYear || '—'})
-                  </p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedYTD)}</p>
+                  <p className="text-sm font-medium text-gray-600">Total Disbursed This Week</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(metrics.weekTotal)}</p>
+                  <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.weekChangePct)}</p>
                 </div>
                 <div className="p-3 rounded-lg bg-green-50 text-green-600">
                   <DollarSign size={24} />
@@ -334,8 +445,11 @@ function BodaDisbursement() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Disbursed This Month</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.totalDisbursedThisMonth)}</p>
+                  <p className="text-sm font-medium text-gray-600">
+                    Total {MONTH_NAMES[now.getMonth() + 1] || ''} Disbursed
+                  </p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(metrics.monthTotal)}</p>
+                  <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.monthChangePct)}</p>
                 </div>
                 <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
                   <Calendar size={24} />
@@ -346,10 +460,9 @@ function BodaDisbursement() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">
-                    Average Loan Size ({selectedYear || '—'})
-                  </p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(summary.avgLoanSize)}</p>
+                  <p className="text-sm font-medium text-gray-600">Total Loans</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{metrics.loansTotal.toLocaleString()}</p>
+                  <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.loansChangePct)}</p>
                 </div>
                 <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
                   <TrendingUp size={24} />
@@ -360,17 +473,48 @@ function BodaDisbursement() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Loans This Month</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{summary.loanCountThisMonth.toLocaleString()}</p>
+                  <p className="text-sm font-medium text-gray-600">Average Loan</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(metrics.avgLoan)}</p>
+                  <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.avgLoanChangePct)}</p>
                 </div>
                 <div className="p-3 rounded-lg bg-rose-50 text-rose-600">
                   <Users size={24} />
                 </div>
               </div>
             </div>
+
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">Total Disbursed Today</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(metrics.todayTotal)}</p>
+                  <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.todayChangePct)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-green-50 text-green-600">
+                  <DollarSign size={24} />
+                </div>
+              </div>
+            </div>
           </>
         )}
       </div>
+
+      {/* Branch Disbursement Cards */}
+      {!loading && branchMetrics.length > 0 && selectedYear && selectedMonth && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Branch Disbursements ({selectedMonth && selectedYear ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {branchMetrics.map(({ branch, total }) => (
+              <div key={branch} className="bg-gray-50 rounded-lg border border-gray-200 p-4">
+                <p className="text-sm font-medium text-gray-600 mb-1">{branch}</p>
+                <p className="text-xl font-bold text-gray-900">{formatKES(total)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

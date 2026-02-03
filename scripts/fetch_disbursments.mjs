@@ -282,20 +282,38 @@ function initCollectionsTable(db) {
       loan_repayment_method_id INTEGER,
       repayment_collected_date TEXT,
       collector_id INTEGER,
+      repayment_backdate INTEGER,
+      repayment_backdated_date TEXT,
+      repayment_adjust_remaining_schedule INTEGER,
+      repayment_adjust_remaining_schedule_pro_rata INTEGER,
+      repayment_manual_composition INTEGER,
       principal_repayment_amount REAL,
       interest_repayment_amount REAL,
       fees_repayment_amount REAL,
       penalty_repayment_amount REAL,
       loandisk_system_date TEXT,
+      borrower_access_ids TEXT,
       repayment_description TEXT,
       dea_cash_bank_account INTEGER,
+      custom_field_23214 TEXT,
+      custom_fields TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
   `)
-  // Ensure 'branch' column exists on legacy tables
+  // Ensure all columns exist on legacy tables (migration)
   const cols = db.prepare(`PRAGMA table_info(${COLLECTIONS_TABLE});`).all().map(c => c.name)
-  if (!cols.includes('branch')) {
-    db.exec(`ALTER TABLE ${COLLECTIONS_TABLE} ADD COLUMN branch TEXT;`)
+  const requiredCols = [
+    'branch', 'repayment_backdate', 'repayment_backdated_date',
+    'repayment_adjust_remaining_schedule', 'repayment_adjust_remaining_schedule_pro_rata',
+    'repayment_manual_composition', 'borrower_access_ids', 'custom_field_23214', 'custom_fields'
+  ]
+  for (const col of requiredCols) {
+    if (!cols.includes(col)) {
+      const colType = col === 'repayment_backdate' || col === 'repayment_adjust_remaining_schedule' || 
+                      col === 'repayment_adjust_remaining_schedule_pro_rata' || col === 'repayment_manual_composition'
+        ? 'INTEGER' : 'TEXT'
+      db.exec(`ALTER TABLE ${COLLECTIONS_TABLE} ADD COLUMN ${col} ${colType};`)
+    }
   }
   // Ensure a UNIQUE index on repayment_id for legacy schemas where it wasn't unique
   // First, drop exact duplicates keeping the lowest id per repayment_id
@@ -545,12 +563,18 @@ function upsertCollection(db, r) {
   const stmt = db.prepare(`
     INSERT INTO ${COLLECTIONS_TABLE} (
       repayment_id, branch, loan_id, repayment_amount, loan_repayment_method_id, repayment_collected_date,
-      collector_id, principal_repayment_amount, interest_repayment_amount, fees_repayment_amount,
-      penalty_repayment_amount, loandisk_system_date, repayment_description, dea_cash_bank_account
+      collector_id, repayment_backdate, repayment_backdated_date, repayment_adjust_remaining_schedule,
+      repayment_adjust_remaining_schedule_pro_rata, repayment_manual_composition,
+      principal_repayment_amount, interest_repayment_amount, fees_repayment_amount,
+      penalty_repayment_amount, loandisk_system_date, borrower_access_ids,
+      repayment_description, dea_cash_bank_account, custom_field_23214, custom_fields
     ) VALUES (
       @repayment_id, @branch, @loan_id, @repayment_amount, @loan_repayment_method_id, @repayment_collected_date,
-      @collector_id, @principal_repayment_amount, @interest_repayment_amount, @fees_repayment_amount,
-      @penalty_repayment_amount, @loandisk_system_date, @repayment_description, @dea_cash_bank_account
+      @collector_id, @repayment_backdate, @repayment_backdated_date, @repayment_adjust_remaining_schedule,
+      @repayment_adjust_remaining_schedule_pro_rata, @repayment_manual_composition,
+      @principal_repayment_amount, @interest_repayment_amount, @fees_repayment_amount,
+      @penalty_repayment_amount, @loandisk_system_date, @borrower_access_ids,
+      @repayment_description, @dea_cash_bank_account, @custom_field_23214, @custom_fields
     )
     ON CONFLICT(repayment_id) DO UPDATE SET
       branch=excluded.branch,
@@ -559,14 +583,34 @@ function upsertCollection(db, r) {
       loan_repayment_method_id=excluded.loan_repayment_method_id,
       repayment_collected_date=excluded.repayment_collected_date,
       collector_id=excluded.collector_id,
+      repayment_backdate=excluded.repayment_backdate,
+      repayment_backdated_date=excluded.repayment_backdated_date,
+      repayment_adjust_remaining_schedule=excluded.repayment_adjust_remaining_schedule,
+      repayment_adjust_remaining_schedule_pro_rata=excluded.repayment_adjust_remaining_schedule_pro_rata,
+      repayment_manual_composition=excluded.repayment_manual_composition,
       principal_repayment_amount=excluded.principal_repayment_amount,
       interest_repayment_amount=excluded.interest_repayment_amount,
       fees_repayment_amount=excluded.fees_repayment_amount,
       penalty_repayment_amount=excluded.penalty_repayment_amount,
       loandisk_system_date=excluded.loandisk_system_date,
+      borrower_access_ids=excluded.borrower_access_ids,
       repayment_description=excluded.repayment_description,
-      dea_cash_bank_account=excluded.dea_cash_bank_account
+      dea_cash_bank_account=excluded.dea_cash_bank_account,
+      custom_field_23214=excluded.custom_field_23214,
+      custom_fields=excluded.custom_fields
   `)
+  // Helper to stringify arrays/objects for JSON storage
+  const toJsonString = (val) => {
+    if (val == null) return null
+    if (Array.isArray(val) || typeof val === 'object') {
+      try {
+        return JSON.stringify(val)
+      } catch {
+        return String(val)
+      }
+    }
+    return String(val)
+  }
   const row = {
     repayment_id: rid,
     branch: String(r?._branch_code || ''),
@@ -575,13 +619,21 @@ function upsertCollection(db, r) {
     loan_repayment_method_id: Number(r?.loan_repayment_method_id ?? 0) || 0,
     repayment_collected_date: String(r?.repayment_collected_date || ''),
     collector_id: Number(r?.collector_id ?? 0) || 0,
+    repayment_backdate: Number(r?.repayment_backdate ?? 0) || 0,
+    repayment_backdated_date: r?.repayment_backdated_date ? String(r.repayment_backdated_date) : null,
+    repayment_adjust_remaining_schedule: Number(r?.repayment_adjust_remaining_schedule ?? 0) || 0,
+    repayment_adjust_remaining_schedule_pro_rata: Number(r?.repayment_adjust_remaining_schedule_pro_rata ?? 0) || 0,
+    repayment_manual_composition: Number(r?.repayment_manual_composition ?? 0) || 0,
     principal_repayment_amount: toNumber(r?.principal_repayment_amount),
     interest_repayment_amount: toNumber(r?.interest_repayment_amount),
     fees_repayment_amount: toNumber(r?.fees_repayment_amount),
     penalty_repayment_amount: toNumber(r?.penalty_repayment_amount),
     loandisk_system_date: String(r?.loandisk_system_date || ''),
+    borrower_access_ids: toJsonString(r?.borrower_access_ids),
     repayment_description: String(r?.repayment_description || ''),
     dea_cash_bank_account: Number(r?.dea_cash_bank_account ?? 0) || 0,
+    custom_field_23214: r?.custom_field_23214 ? String(r.custom_field_23214) : null,
+    custom_fields: toJsonString(r?.custom_fields),
   }
   stmt.run(row)
 }
@@ -655,6 +707,7 @@ const ZIDISHA_COLUMNS = [
   'Penalties Overdue Derived',
   'Principal Amount',
   'Principal Outstanding Derived',
+  'Principal Overdue Derived',
   'Product Name',
   'Total Charges Due At Disbursement Derived',
   'Total Expected Repayment Derived',
@@ -700,6 +753,7 @@ function initZidishaTable(db) {
       "Penalties Overdue Derived" TEXT,
       "Principal Amount" REAL,
       "Principal Outstanding Derived" REAL,
+      "Principal Overdue Derived" REAL,
       "Product Name" TEXT,
       "Total Charges Due At Disbursement Derived" REAL,
       "Total Expected Repayment Derived" REAL,
@@ -721,6 +775,9 @@ function initZidishaTable(db) {
   }
   if (!cols.includes('Principal Outstanding Derived')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Outstanding Derived" REAL;`)
+  }
+  if (!cols.includes('Principal Overdue Derived')) {
+    db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Overdue Derived" REAL;`)
   }
   if (!cols.includes('Total Charges Due At Disbursement Derived')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Total Charges Due At Disbursement Derived" REAL;`)
@@ -881,7 +938,7 @@ function insertZidisha(db, row) {
   for(const c of cols) {
     let v = row[c]
     if (v == null) v = ''
-    if (["Principal Amount","Principal Outstanding Derived","Total Charges Due At Disbursement Derived","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
+    if (["Principal Amount","Principal Outstanding Derived","Principal Overdue Derived","Total Charges Due At Disbursement Derived","Total Expected Repayment Derived","Total Outstanding Derived","Total Repayment Derived"].includes(c)) {
       cleanRow[keyFor(c)] = Number((v+'').replace(/,/g,'')) || 0
     } else {
       cleanRow[keyFor(c)] = v
