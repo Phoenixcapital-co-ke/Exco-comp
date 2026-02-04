@@ -5,6 +5,7 @@
 //   SKIP_COLLECTIONS=1       -> skip collections ingestion
 //   SKIP_BORROWERS=1         -> skip borrowers ingestion
 //   SKIP_ZIDISHA=1           -> skip Zidisha ingestion
+//   SKIP_ZIDISHA_DAILY=1     -> skip Zidisha Daily Expected vs Repayed ingestion
 //   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
 
 import Database from 'better-sqlite3'
@@ -31,6 +32,7 @@ const SKIP_DISBURSEMENTS = process.env.SKIP_DISBURSEMENTS === '1'
 const SKIP_COLLECTIONS = process.env.SKIP_COLLECTIONS === '1'
 const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
+const SKIP_ZIDISHA_DAILY = process.env.SKIP_ZIDISHA_DAILY === '1'
 const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
 
 // Base payload (pagination handled by from/count) - branches_select will be set after loading branches from DB
@@ -668,6 +670,10 @@ function mapResult(r) {
 const ZIDISHA_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/10/download'
 const ZIDISHA_TABLE = 'zidisha_data'
 
+// Zidisha Daily Expected vs Repayed (Musoni export id 22)
+const ZIDISHA_DAILY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/22/download'
+const ZIDISHA_DAILY_TABLE = 'Zidisha_Daily'
+
 // Boda repayments (Musoni export id 20) - saved into boda_repayments
 const BODA_REPAY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/20/download?fileFormat=csv'
 const BODA_REPAY_TABLE = 'boda_repayments'
@@ -808,6 +814,76 @@ function migrateZidishaDropUniqueIfPresent(db) {
     db.exec('COMMIT')
   }
 }
+
+// Initialize Zidisha Daily Expected vs Repayed table dynamically based on CSV columns
+function initZidishaDailyTable(db, columns) {
+  if (!columns || columns.length === 0) {
+    console.warn('No columns provided for Zidisha Daily table initialization')
+    return
+  }
+  
+  // Ensure "Branch Name" is in the columns list if it exists in the response
+  const allColumns = [...columns]
+  if (!allColumns.includes('Branch Name') && columns.some(col => col && col.toLowerCase().includes('branch'))) {
+    // Try to find branch column with different casing
+    const branchCol = columns.find(col => col && col.toLowerCase().includes('branch'))
+    if (branchCol && branchCol !== 'Branch Name') {
+      // Use the found branch column name as-is
+      console.log(`Using branch column: "${branchCol}"`)
+    }
+  }
+  
+  // Check if table exists
+  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(ZIDISHA_DAILY_TABLE)
+  
+  if (!tableExists) {
+    // Create table with all columns from CSV
+    const columnDefs = allColumns.map(col => {
+      // Determine type based on column name (common numeric fields)
+      // "Branch Name" should be TEXT
+      const numericFields = ['Amount', 'Expected', 'Repayed', 'Repayment', 'Outstanding', 'Overdue', 'Principal', 'Total', 'Charges']
+      const isNumeric = numericFields.some(field => col.includes(field))
+      const type = isNumeric ? 'REAL' : 'TEXT'
+      return `"${col}" ${type}`
+    }).join(', ')
+    
+    const sql = `
+      CREATE TABLE IF NOT EXISTS "${ZIDISHA_DAILY_TABLE}" (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ${columnDefs},
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `
+    db.exec(sql)
+    console.log(`Created table ${ZIDISHA_DAILY_TABLE} with ${allColumns.length} columns`)
+  } else {
+    // Table exists - check for missing columns and add them
+    const existingCols = db.prepare(`PRAGMA table_info("${ZIDISHA_DAILY_TABLE}")`).all().map(c => c.name)
+    for (const col of allColumns) {
+      if (!existingCols.includes(col) && col !== 'id' && col !== 'created_at') {
+        const numericFields = ['Amount', 'Expected', 'Repayed', 'Repayment', 'Outstanding', 'Overdue', 'Principal', 'Total', 'Charges']
+        const isNumeric = numericFields.some(field => col.includes(field))
+        const type = isNumeric ? 'REAL' : 'TEXT'
+        try {
+          db.exec(`ALTER TABLE "${ZIDISHA_DAILY_TABLE}" ADD COLUMN "${col}" ${type}`)
+          console.log(`Added column "${col}" to ${ZIDISHA_DAILY_TABLE}`)
+        } catch (e) {
+          console.warn(`Could not add column "${col}": ${e.message}`)
+        }
+      }
+    }
+    // Explicitly ensure "Branch Name" exists if it's in the response
+    if (allColumns.includes('Branch Name') && !existingCols.includes('Branch Name')) {
+      try {
+        db.exec(`ALTER TABLE "${ZIDISHA_DAILY_TABLE}" ADD COLUMN "Branch Name" TEXT`)
+        console.log(`Added column "Branch Name" to ${ZIDISHA_DAILY_TABLE}`)
+      } catch (e) {
+        console.warn(`Could not add column "Branch Name": ${e.message}`)
+      }
+    }
+  }
+}
+
 async function fetchZidishaCsv() {
   const res = await fetch(ZIDISHA_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
   if (!res.ok) throw new Error(`Zidisha API fetch failed: ${res.status}`)
@@ -975,6 +1051,95 @@ function insertBodaRepayment(db, row) {
   }
 }
 
+async function fetchZidishaDailyCsv() {
+  const res = await fetch(ZIDISHA_DAILY_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
+  if (!res.ok) throw new Error(`Zidisha Daily API fetch failed: ${res.status}`)
+  const csv = await res.text()
+  if (PAPAPARSE) {
+    const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
+    // Extract columns from first row if available
+    const columns = data.length > 0 ? Object.keys(data[0]) : []
+    return { data, columns }
+  }
+  // Fallback parser that supports quoted fields and newlines within values
+  const rows = []
+  let field = ''
+  let row = []
+  let insideQuotes = false
+  let i = 0
+  while (i < csv.length) {
+    const ch = csv[i]
+    if (ch === '"') {
+      if (insideQuotes && csv[i + 1] === '"') {
+        field += '"'
+        i += 2
+        continue
+      }
+      insideQuotes = !insideQuotes
+      i += 1
+      continue
+    }
+    if (!insideQuotes && ch === ';') {
+      row.push(field)
+      field = ''
+      i += 1
+      continue
+    }
+    if (!insideQuotes && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && csv[i + 1] === '\n') i += 1
+      row.push(field)
+      field = ''
+      if (row.length && row.some(cell => cell !== '' || rows.length === 0)) rows.push(row)
+      row = []
+      i += 1
+      continue
+    }
+    field += ch
+    i += 1
+  }
+  if (field.length || row.length) {
+    row.push(field)
+    rows.push(row)
+  }
+  if (!rows.length) return { data: [], columns: [] }
+  const headers = rows[0].map(h => h.trim())
+  if (headers.length < 2) throw new Error('Could not parse Zidisha Daily CSV headers')
+  const data = rows.slice(1).filter(r => r.length).map((vals) => {
+    const obj = {}
+    headers.forEach((h, idx) => {
+      obj[h] = vals[idx] ?? ''
+    })
+    return obj
+  })
+  return { data, columns: headers }
+}
+
+function insertZidishaDaily(db, row, columns) {
+  if (!columns || columns.length === 0) return
+  
+  const toParam = (name) => ('@' + name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
+  const keyFor = (name) => (name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
+  const placeholders = columns.map(c => toParam(c)).join(',')
+  const sql = `INSERT INTO "${ZIDISHA_DAILY_TABLE}" (${columns.map(c=>`"${c}"`).join(',')}) VALUES (${placeholders})`
+  const stmt = db.prepare(sql)
+  const cleanRow = {}
+  
+  // Common numeric field patterns
+  const numericFields = ['Amount', 'Expected', 'Repayed', 'Repayment', 'Outstanding', 'Overdue', 'Principal', 'Total', 'Charges']
+  
+  for (const c of columns) {
+    let v = row[c]
+    if (v == null) v = ''
+    const isNumeric = numericFields.some(field => c.includes(field))
+    if (isNumeric) {
+      cleanRow[keyFor(c)] = Number((v+'').replace(/,/g,'')) || 0
+    } else {
+      cleanRow[keyFor(c)] = v
+    }
+  }
+  try { stmt.run(cleanRow) } catch (e) { /* skip invalid row */ }
+}
+
 (async () => {
   try {
     const db = initDb()
@@ -1060,6 +1225,38 @@ function insertBodaRepayment(db, row) {
       console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
     } else {
       console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
+    }
+
+    // === Zidisha Daily Expected vs Repayed ingestion (Musoni export id 22) ===
+    if (!SKIP_ZIDISHA_DAILY) {
+      const dbZD = initDb()
+      // Fetch data first to get columns
+      const { data: zidishaDailyRows, columns } = await fetchZidishaDailyCsv()
+      if (columns.length > 0) {
+        // Initialize table with columns from CSV
+        initZidishaDailyTable(dbZD, columns)
+        // Truncate table before fresh insert
+        dbZD.exec(`DELETE FROM "${ZIDISHA_DAILY_TABLE}"`)
+
+        // Backend filter: keep only "Zidisha Boda" rows based on Product Name
+        const zidishaBodaRows = zidishaDailyRows.filter((row) => {
+          const product = (row['Product Name'] || row.product_name || '').toString().trim().toLowerCase()
+          const clientId = (row['Client Id'] || row.client_id || '').toString().trim()
+          if (clientId === '3926') return false
+          return product === 'zidisha boda'
+        })
+
+        const txZD = dbZD.transaction((rows) => {
+          for (const r of rows) insertZidishaDaily(dbZD, r, columns)
+        })
+        txZD(zidishaBodaRows)
+        const zidishaDailyCount = dbZD.prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_DAILY_TABLE}"`).get().c
+        console.log(`Saved ${zidishaBodaRows.length} Zidisha Boda rows into ${ZIDISHA_DAILY_TABLE}. Table now has ${zidishaDailyCount} rows.`)
+      } else {
+        console.log('No columns found in Zidisha Daily export, skipping ingestion')
+      }
+    } else {
+      console.log('Skipping Zidisha Daily ingestion due to SKIP_ZIDISHA_DAILY=1')
     }
 
     db.close()

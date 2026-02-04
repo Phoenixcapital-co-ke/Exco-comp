@@ -41,45 +41,28 @@ function BodaDashboard() {
     return rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
   }, [rows])
 
-  // Calculate PAR (Portfolio at Risk): sum(Principal Overdue Derived) / sum(Principal Outstanding Derived)
+  // Calculate PAR (Portfolio at Risk):
+  // sum(Principal Outstanding Derived) for clients with Principal Overdue Derived > 0
+  // divided by sum(Principal Outstanding Derived) for all Zidisha Boda clients
   const par = useMemo(() => {
-    const totalOverdue = rows.reduce((sum, r) => sum + (Number(r['Principal Overdue Derived'] || r.principal_overdue_derived || 0)), 0)
-    const totalOutstanding = rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
-    
-    if (totalOutstanding > 0) {
-      const parRate = (totalOverdue / totalOutstanding) * 100
+    let totalOutstandingAll = 0
+    let totalOutstandingAtRisk = 0
+
+    for (const r of rows) {
+      const outstanding = Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)
+      const overdue = Number(r['Principal Overdue Derived'] || r.principal_overdue_derived || 0)
+
+      if (outstanding > 0) {
+        totalOutstandingAll += outstanding
+        if (overdue > 0) {
+          totalOutstandingAtRisk += outstanding
+        }
+      }
+    }
+
+    if (totalOutstandingAll > 0) {
+      const parRate = (totalOutstandingAtRisk / totalOutstandingAll) * 100
       return `${parRate.toFixed(1)}%`
-    }
-    return '—'
-  }, [rows])
-
-  // Calculate current year collection rate for Nairobi Boda
-  const currentYearCollectionRate = useMemo(() => {
-    const now = new Date()
-    const currentYear = now.getFullYear()
-    let totalRepayment = 0
-    let totalExpected = 0
-
-    for (const row of rows) {
-      const expectedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
-      if (!expectedDate) continue
-      
-      const date = new Date(expectedDate)
-      if (isNaN(date.getTime())) continue
-      
-      // Filter for current year
-      if (date.getFullYear() !== currentYear) continue
-      
-      const repayment = Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
-      const expected = Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
-      
-      totalRepayment += repayment
-      totalExpected += expected
-    }
-
-    if (totalExpected > 0) {
-      const rate = (totalRepayment / totalExpected) * 100
-      return `${rate.toFixed(1)}%`
     }
     return '—'
   }, [rows])
@@ -88,9 +71,8 @@ function BodaDashboard() {
     { title: 'Total loaned', value: formatKES(totalLoaned), change: '', icon: DollarSign, color: 'text-green-600' },
     { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
     { title: 'Portfolio size', value: formatKES(portfolioSize), change: '', icon: Wallet, color: 'text-indigo-600' },
-    { title: 'Current Year Collection Rate', value: currentYearCollectionRate, change: '', icon: TrendingUp, color: 'text-purple-600' },
     { title: 'PAR', value: par, change: '', icon: AlertTriangle, color: 'text-orange-600' }
-  ], [totalLoaned, rows.length, portfolioSize, currentYearCollectionRate, par])
+  ], [totalLoaned, rows.length, portfolioSize, par])
 
   return (
     <div className="space-y-6">
@@ -104,10 +86,10 @@ function BodaDashboard() {
       )}
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {loading ? (
           // Skeleton loaders for cards
-          Array.from({ length: 5 }).map((_, index) => (
+          Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between">
                 <div className="flex-1">

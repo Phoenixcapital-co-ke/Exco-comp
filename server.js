@@ -1611,6 +1611,77 @@ app.get('/api/boda/repayments/daily', (req, res) => {
   }
 })
 
+// Boda daily loans endpoint - based on Zidisha_Daily table (Zidisha Boda only)
+app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    // Read from Zidisha_Daily table (Zidisha Boda only, via ingestion filter)
+    const rawRows = db.prepare(`
+      SELECT *
+      FROM "Zidisha_Daily"
+      WHERE "Due Date" >= ? AND "Due Date" < ?
+    `).all(monthStart, monthEnd)
+
+    // Dynamically map columns so we don't depend on exact header names
+    const normalizeNumber = (val) => {
+      if (val == null) return 0
+      const n = Number(String(val).replace(/,/g, ''))
+      return Number.isFinite(n) ? n : 0
+    }
+
+    const normalized = rawRows.map((row) => {
+      const keys = Object.keys(row)
+      const lowerKeys = keys.map((k) => k.toLowerCase())
+
+      const findKey = (pred) => {
+        const idx = lowerKeys.findIndex(pred)
+        return idx >= 0 ? keys[idx] : null
+      }
+
+      const branchKey = findKey((k) => k.includes('branch'))
+      const dueKey = findKey((k) => k.includes('due date') || k.includes('due_date'))
+      // Prefer a column that represents the expected amount:
+      // - contains "expected"
+      // - but is NOT a date field (no "date" / "due")
+      // - and NOT a maturity descriptor (no "matur")
+      // This will match names like "Total Expected", "Total Expected Repayment", etc.
+      const expectedKey = findKey(
+        (k) =>
+          k.includes('expected') &&
+          !k.includes('date') &&
+          !k.includes('due') &&
+          !k.includes('matur')
+      )
+      const outstandingKey = findKey(
+        (k) => k.includes('total') && k.includes('outstanding')
+      )
+
+      return {
+        branchName: branchKey ? row[branchKey] : 'Unknown',
+        dueDate: dueKey ? row[dueKey] : null,
+        totalExpected: expectedKey ? normalizeNumber(row[expectedKey]) : 0,
+        totalOutstanding: outstandingKey ? normalizeNumber(row[outstandingKey]) : 0,
+      }
+    })
+
+    res.json(normalized)
+  } catch (e) {
+    console.error('[Boda Daily Loans API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/logbook/disbursements', (req, res) => {
   const rows = db.prepare('SELECT * FROM Logbook_Disbursement').all();
   res.json(rows);
