@@ -36,6 +36,40 @@ function BodaDashboard() {
     return rows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
   }, [rows])
 
+  // PAR per branch: sum(Principal Outstanding) with overdue > 0 / sum(Principal Outstanding) per branch
+  const branchPar = useMemo(() => {
+    const branchMap = new Map()
+
+    for (const r of rows) {
+      const branch = (r['Branch Name'] || r.branch_name || 'Unknown').trim() || 'Unknown'
+      const outstanding = Number(
+        r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0,
+      )
+      const overdue = Number(
+        r['Principal Overdue Derived'] || r.principal_overdue_derived || 0,
+      )
+      if (outstanding <= 0) continue
+
+      if (!branchMap.has(branch)) {
+        branchMap.set(branch, { outstandingAll: 0, outstandingAtRisk: 0 })
+      }
+      const entry = branchMap.get(branch)
+      entry.outstandingAll += outstanding
+      if (overdue > 0) {
+        entry.outstandingAtRisk += outstanding
+      }
+    }
+
+    return Array.from(branchMap.entries())
+      .map(([branch, v]) => ({
+        branch,
+        outstandingAll: v.outstandingAll,
+        outstandingAtRisk: v.outstandingAtRisk,
+        par: v.outstandingAll > 0 ? (v.outstandingAtRisk / v.outstandingAll) * 100 : 0,
+      }))
+      .sort((a, b) => b.par - a.par)
+  }, [rows])
+
   // Calculate portfolio size (sum of all Principal Outstanding Derived)
   const portfolioSize = useMemo(() => {
     return rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
@@ -201,27 +235,79 @@ function BodaDashboard() {
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Loan Distribution by Branch</h3>
                 {branchCounts.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={320}>
-                    <PieChart>
-                      <Pie
-                        data={branchCounts}
-                        cx="50%"
-                        cy="96%"
-                        startAngle={180}
-                        endAngle={0}
-                        innerRadius={100}
-                        outerRadius={160}
-                        labelLine={false}
-                        dataKey="count"
-                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                      >
-                        {branchCounts.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Loans']} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  <>
+                    <ResponsiveContainer width="100%" height={260}>
+                      <PieChart>
+                        <Pie
+                          data={branchCounts}
+                          cx="50%"
+                          cy="96%"
+                          startAngle={180}
+                          endAngle={0}
+                          innerRadius={100}
+                          outerRadius={160}
+                          labelLine={false}
+                          dataKey="count"
+                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                        >
+                          {branchCounts.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Loans']} />
+                      </PieChart>
+                    </ResponsiveContainer>
+
+                    {branchPar.length > 0 && (
+                      <div className="mt-6 overflow-x-auto">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-2">PAR by Branch</h4>
+                        <table className="min-w-full divide-y divide-gray-200 text-sm">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">
+                                Branch
+                              </th>
+                              <th className="px-3 py-2 text-right font-medium text-gray-600">
+                                Outstanding
+                              </th>
+                              <th className="px-3 py-2 text-right font-medium text-gray-600">
+                                At Risk
+                              </th>
+                              <th className="px-3 py-2 text-right font-medium text-gray-600">
+                                PAR %
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-100">
+                            {branchPar.map((b) => (
+                              <tr key={b.branch}>
+                                <td className="px-3 py-2 text-gray-900">{b.branch}</td>
+                                <td className="px-3 py-2 text-right text-gray-900">
+                                  {formatKES(b.outstandingAll)}
+                                </td>
+                                <td className="px-3 py-2 text-right text-gray-900">
+                                  {formatKES(b.outstandingAtRisk)}
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  <span
+                                    className={`font-semibold ${
+                                      b.par >= 10
+                                        ? 'text-red-600'
+                                        : b.par >= 5
+                                        ? 'text-yellow-600'
+                                        : 'text-green-600'
+                                    }`}
+                                  >
+                                    {b.par.toFixed(1)}%
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
                     <p className="text-gray-500">No data available</p>

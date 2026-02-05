@@ -530,30 +530,48 @@ function BodaCollection() {
     return result.sort((a, b) => b.totalExpected - a.totalExpected)
   }, [rows, clientPerformanceData])
 
-  // Top performing loan officers by collection
-  const topOfficers = useMemo(() => {
-    const officerMap = new Map()
+  // Principal collection per branch (for selected month) based on Zidisha Boda rows
+  const principalByBranch = useMemo(() => {
+    const branchMap = new Map()
+
     for (const r of rows) {
-      const officer = (r['Loan Officer Name'] || r.loan_officer_name || 'Unknown').trim()
-      if (!officerMap.has(officer)) {
-        officerMap.set(officer, { collected: 0, expected: 0, count: 0 })
+      const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
+      if (!branchName || branchName === 'Unknown') continue
+
+      const principal = Number(r['Principal Amount'] || r.principal_amount || 0)
+      const principalOutstanding = Number(
+        r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0,
+      )
+      const dueDate = r['Expected Matured On Date'] || r.expected_matured_on_date
+      if (!principal || !dueDate) continue
+
+      const d = new Date(dueDate)
+      if (isNaN(d.getTime())) continue
+      if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
+
+      if (!branchMap.has(branchName)) {
+        branchMap.set(branchName, { principalTotal: 0, outstandingTotal: 0 })
       }
-      const entry = officerMap.get(officer)
-      entry.collected += Number(r['Total Repayment Derived']) || 0
-      entry.expected += Number(r['Total Expected Repayment Derived']) || 0
-      entry.count += 1
+      const entry = branchMap.get(branchName)
+      entry.principalTotal += principal
+      entry.outstandingTotal += principalOutstanding
     }
-    return Array.from(officerMap.entries())
-      .map(([name, v]) => ({
-        name,
-        collected: v.collected,
-        expected: v.expected,
-        rate: v.expected > 0 ? (v.collected / v.expected) * 100 : 0,
-        count: v.count
-      }))
-      .sort((a, b) => b.collected - a.collected)
-      .slice(0, 10)
-  }, [rows])
+
+    return Array.from(branchMap.entries())
+      .map(([branch, v]) => {
+        const collected = v.principalTotal - v.outstandingTotal
+        const safeCollected = collected > 0 ? collected : 0
+        const rate =
+          v.principalTotal > 0 ? (safeCollected / v.principalTotal) * 100 : 0
+        return {
+          branch,
+          principalTotal: v.principalTotal,
+          principalCollected: safeCollected,
+          rate,
+        }
+      })
+      .sort((a, b) => b.principalCollected - a.principalCollected)
+  }, [rows, selectedMonth, selectedYear, cleanBranchName])
 
   // Current month target: sum of EoM targets for all clients in the selected month
   const currentMonthTarget = useMemo(() => {
@@ -1021,38 +1039,46 @@ function BodaCollection() {
 
       {/* Visualizations */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Top Performing Loan Officers */}
+        {/* Principal Collection by Branch */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:col-span-1">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-base font-semibold text-gray-900">Top Performing Loan Officers</h3>
+            <h3 className="text-base font-semibold text-gray-900">Principal Collection by Branch</h3>
             <BarChart3 className="text-gray-400" size={18} />
           </div>
-          {topOfficers.length > 0 ? (
+          {principalByBranch.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200 text-xs">
                 <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                   <tr>
-                    <th className="px-2 py-2 text-left font-semibold text-gray-700">Officer</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-700">Branch</th>
+                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Principal</th>
                     <th className="px-2 py-2 text-right font-semibold text-gray-700">Collected</th>
-                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Rate</th>
-                    <th className="px-2 py-2 text-right font-semibold text-gray-700">Loans</th>
+                    <th className="px-2 py-2 text-right font-semibold text-gray-700">% Collected</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-100">
-                  {topOfficers.map((officer, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-2 py-2 font-medium text-gray-900 text-xs">{officer.name.length > 15 ? officer.name.substring(0, 15) + '...' : officer.name}</td>
-                      <td className="px-2 py-2 text-right font-semibold text-gray-900 text-xs">{formatKES(officer.collected)}</td>
-                      <td className="px-2 py-2 text-right">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-semibold ${
-                          officer.rate >= 90 ? 'bg-green-100 text-green-800' :
-                          officer.rate >= 70 ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-red-100 text-red-800'
-                        }`}>
-                          {officer.rate.toFixed(1)}%
+                  {principalByBranch.map((b) => (
+                    <tr key={b.branch} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-2 py-2 font-medium text-gray-900 text-xs">{b.branch}</td>
+                      <td className="px-2 py-2 text-right font-semibold text-gray-900 text-xs">
+                        {formatKES(b.principalTotal)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-semibold text-green-700 text-xs">
+                        {formatKES(b.principalCollected)}
+                      </td>
+                      <td className="px-2 py-2 text-right text-xs">
+                        <span
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-semibold ${
+                            b.rate >= 90
+                              ? 'bg-green-100 text-green-800'
+                              : b.rate >= 70
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          {b.rate.toFixed(1)}%
                         </span>
                       </td>
-                      <td className="px-2 py-2 text-right text-gray-600 text-xs">{officer.count.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1060,7 +1086,7 @@ function BodaCollection() {
             </div>
           ) : (
             <div className="h-48 bg-gray-50 rounded-lg flex items-center justify-center">
-              <p className="text-gray-500 text-sm">No data available</p>
+              <p className="text-gray-500 text-sm">No branch principal data available</p>
             </div>
           )}
         </div>

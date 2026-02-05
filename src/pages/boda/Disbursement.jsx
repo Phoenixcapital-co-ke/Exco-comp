@@ -156,6 +156,10 @@ function BodaDisbursement() {
     const todayMonth = now.getMonth() + 1
     const todayDay = now.getDate()
 
+    // Month context: follow selected filters if present, otherwise fall back to "now"
+    const baseYear = selectedYear || todayYear
+    const baseMonth = selectedMonth || todayMonth
+
     // Day boundaries
     const startOfToday = new Date(todayYear, todayMonth - 1, todayDay)
     const startOfTomorrow = new Date(todayYear, todayMonth - 1, todayDay + 1)
@@ -172,9 +176,11 @@ function BodaDisbursement() {
     endOfThisWeek.setDate(endOfThisWeek.getDate() + 7)
     const endOfPrevWeek = new Date(startOfThisWeek)
 
-    // Month boundaries (current vs previous month)
-    const prevMonthYear = todayMonth === 1 ? todayYear - 1 : todayYear
-    const prevMonth = todayMonth === 1 ? 12 : todayMonth - 1
+    // Month boundaries (for base month vs previous month, based on selected filters)
+    const prevMonth =
+      baseMonth === 1 ? 12 : baseMonth - 1
+    const prevMonthYear =
+      baseMonth === 1 ? baseYear - 1 : baseYear
 
     let weekTotal = 0
     let prevWeekTotal = 0
@@ -210,8 +216,8 @@ function BodaDisbursement() {
         prevWeekTotal += amt
       }
 
-      // Monthly totals and loan counts
-      if (y === todayYear && m === todayMonth) {
+      // Monthly totals and loan counts (respect selected year/month)
+      if (y === baseYear && m === baseMonth) {
         monthTotal += amt
         loansTotal += 1
       } else if (y === prevMonthYear && m === prevMonth) {
@@ -446,7 +452,7 @@ function BodaDisbursement() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-gray-600">
-                    Total {MONTH_NAMES[now.getMonth() + 1] || ''} Disbursed
+                    Total {MONTH_NAMES[selectedMonth] || ''} Disbursed
                   </p>
                   <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(metrics.monthTotal)}</p>
                   <p className="text-xs text-gray-500 mt-1">{formatChange(metrics.monthChangePct)}</p>
