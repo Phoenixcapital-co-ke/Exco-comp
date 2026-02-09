@@ -630,7 +630,7 @@ function BodaCollection() {
   const mtdCollectionRatePct = useMemo(() => {
     if (totalExpectedMTD <= 0) return '0.0%'
     const pct = ((totalExpectedMTD - totalOutstandingMTD) / totalExpectedMTD) * 100
-    return `${pct.toFixed(1)}%`
+      return `${pct.toFixed(1)}%`
   }, [totalExpectedMTD, totalOutstandingMTD])
 
   // Total Expected for selected month from Zidisha_Daily (Boda only)
@@ -684,7 +684,7 @@ function BodaCollection() {
           totalExpectedDailyMonth) *
         100
       return { value: pct, display: `${pct.toFixed(1)}%` }
-    }
+        }
     return { value: 0, display: '0.0%' }
   }, [totalExpectedDailyMonth, totalOutstandingDailyMonth])
 
@@ -825,13 +825,13 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-28 mt-2"></div>
               ) : (
-                <p className="text-xs text-gray-500 mt-2">
+              <p className="text-xs text-gray-500 mt-2">
                   {totalExpectedDailyMonth > 0
                     ? `${((totalOutstandingDailyMonth / totalExpectedDailyMonth) * 100).toFixed(
                         1,
                       )}% of target`
                     : '0.0% of target'}
-                </p>
+              </p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-red-500 text-white">
@@ -854,13 +854,13 @@ function BodaCollection() {
               {loadingRepayments ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-40 mt-2"></div>
               ) : (
-                <p className="text-xs text-gray-500 mt-2">
+              <p className="text-xs text-gray-500 mt-2">
                   Total Expected − Total Outstanding for days up to{' '}
                   {new Date(selectedYear, selectedMonth - 1, 1).toLocaleString('en-US', {
                     month: 'long',
                   })}{' '}
                   {selectedYear}
-                </p>
+              </p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-purple-500 text-white">

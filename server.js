@@ -1898,6 +1898,76 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       console.error('Error attaching portfolio from Open_loans:', e.message)
       rows = rows.map((r) => ({ ...r, portfolio: 0 }))
     }
+
+    // Calculate Portfolio Target: highest Open Loans on the last day of any month
+    try {
+      const portfolioTargetMap = new Map()
+      // Get all historical records for each borrower
+      const histRows = db.prepare(`
+        SELECT officer_id, snapshot_date, open_loans 
+        FROM PAR_Borrower_Access_History 
+        WHERE officer_id IS NOT NULL
+        ORDER BY officer_id, snapshot_date
+      `).all()
+
+      // Group by officer_id and find the highest open_loans on the last day of each month
+      const monthlyMaxMap = new Map() // officer_id -> Map(monthKey -> max open_loans on last day)
+      
+      for (const histRow of histRows) {
+        const officerId = String(histRow.officer_id || '').trim()
+        if (!officerId) continue
+        
+        const dateStr = String(histRow.snapshot_date || '')
+        if (!dateStr || dateStr.length < 10) continue
+        
+        // Extract YYYY-MM-DD and check if it's the last day of the month
+        const date = new Date(dateStr + 'T00:00:00')
+        if (isNaN(date.getTime())) continue
+        
+        const year = date.getFullYear()
+        const month = date.getMonth()
+        const day = date.getDate()
+        
+        // Check if this is the last day of the month
+        const lastDayOfMonth = new Date(year, month + 1, 0).getDate()
+        if (day !== lastDayOfMonth) continue
+        
+        const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`
+        const openLoans = Number(histRow.open_loans) || 0
+        
+        if (!monthlyMaxMap.has(officerId)) {
+          monthlyMaxMap.set(officerId, new Map())
+        }
+        
+        const officerMonthlyMap = monthlyMaxMap.get(officerId)
+        const currentMax = officerMonthlyMap.get(monthKey) || 0
+        if (openLoans > currentMax) {
+          officerMonthlyMap.set(monthKey, openLoans)
+        }
+      }
+      
+      // Find the overall maximum across all months for each officer
+      for (const [officerId, monthlyMap] of monthlyMaxMap.entries()) {
+        let maxOpenLoans = 0
+        for (const openLoans of monthlyMap.values()) {
+          if (openLoans > maxOpenLoans) {
+            maxOpenLoans = openLoans
+          }
+        }
+        if (maxOpenLoans > 0) {
+          portfolioTargetMap.set(officerId, maxOpenLoans)
+        }
+      }
+      
+      // Attach portfolio target to rows
+      rows = rows.map((r) => ({
+        ...r,
+        portfolioTarget: portfolioTargetMap.get(String(r.borrower_access_id || '').trim()) ?? null,
+      }))
+    } catch (e) {
+      console.error('Error calculating portfolio target:', e.message)
+      rows = rows.map((r) => ({ ...r, portfolioTarget: null }))
+    }
     
     res.json(rows);
   } catch (e) {
