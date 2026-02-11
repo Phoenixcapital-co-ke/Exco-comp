@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Target, Plus, Save, XCircle, Trash2, Edit2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Target, Plus, Save, X, XCircle, Trash2, Edit2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 
 // Holiday Calendar Component

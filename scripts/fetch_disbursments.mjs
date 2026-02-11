@@ -7,6 +7,7 @@
 //   SKIP_ZIDISHA=1           -> skip Zidisha ingestion
 //   SKIP_ZIDISHA_DAILY=1     -> skip Zidisha Daily Expected vs Repayed ingestion
 //   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
+// Optional: DISBURSEMENTS_LOOKBACK_DAYS (default 60), COLLECTIONS_LOOKBACK_DAYS (default 90)
 
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
@@ -34,6 +35,14 @@ const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
 const SKIP_ZIDISHA_DAILY = process.env.SKIP_ZIDISHA_DAILY === '1'
 const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
+
+// Rolling lookback window (in days) for disbursements incremental fetch.
+// Default 60 days; can be overridden via DISBURSEMENTS_LOOKBACK_DAYS env var.
+const DISBURSEMENTS_LOOKBACK_DAYS = Number(process.env.DISBURSEMENTS_LOOKBACK_DAYS || 60)
+
+// Rolling lookback for collections (recommended longer than disbursements: 60–120 days).
+// Default 90 days; overridable via COLLECTIONS_LOOKBACK_DAYS env var.
+const COLLECTIONS_LOOKBACK_DAYS = Number(process.env.COLLECTIONS_LOOKBACK_DAYS || 90)
 
 // Base payload (pagination handled by from/count) - branches_select will be set after loading branches from DB
 const basePayload = {
@@ -77,14 +86,17 @@ async function fetchAll() {
   let page = basePayload.from // Loandisk 'from' behaves like page index (1-based)
   const all = []
   let total = null
+  const pageSize = basePayload.count
   while (true) {
     const payload = { ...basePayload, from: page, end_date: getTodayDMY() }
     const { meta, results } = await fetchDisbursments(payload)
     if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
     if (!results.length) break
     all.push(...results)
+    // Stop when we receive a partial page – safer than relying on TotalResults,
+    // which can change while we are paging.
+    if (!pageSize || results.length < pageSize) break
     page += 1
-    if (total != null && all.length >= total) break
   }
   return { total, results: all }
 }
@@ -167,7 +179,7 @@ function initDb() {
       branch TEXT,
       disbursed REAL,
       created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(loan_id, disbursed_date)
+      UNIQUE(loan_id)
     );
   `)
   // Ensure all required columns exist
@@ -212,7 +224,7 @@ function migrateDropRawIfPresent(db) {
       branch TEXT,
       disbursed REAL,
       created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(loan_id, disbursed_date)
+      UNIQUE(loan_id)
     );
   `)
   // Ensure all mapped columns exist
@@ -228,12 +240,44 @@ function migrateDropRawIfPresent(db) {
   db.exec('COMMIT')
 }
 
+// Ensure disbursements table has a UNIQUE index on loan_id only and no duplicates by loan_id.
+function migrateDisbursementsUniqueLoanId(db) {
+  const cols = db.prepare(`PRAGMA table_info(${TABLE});`).all()
+  if (!cols.length) return
+
+  // Drop duplicates by loan_id, keeping the most recent row (highest id)
+  db.exec(`
+    DELETE FROM ${TABLE}
+    WHERE id NOT IN (
+      SELECT MAX(id) FROM ${TABLE} GROUP BY loan_id
+    );
+  `)
+
+  // Create unique index on loan_id for ON CONFLICT(loan_id) to work reliably
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${TABLE}_loan_id ON ${TABLE}(loan_id);`)
+}
+
 function parseDMY(str) {
   if (!str) return null
   const m = String(str).match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
   if (!m) return null
   const dd = Number(m[1]), mm = Number(m[2]), yyyy = Number(m[3])
   return new Date(yyyy, mm - 1, dd)
+}
+
+function formatDMY(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null
+  const dd = String(date.getDate()).padStart(2, '0')
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const yyyy = date.getFullYear()
+  return `${dd}/${mm}/${yyyy}`
+}
+
+// Convert "DD/MM/YYYY" to "YYYYMMDD" sortable key
+function dmyToSortKey(dmy) {
+  const m = String(dmy || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (!m) return null
+  return `${m[3]}${m[2]}${m[1]}`
 }
 
 function getLatestDisbursedDate(db) {
@@ -273,6 +317,7 @@ function getLatestCollectionDate(db) {
 }
 
 // === Collections helpers ===
+// Unique key is repayment_id (Loandisk transaction ID). Do not use (loan_id, date) – same-day duplicates and backdates would break.
 function initCollectionsTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${COLLECTIONS_TABLE} (
@@ -459,7 +504,8 @@ async function fetchAllBorrowers(db) {
       })(mapped)
       branchInserted += mapped.length
       page += 1
-      if (total != null && branchInserted >= total) break
+      const pageSize = payloadBase.count
+      if (!pageSize || results.length < pageSize) break
     }
     console.info(
       `[Borrowers] Branch ${branchCode} (${branchName}) saved ${branchInserted}${
@@ -524,12 +570,21 @@ async function fetchAllCollectionsWithDb(db) {
   let grandTotal = 0
   const count = 1000
   const today = getTodayDMY()
-  const latestDate = getLatestCollectionDate(db)
-  let startDate = latestDate || DEFAULT_COLLECTION_START_DATE
-  if (latestDate) {
-    db.prepare(`DELETE FROM ${COLLECTIONS_TABLE} WHERE repayment_collected_date = ?`).run(latestDate)
+  const latestDMY = getLatestCollectionDate(db)
+  let startDate = DEFAULT_COLLECTION_START_DATE
+  if (latestDMY) {
+    const latestDate = parseDMY(latestDMY)
+    const defaultStart = parseDMY(DEFAULT_COLLECTION_START_DATE)
+    if (latestDate) {
+      const start = new Date(latestDate.getTime())
+      start.setDate(start.getDate() - COLLECTIONS_LOOKBACK_DAYS)
+      if (defaultStart && start < defaultStart) start.setTime(defaultStart.getTime())
+      const startDMY = formatDMY(start)
+      if (startDMY) startDate = startDMY
+    }
   }
-  console.info(`[Collections] Fetching records from ${startDate} to ${today}`)
+  // No delete: we upsert by repayment_id, so re-fetching the window overwrites/inserts correctly
+  console.info(`[Collections] Rolling window: fetching from ${startDate} to ${today} (lookback ${COLLECTIONS_LOOKBACK_DAYS} days)`)
 
   const branchList = getActiveBranches(db).map(b => b.code)
   for (const branchCode of branchList) {
@@ -551,7 +606,8 @@ async function fetchAllCollectionsWithDb(db) {
       all.push(...results)
       branchInserted += results.length
       page += 1
-      if (total != null && branchInserted >= total) break
+      const pageSize = count
+      if (!pageSize || results.length < pageSize) break
     }
     console.info(`[Collections] Branch ${branchCode} fetched ${branchInserted}${total != null ? ` / ${total}` : ''} records`)
     if (total != null) grandTotal += total
@@ -646,8 +702,8 @@ function upsert(db, row) {
   const extra = COLUMN_MAP.map(([c]) => c)
   for (const c of extra) if (!cols.includes(c)) cols.push(c)
   const placeholders = cols.map(c => `@${c}`).join(',')
-  const updates = cols.filter(c => c !== 'loan_id' && c !== 'disbursed_date').map(c => `${c}=excluded.${c}`).join(',')
-  const sql = `INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders}) ON CONFLICT(loan_id, disbursed_date) DO UPDATE SET ${updates}`
+  const updates = cols.filter(c => c !== 'loan_id').map(c => `${c}=excluded.${c}`).join(',')
+  const sql = `INSERT INTO ${TABLE} (${cols.join(',')}) VALUES (${placeholders}) ON CONFLICT(loan_id) DO UPDATE SET ${updates}`
   const stmt = db.prepare(sql)
   stmt.run(row)
 }
@@ -1144,6 +1200,7 @@ function insertZidishaDaily(db, row, columns) {
   try {
     const db = initDb()
     migrateDropRawIfPresent(db)
+    migrateDisbursementsUniqueLoanId(db)
 
     // Load active branches once and apply to disbursement payload
     const activeBranches = getActiveBranches(db)
@@ -1153,10 +1210,28 @@ function insertZidishaDaily(db, row, columns) {
     if (!SKIP_DISBURSEMENTS) {
       const latest = getLatestDisbursedDate(db)
       if (latest) {
-        // delete existing rows of the latest date to allow clean re-fetch of that day
-        db.prepare(`DELETE FROM ${TABLE} WHERE disbursed_date = ?`).run(latest)
-        // use latest as new start_date for incremental fetch
-        basePayload.start_date = latest
+        const latestDate = parseDMY(latest)
+        const defaultStart = parseDMY(basePayload.start_date)
+        if (latestDate) {
+          // Start from (latest disbursed date - lookback window), but not before default start date
+          const start = new Date(latestDate.getTime())
+          start.setDate(start.getDate() - DISBURSEMENTS_LOOKBACK_DAYS)
+          if (defaultStart && start < defaultStart) {
+            start.setTime(defaultStart.getTime())
+          }
+          const startDMY = formatDMY(start)
+          const startKey = dmyToSortKey(startDMY)
+          if (startDMY && startKey) {
+            // Delete all rows in the lookback window so we can upsert fresh data
+            db.prepare(`
+              DELETE FROM ${TABLE}
+              WHERE disbursed_date IS NOT NULL
+                AND TRIM(disbursed_date) <> ''
+                AND (substr(disbursed_date,7,4) || substr(disbursed_date,4,2) || substr(disbursed_date,1,2)) >= ?
+            `).run(startKey)
+            basePayload.start_date = startDMY
+          }
+        }
       }
 
       const { total, results } = await fetchAll()

@@ -725,6 +725,18 @@ dbRW.exec(`
   );
 `);
 
+// Table to store Logbook branch permissions for users (e.g. branch managers)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS User_Logbook_Branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    branch_code TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, branch_code)
+  );
+`);
+
 // Targets tables
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS Logbook_Targets (
@@ -1180,23 +1192,27 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
     const whereConditions = []
     const params = []
 
-    // Enforce branch restrictions for custom users
+    // Enforce Zidisha branch restrictions if configured (similar to Logbook)
     const authRole = String(req.authUser?.role || '').toLowerCase()
-    if (authRole === 'custom') {
-      const allowed = Array.isArray(req.authUser?.allowedZidishaBranches) ? req.authUser.allowedZidishaBranches : []
-      if (allowed.length === 0) {
-        return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
-      }
-      const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+    const allowedZidisha = getAllowedZidishaBranches(req)
+    if (authRole === 'custom' && allowedZidisha.length === 0) {
+      // Custom users with Zidisha pages must have explicit branches configured (validated on user save)
+      return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+    }
+
+    if (allowedZidisha.length > 0) {
+      const allowedNorm = new Set(
+        allowedZidisha.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+      )
       if (branch) {
         const bNorm = String(branch || '').trim().toLowerCase()
         if (!allowedNorm.has(bNorm)) {
           return res.status(403).json({ error: 'Branch not allowed for this user' })
         }
       } else {
-        const placeholders = allowed.map(() => '?').join(', ')
+        const placeholders = allowedZidisha.map(() => '?').join(', ')
         whereConditions.push(`LOWER(TRIM("Branch Name")) IN (${placeholders})`)
-        params.push(...allowed.map((b) => String(b || '').trim().toLowerCase()))
+        params.push(...allowedZidisha.map((b) => String(b || '').trim().toLowerCase()))
       }
     }
 
@@ -1477,11 +1493,12 @@ app.get('/api/zidisha/branches', requireAuth, (req, res) => {
     `
     let branches = db.prepare(sql).all(...zidishaProducts.map((p) => p.toLowerCase())).map((r) => r.branch).filter(Boolean)
 
-    // Enforce branch restrictions for custom users
-    const authRole = String(req.authUser?.role || '').toLowerCase()
-    if (authRole === 'custom') {
-      const allowed = Array.isArray(req.authUser?.allowedZidishaBranches) ? req.authUser.allowedZidishaBranches : []
-      const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+    // Enforce Zidisha branch restrictions if configured (all roles)
+    const allowedZidisha = getAllowedZidishaBranches(req)
+    if (allowedZidisha.length > 0) {
+      const allowedNorm = new Set(
+        allowedZidisha.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+      )
       branches = branches.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
     }
 
@@ -1683,13 +1700,27 @@ app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
 })
 
 app.get('/api/logbook/disbursements', (req, res) => {
-  const rows = db.prepare('SELECT * FROM Logbook_Disbursement').all();
-  res.json(rows);
+  const allowed = getAllowedLogbookBranches(req)
+  let rows
+  if (allowed.length > 0) {
+    const placeholders = allowed.map(() => '?').join(', ')
+    rows = db.prepare(`SELECT * FROM Logbook_Disbursement WHERE branch IN (${placeholders})`).all(...allowed)
+  } else {
+    rows = db.prepare('SELECT * FROM Logbook_Disbursement').all()
+  }
+  res.json(rows)
 });
 
 app.get('/api/logbook/collections', (req, res) => {
-  const rows = db.prepare('SELECT * FROM Logbook_collection').all();
-  res.json(rows);
+  const allowed = getAllowedLogbookBranches(req)
+  let rows
+  if (allowed.length > 0) {
+    const placeholders = allowed.map(() => '?').join(', ')
+    rows = db.prepare(`SELECT * FROM Logbook_collection WHERE branch IN (${placeholders})`).all(...allowed)
+  } else {
+    rows = db.prepare('SELECT * FROM Logbook_collection').all()
+  }
+  res.json(rows)
 });
 
 app.get('/api/logbook/collector-performance', (req, res) => {
@@ -1708,7 +1739,11 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
       return res.status(400).json({ error: 'Invalid year' });
     }
-    
+
+    const allowedBranches = getAllowedLogbookBranches(req)
+    const hasBranchRestrictions = allowedBranches.length > 0
+    const allowedSet = hasBranchRestrictions ? new Set(allowedBranches) : null
+
     // Query to get borrower_access_ids and total repayment_amount for the selected month/year
     // Date format in database is DD/MM/YYYY (split by '/')
     // We'll fetch all rows and filter in JavaScript for more reliable date parsing
@@ -1716,7 +1751,8 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       SELECT 
         repayment_amount,
         repayment_collected_date,
-        borrower_access_ids
+        borrower_access_ids,
+        branch
       FROM Logbook_collection
       WHERE 
         repayment_collected_date IS NOT NULL
@@ -1728,6 +1764,11 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     // Filter and aggregate by unique borrower_access_id
     const borrowerMap = new Map();
     for (const row of allRows) {
+      if (hasBranchRestrictions) {
+        const branchCode = String(row.branch ?? '').trim()
+        if (!branchCode || !allowedSet.has(branchCode)) continue;
+      }
+
       const dateStr = String(row.repayment_collected_date || '').trim();
       if (!dateStr) continue;
       
@@ -1978,7 +2019,18 @@ app.get('/api/logbook/collector-performance', (req, res) => {
 
 app.get('/api/logbook/borrowers', (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM Logbook_borrowers').all()
+    const allowed = getAllowedLogbookBranches(req)
+    let rows = db.prepare('SELECT * FROM Logbook_borrowers').all()
+
+    if (allowed.length > 0) {
+      const allowedSet = new Set(allowed)
+      rows = rows.filter((row) => {
+        const branchCode = String(row.branch ?? row.branch_code ?? '').trim()
+        if (!branchCode) return false
+        return allowedSet.has(branchCode)
+      })
+    }
+
     res.json(rows)
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -2023,7 +2075,17 @@ app.get('/api/ingest', (req, res) => {
 // Branches CRUD (Logbook only)
 app.get('/api/logbook/branches', (req, res) => {
   try {
-    const rows = dbRW.prepare('SELECT code, name, active FROM Logbook_Branches ORDER BY name COLLATE NOCASE').all()
+    const allowed = getAllowedLogbookBranches(req)
+    let rows = dbRW.prepare('SELECT code, name, active FROM Logbook_Branches ORDER BY name COLLATE NOCASE').all()
+
+    if (allowed.length > 0) {
+      const allowedSet = new Set(allowed.map(code => String(code || '').trim()))
+      rows = rows.filter((row) => {
+        const code = String(row.code ?? '').trim()
+        return code && allowedSet.has(code)
+      })
+    }
+
     res.json(rows)
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -2032,15 +2094,15 @@ app.get('/api/logbook/branches', (req, res) => {
 
 const mapUserRow = (user) => {
   const base = {
-  id: user.id,
-  username: user.username,
-  fullName: user.full_name,
-  email: user.email,
-  role: user.role,
-  active: !!user.active,
-  emailVerified: !!user.email_verified,
-  createdAt: user.created_at,
-  updatedAt: user.updated_at
+    id: user.id,
+    username: user.username,
+    fullName: user.full_name,
+    email: user.email,
+    role: user.role,
+    active: !!user.active,
+    emailVerified: !!user.email_verified,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at
   }
   // For custom role users, include their allowed pages
   if (String(user.role || '').toLowerCase() === 'custom') {
@@ -2049,14 +2111,64 @@ const mapUserRow = (user) => {
       .all(user.id)
       .map(row => row.page_path)
     base.allowedPages = pages
+  }
 
-    const branches = dbRW
+  // Zidisha branch permissions (all roles)
+  try {
+    const zidishaBranches = dbRW
       .prepare('SELECT branch_name FROM User_Zidisha_Branches WHERE user_id = ? ORDER BY branch_name COLLATE NOCASE')
       .all(user.id)
       .map(row => row.branch_name)
-    base.allowedZidishaBranches = branches
+    base.allowedZidishaBranches = zidishaBranches
+  } catch (e) {
+    // Fail silently if table not ready
   }
+
+  // Logbook branch permissions (all roles)
+  try {
+    const logbookBranches = dbRW
+      .prepare('SELECT branch_code FROM User_Logbook_Branches WHERE user_id = ? ORDER BY branch_code')
+      .all(user.id)
+      .map(row => String(row.branch_code ?? '').trim())
+      .filter(code => code)
+    base.allowedLogbookBranches = logbookBranches
+  } catch (e) {
+    // If the table does not exist yet or another error occurs, fail silently
+  }
+
   return base
+}
+
+// Helper: normalize allowed Logbook branch codes from the authenticated user
+function getAllowedLogbookBranches(req) {
+  const raw = Array.isArray(req.authUser?.allowedLogbookBranches)
+    ? req.authUser.allowedLogbookBranches
+    : []
+  const seen = new Set()
+  const result = []
+  for (const code of raw) {
+    const val = String(code || '').trim()
+    if (!val || seen.has(val)) continue
+    seen.add(val)
+    result.push(val)
+  }
+  return result
+}
+
+// Helper: normalize allowed Zidisha branches from the authenticated user
+function getAllowedZidishaBranches(req) {
+  const raw = Array.isArray(req.authUser?.allowedZidishaBranches)
+    ? req.authUser.allowedZidishaBranches
+    : []
+  const seen = new Set()
+  const result = []
+  for (const name of raw) {
+    const val = String(name || '').trim()
+    if (!val || seen.has(val)) continue
+    seen.add(val)
+    result.push(val)
+  }
+  return result
 }
 
 const mapLoanOfficerRow = (row) => ({
@@ -2315,7 +2427,17 @@ app.get('/api/users', (req, res) => {
 
 app.post('/api/users', (req, res) => {
   try {
-    const { username, fullName, email, role = 'logbook', password, active = 1, allowedPages = [], allowedZidishaBranches = [] } = req.body || {}
+    const {
+      username,
+      fullName,
+      email,
+      role = 'logbook',
+      password,
+      active = 1,
+      allowedPages = [],
+      allowedZidishaBranches = [],
+      allowedLogbookBranches = []
+    } = req.body || {}
     if (!username) return res.status(400).json({ error: 'Username is required' })
     const emailNorm = normalizeEmail(email)
     if (!emailNorm) return res.status(400).json({ error: 'Email is required' })
@@ -2379,6 +2501,20 @@ app.post('/api/users', (req, res) => {
         }
       }
     }
+
+    // Save Logbook branch permissions (for branch-level Logbook access)
+    if (Array.isArray(allowedLogbookBranches) && allowedLogbookBranches.length > 0) {
+      const insertLogbookBranch = dbRW.prepare('INSERT INTO User_Logbook_Branches (user_id, branch_code) VALUES (?, ?)')
+      for (const code of allowedLogbookBranches) {
+        const branchCode = String(code || '').trim()
+        if (!branchCode) continue
+        try {
+          insertLogbookBranch.run(userId, branchCode)
+        } catch (e) {
+          if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+        }
+      }
+    }
     
     // Create confirmation token and send email
     const token = crypto.randomBytes(32).toString('hex')
@@ -2432,7 +2568,7 @@ app.put('/api/users/:id', (req, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches } = req.body || {}
+    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches, allowedLogbookBranches } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -2457,7 +2593,12 @@ app.put('/api/users/:id', (req, res) => {
       params.password_hash = hashPassword(password)
     }
 
-    if (!fields.length && typeof allowedPages === 'undefined' && typeof allowedZidishaBranches === 'undefined') {
+    if (
+      !fields.length &&
+      typeof allowedPages === 'undefined' &&
+      typeof allowedZidishaBranches === 'undefined' &&
+      typeof allowedLogbookBranches === 'undefined'
+    ) {
       return res.status(400).json({ error: 'No updates provided' })
     }
 
@@ -2519,10 +2660,30 @@ app.put('/api/users/:id', (req, res) => {
         return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha page access' })
       }
     } else if (roleStr !== 'custom') {
-      // If role changed away from custom, remove branch permissions
+      // If role changed away from custom, remove Zidisha branch permissions
       dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
     }
-    
+
+    // Handle Logbook branch permissions (any role; empty list clears)
+    if (typeof allowedLogbookBranches !== 'undefined') {
+      // Delete existing Logbook branches for this user
+      dbRW.prepare('DELETE FROM User_Logbook_Branches WHERE user_id = ?').run(id)
+
+      const branchesArr = Array.isArray(allowedLogbookBranches) ? allowedLogbookBranches : []
+      if (branchesArr.length > 0) {
+        const insertBranch = dbRW.prepare('INSERT INTO User_Logbook_Branches (user_id, branch_code) VALUES (?, ?)')
+        for (const b of branchesArr) {
+          const branchCode = String(b || '').trim()
+          if (!branchCode) continue
+          try {
+            insertBranch.run(id, branchCode)
+          } catch (e) {
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+    }
+
     res.json({ ok: true })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -3343,6 +3504,8 @@ let parBorrowerAccessCache = { time: null, data: null }
 
 app.get('/api/par/branches', async (req, res) => {
   try {
+    const allowedBranches = getAllowedLogbookBranches(req)
+
     // Get all active branches with names
     const activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()
     
@@ -3359,9 +3522,16 @@ app.get('/api/par/branches', async (req, res) => {
 
     const latestTime = latestPar.time
 
-    // Return cached if same snapshot time
+    // Return cached if same snapshot time (filtered per user)
     if (parBranchesCache.time === latestPar.time && parBranchesCache.data) {
-      return res.json(parBranchesCache.data)
+      const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
+      const data = !allowedSet
+        ? parBranchesCache.data
+        : parBranchesCache.data.filter((b) => {
+            const code = String(b.code ?? '').trim()
+            return code && allowedSet.has(code)
+          })
+      return res.json(data)
     }
 
     // Read all loan records from saved tables
@@ -3434,7 +3604,16 @@ app.get('/api/par/branches', async (req, res) => {
     branchData.sort((a, b) => b.parRate - a.parRate)
     
     parBranchesCache = { time: latestPar.time, data: branchData }
-    res.json(branchData)
+
+    const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
+    const data = !allowedSet
+      ? branchData
+      : branchData.filter((b) => {
+          const code = String(b.code ?? '').trim()
+          return code && allowedSet.has(code)
+        })
+
+    res.json(data)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -3442,6 +3621,8 @@ app.get('/api/par/branches', async (req, res) => {
 
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
+    const allowedBranches = getAllowedLogbookBranches(req)
+
     // Get the latest snapshot time
     const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
     if (!latestPar || !latestPar.time) {
@@ -3449,9 +3630,19 @@ app.get('/api/par/borrower-access', async (req, res) => {
     }
     const latestTime = latestPar.time
 
-    // Return cached if same snapshot time
+    // Return cached if same snapshot time (filtered per user)
     if (parBorrowerAccessCache.time === latestPar.time && parBorrowerAccessCache.data) {
-      return res.json(parBorrowerAccessCache.data)
+      const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
+      const data = !allowedSet
+        ? parBorrowerAccessCache.data
+        : parBorrowerAccessCache.data.filter((entry) => {
+            if (!Array.isArray(entry.branches) || entry.branches.length === 0) return false
+            return entry.branches.some((code) => {
+              const c = String(code ?? '').trim()
+              return c && allowedSet.has(c)
+            })
+          })
+      return res.json(data)
     }
 
     // Load saved loan records for the snapshot
@@ -3530,7 +3721,19 @@ app.get('/api/par/borrower-access', async (req, res) => {
     officerData.sort((a, b) => b.parRate - a.parRate)
 
     parBorrowerAccessCache = { time: latestPar.time, data: officerData }
-    res.json(officerData)
+
+    const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
+    const data = !allowedSet
+      ? officerData
+      : officerData.filter((entry) => {
+          if (!Array.isArray(entry.branches) || entry.branches.length === 0) return false
+          return entry.branches.some((code) => {
+            const c = String(code ?? '').trim()
+            return c && allowedSet.has(c)
+          })
+        })
+
+    res.json(data)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

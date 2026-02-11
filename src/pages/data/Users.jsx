@@ -13,7 +13,8 @@ const defaultDraft = {
   // New users start inactive until they confirm their account
   active: false,
   allowedPages: [],
-  allowedZidishaBranches: []
+  allowedZidishaBranches: [],
+  allowedLogbookBranches: []
 }
 
 function UsersPage() {
@@ -26,6 +27,7 @@ function UsersPage() {
   const [showForm, setShowForm] = useState(false)
   const [availablePages, setAvailablePages] = useState([])
   const [availableZidishaBranches, setAvailableZidishaBranches] = useState([])
+  const [availableLogbookBranches, setAvailableLogbookBranches] = useState([])
   const { user: currentUser } = useAuth()
 
   const loadUsers = async () => {
@@ -53,6 +55,7 @@ function UsersPage() {
     loadUsers()
     loadAvailablePages()
     loadAvailableZidishaBranches()
+    loadAvailableLogbookBranches()
   }, [])
 
   const loadAvailablePages = async () => {
@@ -79,6 +82,23 @@ function UsersPage() {
     }
   }
 
+  const loadAvailableLogbookBranches = async () => {
+    try {
+      const res = await fetch(API_URLS.logbook.branches, { credentials: 'include' })
+      if (res.ok) {
+        const data = await res.json()
+        const list = Array.isArray(data) ? data : []
+        // Prefer active branches; fall back to all if no active flag
+        const active = list.some((b) => typeof b.active !== 'undefined')
+          ? list.filter((b) => b.active !== 0 && b.active !== false)
+          : list
+        setAvailableLogbookBranches(active)
+      }
+    } catch (e) {
+      console.error('Failed to load Logbook branches:', e)
+    }
+  }
+
   const handleEdit = (user) => {
     setDraft({
       id: user.id,
@@ -90,6 +110,7 @@ function UsersPage() {
       active: !!user.active,
       allowedPages: Array.isArray(user.allowedPages) ? user.allowedPages : [],
       allowedZidishaBranches: Array.isArray(user.allowedZidishaBranches) ? user.allowedZidishaBranches : [],
+      allowedLogbookBranches: Array.isArray(user.allowedLogbookBranches) ? user.allowedLogbookBranches : [],
     })
     setShowForm(true)
   }
@@ -191,6 +212,10 @@ function UsersPage() {
         payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
         payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
       }
+      // Logbook branch access can apply to any role (branch managers, admins, etc.)
+      payload.allowedLogbookBranches = Array.isArray(draft.allowedLogbookBranches)
+        ? draft.allowedLogbookBranches
+        : []
 
       const isCreate = !draft.id
       const url = draft.id ? API_URLS.users.update(draft.id) : API_URLS.users.create
@@ -241,6 +266,9 @@ function UsersPage() {
       setError(e.message)
     }
   }
+
+  const normalizedRole = String(draft.role || '').toLowerCase()
+  const showLogbookBranchSection = ['logbook', 'manager', 'admin', 'custom'].includes(normalizedRole)
 
   return (
     <div className="space-y-6">
@@ -536,6 +564,65 @@ function UsersPage() {
                     )}
                   </div>
                 )}
+
+              {showLogbookBranchSection && (
+                <div className="border-t border-gray-200 pt-5">
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">
+                    Logbook Branch Access
+                  </label>
+                  <p className="text-xs text-gray-500 mb-4">
+                    Select which Logbook branches this user can see on Logbook and PAR pages. If you leave all
+                    branches unchecked, they will see all branches.
+                  </p>
+                  <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                    {availableLogbookBranches.length === 0 ? (
+                      <p className="text-sm text-gray-500">Loading branches...</p>
+                    ) : (
+                      availableLogbookBranches.map((branch) => {
+                        const code = String(branch.code ?? '').trim()
+                        if (!code) return null
+                        const label = branch.name || branch.code
+                        const isChecked =
+                          Array.isArray(draft.allowedLogbookBranches) &&
+                          draft.allowedLogbookBranches.includes(code)
+                        return (
+                          <label
+                            key={code}
+                            className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const current = Array.isArray(draft.allowedLogbookBranches)
+                                  ? draft.allowedLogbookBranches
+                                  : []
+                                if (e.target.checked) {
+                                  if (!current.includes(code)) {
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      allowedLogbookBranches: [...current, code],
+                                    }))
+                                  }
+                                } else {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    allowedLogbookBranches: current.filter((c) => c !== code),
+                                  }))
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span className="text-sm text-gray-700">
+                              {label} <span className="text-xs text-gray-400">({code})</span>
+                            </span>
+                          </label>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="sticky bottom-0 bg-white pt-4 border-t border-gray-200">
                 <div className="flex items-center justify-end gap-3">

@@ -230,8 +230,8 @@ function BodaDisbursement() {
         todayTotal += amt
       } else if (t >= tsStartOfYesterday && t < tsStartOfToday) {
         yesterdayTotal += amt
+        }
       }
-    }
 
     const avgLoan = loansTotal > 0 ? monthTotal / loansTotal : 0
     const avgPrevLoan = prevMonthLoans > 0 ? prevMonthTotal / prevMonthLoans : 0

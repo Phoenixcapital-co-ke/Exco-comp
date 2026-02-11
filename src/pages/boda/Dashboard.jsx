@@ -237,26 +237,26 @@ function BodaDashboard() {
                 {branchCounts.length > 0 ? (
                   <>
                     <ResponsiveContainer width="100%" height={260}>
-                      <PieChart>
-                        <Pie
-                          data={branchCounts}
-                          cx="50%"
-                          cy="96%"
-                          startAngle={180}
-                          endAngle={0}
-                          innerRadius={100}
-                          outerRadius={160}
-                          labelLine={false}
-                          dataKey="count"
-                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        >
-                          {branchCounts.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Loans']} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={branchCounts}
+                        cx="50%"
+                        cy="96%"
+                        startAngle={180}
+                        endAngle={0}
+                        innerRadius={100}
+                        outerRadius={160}
+                        labelLine={false}
+                        dataKey="count"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      >
+                        {branchCounts.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value) => [`${value.toLocaleString()}`, 'Loans']} />
+                    </PieChart>
+                  </ResponsiveContainer>
 
                     {branchPar.length > 0 && (
                       <div className="mt-6 overflow-x-auto">
