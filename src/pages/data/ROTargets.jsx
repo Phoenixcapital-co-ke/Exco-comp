@@ -182,46 +182,58 @@ function ROTargets() {
         return
       }
 
-      // Validate columns - check all possible column name variations
+      // Normalize header text (handles NBSP, weird whitespace, casing)
+      const norm = (s) =>
+        String(s ?? '')
+          .replace(/\u00A0/g, ' ')     // NBSP -> space
+          .replace(/\s+/g, ' ')        // collapse whitespace
+          .trim()
+          .toLowerCase()
+
       const firstRow = jsonData[0]
-      const allKeys = Object.keys(firstRow).map(k => k.trim())
-      console.log('All column keys found:', allKeys)
-      
-      // Find loan officers column (case-insensitive, flexible matching)
-      const loanOfficerKey = allKeys.find(k => {
-        const kLower = k.toLowerCase()
-        return (kLower.includes('loan') && (kLower.includes('officer') || kLower.includes('officers'))) ||
-               kLower === 'loan officers' || kLower === 'loan officer'
-      })
-      console.log('Loan Officer Key found:', loanOfficerKey)
-      
-      // Find target column
-      const targetKey = allKeys.find(k => {
-        const kLower = k.toLowerCase()
-        return (kLower.includes('target') && (kLower.includes('sum') || kLower.includes('of'))) ||
-               kLower === 'sum of target' || kLower === 'target'
-      })
-      console.log('Target Key found:', targetKey)
-      
-      // Find principal balance column
-      const principalBalanceKey = allKeys.find(k => {
-        const kLower = k.toLowerCase()
-        return (kLower.includes('principal') && kLower.includes('balance')) ||
-               kLower === 'sum of principal balance' || kLower.includes('principal balance')
-      })
-      console.log('Principal Balance Key found:', principalBalanceKey)
+      const originalKeys = Object.keys(firstRow)
+
+      // Debug: show original and normalized headers
+      console.log("Original headers:", originalKeys.map(h => JSON.stringify(h)))
+      console.log("Normalized headers:", originalKeys.map(h => norm(h)))
+
+      // Build map: normalizedHeader -> originalHeader
+      const keyMap = new Map()
+      for (const k of originalKeys) keyMap.set(norm(k), k)
+
+      // Find ORIGINAL keys using normalized matching
+      const loanOfficerKey =
+        keyMap.get('loan officers') ||
+        keyMap.get('loan officer') ||
+        originalKeys.find(k => norm(k).includes('loan') && norm(k).includes('officer'))
+
+      const targetKey =
+        keyMap.get('sum of target') ||
+        keyMap.get('target') ||
+        originalKeys.find(k => norm(k).includes('target'))
+
+      const principalBalanceKey =
+        keyMap.get('sum of principal balance') ||
+        keyMap.get('principal balance') ||
+        originalKeys.find(k => norm(k).includes('principal') && norm(k).includes('balance'))
 
       if (!loanOfficerKey || !targetKey || !principalBalanceKey) {
         const missing = []
         if (!loanOfficerKey) missing.push('Loan Officers')
         if (!targetKey) missing.push('Sum of Target')
         if (!principalBalanceKey) missing.push('Sum of Principal Balance')
-        const errorMsg = `Excel file is missing required columns: ${missing.join(', ')}. Found columns: ${allKeys.join(', ')}`
-        console.error(errorMsg)
-        setError(errorMsg)
+        setError(
+          `Missing columns: ${missing.join(', ')}. Found: ${originalKeys.join(', ')}`
+        )
         setROBulkData([])
         return
       }
+
+      console.log('Found keys:', {
+        loanOfficerKey,
+        targetKey,
+        principalBalanceKey
+      })
 
       // Helper function to parse numeric values from Excel (handles formatted strings, commas, Excel errors, etc.)
       const parseNumericValue = (value) => {
@@ -285,21 +297,20 @@ function ROTargets() {
         return Number.isNaN(num) || !Number.isFinite(num) ? 0 : num
       }
 
-      // Map the data to use consistent keys with proper numeric parsing
+      // Now access row using ORIGINAL keys (guaranteed to exist)
       const mappedData = jsonData.map((row, idx) => {
-        // Get raw values - handle case where key might have whitespace variations
-        const rawTarget = row[targetKey] ?? row[targetKey?.trim()] ?? ''
-        const rawBalance = row[principalBalanceKey] ?? row[principalBalanceKey?.trim()] ?? ''
-        const rawLoanOfficer = row[loanOfficerKey] ?? row[loanOfficerKey?.trim()] ?? ''
-        
+        const rawTarget = row[targetKey]
+        const rawBalance = row[principalBalanceKey]
+        const rawOfficer = row[loanOfficerKey]
+
         const targetValue = parseNumericValue(rawTarget)
         const balanceValue = parseNumericValue(rawBalance)
-        
+
         // Debug first few rows to help diagnose parsing issues
         if (idx < 3) {
           console.log(`Row ${idx} parsing:`, {
             loanOfficerKey,
-            rawLoanOfficer,
+            rawOfficer,
             targetKey,
             rawTarget,
             rawTargetType: typeof rawTarget,
@@ -308,16 +319,16 @@ function ROTargets() {
             rawBalance,
             rawBalanceType: typeof rawBalance,
             parsedBalance: balanceValue,
-            fullRow: row,
           })
         }
-        
+
         return {
-          'Loan Officers': String(rawLoanOfficer).trim(),
+          'Loan Officers': String(rawOfficer ?? '').trim(),
           'Sum of Target': targetValue,
           'Sum of Principal Balance': balanceValue,
-          // Also keep original keys for compatibility
-          loanOfficers: String(rawLoanOfficer).trim(),
+
+          // API fields
+          loanOfficers: String(rawOfficer ?? '').trim(),
           sumOfTarget: targetValue,
           sumOfPrincipalBalance: balanceValue,
         }
