@@ -120,13 +120,17 @@ function ROTargets() {
         const worksheet = workbook.Sheets[name]
         console.log(`Trying sheet: ${name}`)
         
-        // Try different parsing options
+        // Try parsing with raw: false first (XLSX will try to convert numbers automatically)
+        // If that doesn't work well, we'll parse manually with raw: true
         const options1 = { defval: '', raw: false }
-        const options2 = { defval: null, raw: false, header: 1 }
-        const options3 = { defval: '', raw: false, blankrows: true }
+        const options2 = { defval: null, raw: true, header: 1 }
+        const options3 = { defval: '', raw: true, blankrows: true }
         
         let parsed = XLSX.utils.sheet_to_json(worksheet, options1)
         console.log(`Sheet ${name} parsed with default options:`, parsed.length, 'rows')
+        if (parsed.length > 0) {
+          console.log(`Sample row from ${name}:`, parsed[0])
+        }
         
         // Check the raw range to see if there's data
         const range = worksheet['!ref'] ? XLSX.utils.decode_range(worksheet['!ref']) : null
@@ -219,16 +223,105 @@ function ROTargets() {
         return
       }
 
-      // Map the data to use consistent keys
-      const mappedData = jsonData.map(row => ({
-        'Loan Officers': row[loanOfficerKey] || '',
-        'Sum of Target': row[targetKey] || 0,
-        'Sum of Principal Balance': row[principalBalanceKey] || 0,
-        // Also keep original keys for compatibility
-        loanOfficers: row[loanOfficerKey] || '',
-        sumOfTarget: row[targetKey] || 0,
-        sumOfPrincipalBalance: row[principalBalanceKey] || 0,
-      }))
+      // Helper function to parse numeric values from Excel (handles formatted strings, commas, Excel errors, etc.)
+      const parseNumericValue = (value) => {
+        // Handle null/undefined/empty
+        if (value == null || value === '' || value === undefined) return 0
+        
+        // Handle numbers (including NaN check)
+        if (typeof value === 'number') {
+          return Number.isNaN(value) || !Number.isFinite(value) ? 0 : value
+        }
+        
+        // Convert to string and trim
+        const str = String(value).trim()
+        
+        // Handle empty strings and common non-numeric values
+        if (!str || 
+            str === '-' || 
+            str === 'N/A' || 
+            str.toLowerCase() === 'nan' ||
+            str.toLowerCase() === '#n/a' ||
+            str.toLowerCase() === '#value!' ||
+            str.toLowerCase() === '#ref!' ||
+            str.toLowerCase() === '#div/0!' ||
+            str.toLowerCase() === '#name?' ||
+            str.toLowerCase() === '#null!' ||
+            str.toLowerCase() === '#num!') {
+          return 0
+        }
+        
+        // Handle Excel date serial numbers (if accidentally parsed as number)
+        // But we'll treat them as numbers if they're very large (likely dates)
+        
+        // Remove common formatting: commas, currency symbols, whitespace, parentheses for negatives
+        let cleaned = str
+          .replace(/,/g, '') // Remove commas (thousand separators)
+          .replace(/\s/g, '') // Remove all whitespace
+          .replace(/[()]/g, (match, offset) => {
+            // Parentheses typically indicate negative in accounting format
+            return offset === 0 ? '-' : ''
+          })
+        
+        // Remove currency symbols and other non-numeric characters except digits, dots, and minus
+        cleaned = cleaned.replace(/[^\d.-]/g, '')
+        
+        // Handle multiple dots (should only have one decimal point)
+        const parts = cleaned.split('.')
+        if (parts.length > 2) {
+          // Multiple dots - likely formatting issue, take first dot as decimal
+          cleaned = parts[0] + '.' + parts.slice(1).join('')
+        }
+        
+        // Normalize negative sign
+        cleaned = cleaned.replace(/^-+/, '-').replace(/-/g, (match, offset) => {
+          return offset === 0 ? '-' : ''
+        })
+        
+        // Parse the cleaned string
+        const num = Number(cleaned)
+        
+        // Return 0 if NaN or not finite, otherwise return the number
+        return Number.isNaN(num) || !Number.isFinite(num) ? 0 : num
+      }
+
+      // Map the data to use consistent keys with proper numeric parsing
+      const mappedData = jsonData.map((row, idx) => {
+        // Get raw values - handle case where key might have whitespace variations
+        const rawTarget = row[targetKey] ?? row[targetKey?.trim()] ?? ''
+        const rawBalance = row[principalBalanceKey] ?? row[principalBalanceKey?.trim()] ?? ''
+        const rawLoanOfficer = row[loanOfficerKey] ?? row[loanOfficerKey?.trim()] ?? ''
+        
+        const targetValue = parseNumericValue(rawTarget)
+        const balanceValue = parseNumericValue(rawBalance)
+        
+        // Debug first few rows to help diagnose parsing issues
+        if (idx < 3) {
+          console.log(`Row ${idx} parsing:`, {
+            loanOfficerKey,
+            rawLoanOfficer,
+            targetKey,
+            rawTarget,
+            rawTargetType: typeof rawTarget,
+            parsedTarget: targetValue,
+            principalBalanceKey,
+            rawBalance,
+            rawBalanceType: typeof rawBalance,
+            parsedBalance: balanceValue,
+            fullRow: row,
+          })
+        }
+        
+        return {
+          'Loan Officers': String(rawLoanOfficer).trim(),
+          'Sum of Target': targetValue,
+          'Sum of Principal Balance': balanceValue,
+          // Also keep original keys for compatibility
+          loanOfficers: String(rawLoanOfficer).trim(),
+          sumOfTarget: targetValue,
+          sumOfPrincipalBalance: balanceValue,
+        }
+      })
 
       console.log('Mapped data sample:', mappedData.slice(0, 2))
       console.log('Setting roBulkData with', mappedData.length, 'rows')
