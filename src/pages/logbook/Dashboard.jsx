@@ -60,25 +60,43 @@ function LogbookDashboard() {
 
   const loadOpenLoans = async () => {
     try {
-      const res = await fetch(API_URLS.par.history, { credentials: 'include' })
+      // Use /api/par/branches which already filters by user's allowedLogbookBranches
+      const res = await fetch(API_URLS.par.branches, { credentials: 'include' })
       if (res.ok) {
-        const historyData = await res.json().catch(() => [])
-        const history = Array.isArray(historyData) ? historyData : []
-        if (history.length > 0) {
-          const latest = Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
-          setOpenLoans(latest)
-          
-          // Calculate percentage change from previous entry
-          if (history.length > 1) {
-            const previous = Number(history[1]?.Open_loans || history[1]?.open_loans || 0)
-            if (previous > 0) {
-              const pct = ((latest - previous) / previous) * 100
-              setOpenLoansChange(`${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`)
+        const branchData = await res.json().catch(() => [])
+        const branches = Array.isArray(branchData) ? branchData : []
+        // Sum openLoans from all branches the user has access to
+        const totalOpenLoans = branches.reduce((sum, branch) => {
+          return sum + (Number(branch.openLoans) || 0)
+        }, 0)
+        setOpenLoans(totalOpenLoans)
+        
+        // For percentage change, we'd need historical data per branch, which is complex.
+        // For now, show '—' for change. Alternatively, we could fetch previous snapshot.
+        // TODO: Implement proper historical comparison if needed
+        setOpenLoansChange('—')
+      } else {
+        // Fallback to old endpoint if branches endpoint fails
+        const fallbackRes = await fetch(API_URLS.par.history, { credentials: 'include' })
+        if (fallbackRes.ok) {
+          const historyData = await fallbackRes.json().catch(() => [])
+          const history = Array.isArray(historyData) ? historyData : []
+          if (history.length > 0) {
+            const latest = Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
+            setOpenLoans(latest)
+            
+            // Calculate percentage change from previous entry
+            if (history.length > 1) {
+              const previous = Number(history[1]?.Open_loans || history[1]?.open_loans || 0)
+              if (previous > 0) {
+                const pct = ((latest - previous) / previous) * 100
+                setOpenLoansChange(`${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`)
+              } else {
+                setOpenLoansChange('—')
+              }
             } else {
               setOpenLoansChange('—')
             }
-          } else {
-            setOpenLoansChange('—')
           }
         }
       }

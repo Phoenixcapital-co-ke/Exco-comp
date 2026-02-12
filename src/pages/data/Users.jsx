@@ -177,9 +177,31 @@ function UsersPage() {
       setError('Email is required')
       return
     }
+    if (draft.role === 'manager' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0)) {
+      setError('At least one module must be selected for manager role users')
+      return
+    }
     if (draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0)) {
       setError('At least one page must be selected for custom role users')
       return
+    }
+    if (draft.role === 'zidisha') {
+      const branchesArr = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+      if (branchesArr.length === 0) {
+        setError('At least one Zidisha branch must be selected for Zidisha role users')
+        return
+      }
+    }
+    if (draft.role === 'manager') {
+      const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+      const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
+      if (hasZidishaPages) {
+        const branchesArr = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+        if (branchesArr.length === 0) {
+          setError('At least one Zidisha branch must be selected when Zidisha modules are selected')
+          return
+        }
+      }
     }
     if (draft.role === 'custom') {
       const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
@@ -208,8 +230,20 @@ function UsersPage() {
       if (draft.id && draft.password.trim()) {
         payload.password = draft.password
       }
+      if (draft.role === 'manager') {
+        payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+        const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+        const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
+        if (hasZidishaPages) {
+          payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+        }
+      }
       if (draft.role === 'custom') {
         payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
+        payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+      }
+      // Zidisha branch access for zidisha role
+      if (draft.role === 'zidisha') {
         payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
       }
       // Logbook branch access can apply to any role (branch managers, admins, etc.)
@@ -269,6 +303,8 @@ function UsersPage() {
 
   const normalizedRole = String(draft.role || '').toLowerCase()
   const showLogbookBranchSection = ['logbook', 'manager', 'admin', 'custom'].includes(normalizedRole)
+  const showZidishaBranchSection = normalizedRole === 'zidisha' || 
+    ((normalizedRole === 'custom' || normalizedRole === 'manager') && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/zidisha/')))
 
   return (
     <div className="space-y-6">
@@ -397,8 +433,8 @@ function UsersPage() {
                       setDraft((prev) => ({
                         ...prev,
                         role: newRole,
-                        allowedPages: newRole === 'custom' ? (prev.allowedPages || []) : [],
-                        allowedZidishaBranches: newRole === 'custom' ? (prev.allowedZidishaBranches || []) : [],
+                        allowedPages: (newRole === 'custom' || newRole === 'manager') ? (prev.allowedPages || []) : [],
+                        allowedZidishaBranches: (newRole === 'custom' || newRole === 'zidisha' || newRole === 'manager') ? (prev.allowedZidishaBranches || []) : [],
                       }))
                     }}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
@@ -450,12 +486,16 @@ function UsersPage() {
                 )}
           </div>
 
-              {draft.role === 'custom' && (
+              {(draft.role === 'custom' || draft.role === 'manager') && (
                 <div className="border-t border-gray-200 pt-5">
                   <label className="block text-sm font-semibold text-gray-700 mb-3">
-                    Allowed Pages <span className="text-red-500">*</span>
+                    {draft.role === 'manager' ? 'Allowed Modules' : 'Allowed Pages'} <span className="text-red-500">*</span>
                   </label>
-                  <p className="text-xs text-gray-500 mb-4">Select which pages this user can access</p>
+                  <p className="text-xs text-gray-500 mb-4">
+                    {draft.role === 'manager'
+                      ? 'Select which modules this manager can access'
+                      : 'Select which pages this user can access'}
+                  </p>
                   <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
                     {availablePages.length === 0 ? (
                       <p className="text-sm text-gray-500">Loading pages...</p>
@@ -505,65 +545,73 @@ function UsersPage() {
                       })()
                     )}
                   </div>
+                  {draft.role === 'manager' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0) && (
+                    <p className="text-xs text-red-600 mt-2">At least one module must be selected for manager role users</p>
+                  )}
                   {draft.role === 'custom' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0) && (
                     <p className="text-xs text-red-600 mt-2">At least one page must be selected for custom role users</p>
                   )}
                 </div>
               )}
 
-              {draft.role === 'custom' &&
-                Array.isArray(draft.allowedPages) &&
-                draft.allowedPages.some((p) => String(p || '').startsWith('/zidisha/')) && (
-                  <div className="border-t border-gray-200 pt-5">
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">
-                      Zidisha Branch Access <span className="text-red-500">*</span>
-                    </label>
-                    <p className="text-xs text-gray-500 mb-4">Select which Zidisha branches this user can see</p>
-                    <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
-                      {availableZidishaBranches.length === 0 ? (
-                        <p className="text-sm text-gray-500">Loading branches...</p>
-                      ) : (
-                        availableZidishaBranches.map((branch) => {
-                          const isChecked =
-                            Array.isArray(draft.allowedZidishaBranches) &&
-                            draft.allowedZidishaBranches.includes(branch)
-                          return (
-                            <label
-                              key={branch}
-                              className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={(e) => {
-                                  const current = Array.isArray(draft.allowedZidishaBranches)
-                                    ? draft.allowedZidishaBranches
-                                    : []
-                                  if (e.target.checked) {
-                                    setDraft((prev) => ({
-                                      ...prev,
-                                      allowedZidishaBranches: [...current, branch],
-                                    }))
-                                  } else {
-                                    setDraft((prev) => ({
-                                      ...prev,
-                                      allowedZidishaBranches: current.filter((b) => b !== branch),
-                                    }))
-                                  }
-                                }}
-                                className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                              />
-                              <span className="text-sm text-gray-700">{branch}</span>
-                            </label>
-                          )
-                        })
-                      )}
-                    </div>
-                    {(!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
-                      <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
+              {showZidishaBranchSection && (
+                <div className="border-t border-gray-200 pt-5">
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">
+                    Zidisha Branch Access <span className="text-red-500">*</span>
+                  </label>
+                  <p className="text-xs text-gray-500 mb-4">
+                    {normalizedRole === 'zidisha'
+                      ? 'Select which Zidisha branches this user can see on Zidisha pages.'
+                      : 'Select which Zidisha branches this user can see'}
+                  </p>
+                  <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                    {availableZidishaBranches.length === 0 ? (
+                      <p className="text-sm text-gray-500">Loading branches...</p>
+                    ) : (
+                      availableZidishaBranches.map((branch) => {
+                        const isChecked =
+                          Array.isArray(draft.allowedZidishaBranches) &&
+                          draft.allowedZidishaBranches.includes(branch)
+                        return (
+                          <label
+                            key={branch}
+                            className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const current = Array.isArray(draft.allowedZidishaBranches)
+                                  ? draft.allowedZidishaBranches
+                                  : []
+                                if (e.target.checked) {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    allowedZidishaBranches: [...current, branch],
+                                  }))
+                                } else {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    allowedZidishaBranches: current.filter((b) => b !== branch),
+                                  }))
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span className="text-sm text-gray-700">{branch}</span>
+                          </label>
+                        )
+                      })
                     )}
                   </div>
-                )}
+                  {normalizedRole === 'zidisha' && (!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
+                    <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha role users</p>
+                  )}
+                  {normalizedRole === 'custom' && (!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
+                    <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
+                  )}
+                </div>
+              )}
 
               {showLogbookBranchSection && (
                 <div className="border-t border-gray-200 pt-5">

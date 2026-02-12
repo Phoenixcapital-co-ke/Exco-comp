@@ -197,10 +197,10 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     boda: ['boda'],
   }
   const allowedSectionIds = ROLE_SECTIONS[roleKey] || defaultSections
-    // Always include data section for admin/superuser and manager/logbook roles
+    // Always include data section for admin/superuser and manager roles only
     if (roleKey === 'admin' || roleKey === 'superuser') {
       allowedSectionIds.push('data')
-    } else if (roleKey === 'manager' || roleKey === 'logbook') {
+    } else if (roleKey === 'manager') {
       allowedSectionIds.push('data')
     }
     filteredNavigation = navigationItems.filter((item) => allowedSectionIds.includes(item.id))

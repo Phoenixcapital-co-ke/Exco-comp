@@ -2104,8 +2104,9 @@ const mapUserRow = (user) => {
     createdAt: user.created_at,
     updatedAt: user.updated_at
   }
-  // For custom role users, include their allowed pages
-  if (String(user.role || '').toLowerCase() === 'custom') {
+  // For custom and manager role users, include their allowed pages/modules
+  const userRole = String(user.role || '').toLowerCase()
+  if (userRole === 'custom' || userRole === 'manager') {
     const pages = dbRW
       .prepare('SELECT page_path FROM User_Pages WHERE user_id = ? ORDER BY page_path')
       .all(user.id)
@@ -2462,8 +2463,8 @@ app.post('/api/users', (req, res) => {
     
     const userId = result.lastInsertRowid
     
-    // If custom role, save page permissions
-    if (roleStr === 'custom' && Array.isArray(allowedPages)) {
+    // If custom or manager role, save page/module permissions
+    if ((roleStr === 'custom' || roleStr === 'manager') && Array.isArray(allowedPages)) {
       const insertPage = dbRW.prepare('INSERT INTO User_Pages (user_id, page_path) VALUES (?, ?)')
       for (const pagePath of allowedPages) {
         const path = String(pagePath || '').trim()
@@ -2478,14 +2479,14 @@ app.post('/api/users', (req, res) => {
       }
     }
 
-    // If custom role, save Zidisha branch permissions (required if any Zidisha page is assigned)
-    if (roleStr === 'custom') {
+    // If custom or manager role, save Zidisha branch permissions (required if any Zidisha page/module is assigned)
+    if (roleStr === 'custom' || roleStr === 'manager') {
       const pagesArr = Array.isArray(allowedPages) ? allowedPages : []
       const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
       const branchesArr = Array.isArray(allowedZidishaBranches) ? allowedZidishaBranches : []
 
       if (hasZidishaPages && branchesArr.length === 0) {
-        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha page access' })
+        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha module access' })
       }
 
       if (branchesArr.length > 0) {
@@ -2608,9 +2609,9 @@ app.put('/api/users/:id', (req, res) => {
     dbRW.prepare(sql).run(params)
     }
     
-    // Handle page permissions for custom role
+    // Handle page/module permissions for custom and manager roles
     const roleStr = String(role !== undefined ? role : existing.role || 'user').trim().toLowerCase()
-    if (roleStr === 'custom' && typeof allowedPages !== 'undefined') {
+    if ((roleStr === 'custom' || roleStr === 'manager') && typeof allowedPages !== 'undefined') {
       // Delete existing pages
       dbRW.prepare('DELETE FROM User_Pages WHERE user_id = ?').run(id)
       // Insert new pages
@@ -2627,13 +2628,13 @@ app.put('/api/users/:id', (req, res) => {
           }
         }
       }
-    } else if (roleStr !== 'custom') {
-      // If role changed from custom to something else, remove page permissions
+    } else if (roleStr !== 'custom' && roleStr !== 'manager') {
+      // If role changed from custom/manager to something else, remove page permissions
       dbRW.prepare('DELETE FROM User_Pages WHERE user_id = ?').run(id)
     }
 
-    // Handle Zidisha branch permissions for custom role
-    if (roleStr === 'custom' && typeof allowedZidishaBranches !== 'undefined') {
+    // Handle Zidisha branch permissions for custom and manager roles
+    if ((roleStr === 'custom' || roleStr === 'manager') && typeof allowedZidishaBranches !== 'undefined') {
       // Delete existing branches
       dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
 
@@ -2651,16 +2652,16 @@ app.put('/api/users/:id', (req, res) => {
         }
       }
 
-      // Validate: if user has Zidisha pages, they must have at least one Zidisha branch
+      // Validate: if user has Zidisha pages/modules, they must have at least one Zidisha branch
       const pagesNow = typeof allowedPages !== 'undefined'
         ? (Array.isArray(allowedPages) ? allowedPages : [])
         : dbRW.prepare('SELECT page_path FROM User_Pages WHERE user_id = ?').all(id).map(r => r.page_path)
       const hasZidishaPages = pagesNow.some((p) => String(p || '').startsWith('/zidisha/'))
       if (hasZidishaPages && branchesArr.length === 0) {
-        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha page access' })
+        return res.status(400).json({ error: 'At least one Zidisha branch must be selected for Zidisha module access' })
       }
-    } else if (roleStr !== 'custom') {
-      // If role changed away from custom, remove Zidisha branch permissions
+    } else if (roleStr !== 'custom' && roleStr !== 'manager' && roleStr !== 'zidisha') {
+      // If role changed away from custom/manager/zidisha, remove Zidisha branch permissions
       dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
     }
 
