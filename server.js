@@ -1744,7 +1744,65 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     const hasBranchRestrictions = allowedBranches.length > 0
     const allowedSet = hasBranchRestrictions ? new Set(allowedBranches) : null
 
-    // Query to get borrower_access_ids and total repayment_amount for the selected month/year
+    // Get all borrower access IDs that have RO_Targets entries for the selected month/year
+    const borrowerMap = new Map();
+    const borrowerNameMap = new Map();
+    const normalizeName = (v) => String(v || '').trim().toLowerCase()
+    
+    try {
+      // Get all loan officer names from RO_Targets for the selected month/year
+      let targetRows = []
+      try {
+        targetRows = dbRW
+          .prepare('SELECT loan_officer_name FROM RO_Targets WHERE month = ? AND year = ?')
+          .all(monthNum, yearNum)
+      } catch (e) {
+        // Fallback to RO_Target (singular) for backward compatibility
+        try {
+          targetRows = dbRW
+            .prepare('SELECT loan_officer_name FROM RO_Target WHERE month = ? AND year = ?')
+            .all(monthNum, yearNum)
+        } catch (e2) {
+          console.error('Error fetching RO targets:', e2.message)
+        }
+      }
+      
+      // Get all LOs to match names to borrower_access_ids
+      const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all();
+      const loNameMap = new Map(); // normalized name -> borrower_access_id
+      for (const loRow of loRows) {
+        const normalizedName = normalizeName(loRow.name);
+        if (normalizedName) {
+          loNameMap.set(normalizedName, {
+            borrower_access_id: String(loRow.borrower_access_id).trim(),
+            name: loRow.name
+          });
+        }
+      }
+      
+      // Match RO_Targets names to borrower_access_ids
+      for (const targetRow of targetRows) {
+        const targetName = normalizeName(targetRow.loan_officer_name);
+        if (!targetName) continue;
+        
+        const loMatch = loNameMap.get(targetName);
+        if (loMatch) {
+          const borrowerId = loMatch.borrower_access_id;
+          if (borrowerId && !borrowerMap.has(borrowerId)) {
+            borrowerMap.set(borrowerId, {
+              borrower_access_id: borrowerId,
+              total_repayment_amount: 0,
+              transaction_count: 0
+            });
+            borrowerNameMap.set(borrowerId, loMatch.name);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching borrower access IDs from RO_Targets:', e.message);
+    }
+
+    // Query to get collection data for the selected month/year
     // Date format in database is DD/MM/YYYY (split by '/')
     // We'll fetch all rows and filter in JavaScript for more reliable date parsing
     const allRows = db.prepare(`
@@ -1761,8 +1819,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         AND borrower_access_ids != ''
     `).all();
     
-    // Filter and aggregate by unique borrower_access_id
-    const borrowerMap = new Map();
+    // Filter and aggregate collection data by unique borrower_access_id for the selected month
     for (const row of allRows) {
       if (hasBranchRestrictions) {
         const branchCode = String(row.branch ?? '').trim()
@@ -1803,10 +1860,11 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         }
       }
       
-      // Aggregate by each unique borrower_access_id
+      // Aggregate collection data by each unique borrower_access_id
       for (const borrowerId of borrowerIds) {
         if (!borrowerId) continue;
         
+        // Initialize if not already in map (shouldn't happen if LOs table is complete, but safety check)
         if (!borrowerMap.has(borrowerId)) {
           borrowerMap.set(borrowerId, {
             borrower_access_id: borrowerId,
@@ -1821,29 +1879,15 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       }
     }
     
-    // Convert to array and sort by total repayment amount
+    // Convert to array and sort by total repayment amount (descending)
     let rows = Array.from(borrowerMap.values())
+      .map(row => ({
+        ...row,
+        name: borrowerNameMap.get(String(row.borrower_access_id)) || null
+      }))
       .sort((a, b) => (b.total_repayment_amount || 0) - (a.total_repayment_amount || 0));
-    
-    // Join with LOs table to get names
-    const borrowerNameMap = new Map();
-    try {
-      const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all();
-      for (const loRow of loRows) {
-        borrowerNameMap.set(String(loRow.borrower_access_id), loRow.name);
-      }
-    } catch (e) {
-      console.error('Error fetching borrower names from LOs:', e.message);
-    }
-    
-    // Add borrower names to the results
-    rows = rows.map(row => ({
-      ...row,
-      name: borrowerNameMap.get(String(row.borrower_access_id)) || null
-    }));
 
     // Join with RO_Targets to get target by name for the selected month/year
-    const normalizeName = (v) => String(v || '').trim().toLowerCase()
     const targetByLoanOfficerName = new Map()
     try {
       // Primary table name
