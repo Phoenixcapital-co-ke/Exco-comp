@@ -535,10 +535,12 @@ async function fetchCollectionsOnce(branchCode, payload) {
   return { meta: json?.response, results }
 }
 
-async function fetchAllCollections() {
+async function fetchAllCollections(db) {
   const all = []
   let grandTotal = 0
   const count = 100
+  const today = getTodayDMY()
+  
   // helper to parse loandisk_system_date: "DD/MM/YYYY HH:MMam|pm"
   const parseLoandiskDate = (s) => {
     if (!s) return null
@@ -551,18 +553,47 @@ async function fetchAllCollections() {
     if (/am/i.test(ap) && hh === 12) hh = 0
     return new Date(yyyy, mm-1, dd, hh, mi)
   }
+  
   const getBranchIncrementalStart = (db, branchCode) => {
     const rows = db.prepare(`SELECT loandisk_system_date, repayment_collected_date FROM ${COLLECTIONS_TABLE} WHERE branch = ? AND loandisk_system_date IS NOT NULL AND loandisk_system_date <> ''`).all(branchCode)
-    if (!rows.length) return '01/01/2024'
-    let best = null, bestRepay = '01/01/2024'
+    if (!rows.length) return DEFAULT_COLLECTION_START_DATE
+    let best = null, bestRepay = DEFAULT_COLLECTION_START_DATE
     for (const r of rows) {
       const d = parseLoandiskDate(r.loandisk_system_date)
       if (!d) continue
-      if (!best || d > best) { best = d; bestRepay = String(r.repayment_collected_date || '01/01/2024') }
+      if (!best || d > best) { best = d; bestRepay = String(r.repayment_collected_date || DEFAULT_COLLECTION_START_DATE) }
     }
-    return bestRepay || '01/01/2024'
+    return bestRepay || DEFAULT_COLLECTION_START_DATE
   }
 
+  const branchList = getActiveBranches(db).map(b => b.code)
+  for (const branchCode of branchList) {
+    const startDate = getBranchIncrementalStart(db, branchCode)
+    console.info(`[Collections] Fetching repayments for branch ${branchCode} (from ${startDate} to ${today})`)
+    let branchInserted = 0
+    let page = 1
+    let total = null
+    while (true) {
+      const payload = {
+        from: page,
+        count,
+        repayment_search_from_date: startDate,
+        repayment_search_to_date: today,
+      }
+      const { meta, results } = await fetchCollectionsOnce(branchCode, payload)
+      if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
+      if (!results.length) break
+      for (const r of results) r._branch_code = branchCode
+      all.push(...results)
+      branchInserted += results.length
+      page += 1
+      const pageSize = count
+      if (!pageSize || results.length < pageSize) break
+    }
+    console.info(`[Collections] Branch ${branchCode} fetched ${branchInserted}${total != null ? ` / ${total}` : ''} records`)
+    if (total != null) grandTotal += total
+  }
+  return { total: grandTotal || null, results: all }
 }
 
 async function fetchAllCollectionsWithDb(db) {
@@ -1247,7 +1278,7 @@ function insertZidishaDaily(db, row, columns) {
     // === Collections ingestion ===
     if (!SKIP_COLLECTIONS) {
       initCollectionsTable(db)
-      const { total: collTotal, results: collResults } = await fetchAllCollectionsWithDb(db)
+      const { total: collTotal, results: collResults } = await fetchAllCollections(db)
       const tx2 = db.transaction((rows) => {
         for (const r of rows) upsertCollection(db, r)
       })
