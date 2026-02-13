@@ -1,7 +1,7 @@
 import { API_URLS } from './api.js'
 import { normalizeZidishaResponse } from './normalizeZidishaResponse.js'
 
-export async function fetchAllZidishaRows({ signal, pageSize = 5000, product, products, branch, excludeBranch, excludeClientIds } = {}) {
+export async function fetchAllZidishaRows({ signal, pageSize = 2000, product, products, branch, excludeBranch, excludeClientIds, month, year } = {}) {
   const results = []
   let page = 1
   let total = Infinity
@@ -27,6 +27,13 @@ export async function fetchAllZidishaRows({ signal, pageSize = 5000, product, pr
     }
     if (excludeClientIds && Array.isArray(excludeClientIds) && excludeClientIds.length > 0) {
       params.append('excludeClientIds', excludeClientIds.join(','))
+    }
+    // Add date filtering for better performance
+    if (month && month >= 1 && month <= 12) {
+      params.append('month', String(month))
+    }
+    if (year && year >= 2000 && year <= 2100) {
+      params.append('year', String(year))
     }
     
     const res = await fetch(`${API_URLS.zidisha.data}?${params.toString()}`, {

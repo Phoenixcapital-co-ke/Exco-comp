@@ -32,12 +32,15 @@ function ZidishaCollection() {
         setDataReady(false)
         // Filter for Zidisha products only using backend filtering
         const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
-        // Use backend filtering for products and exclude Advans branch
+        // Use backend filtering for products, exclude Advans branch, and filter by selected month/year
+        // This significantly reduces the amount of data fetched
         const filteredRows = await fetchAllZidishaRows({ 
           signal: controller.signal,
           products: zidishaProducts,
           branch: selectedBranch !== 'All' ? selectedBranch : undefined,
-          excludeBranch: 'Advans Branch'
+          excludeBranch: 'Advans Branch',
+          month: selectedMonth,
+          year: selectedYear
         })
         setRows(filteredRows)
         setDataReady(true)
@@ -51,7 +54,7 @@ function ZidishaCollection() {
     }
     load()
     return () => controller.abort()
-  }, [selectedBranch])
+  }, [selectedBranch, selectedMonth, selectedYear])
 
   const filtered = useMemo(() => {
     const inMonth = (iso) => {
@@ -81,28 +84,38 @@ function ZidishaCollection() {
   }, [totalCollectedMonth, totalExpectedMonth])
 
   // MTD collection rate: loans maturing in current month up to today
+  // Optimized: calculate during filtered calculation to avoid extra loop
   const mtdCollectionRatePct = useMemo(() => {
     const nowD = new Date()
     const y = nowD.getFullYear()
     const m = nowD.getMonth() + 1
-    let expSum = 0
-    let repSum = 0
-    for (const r of rows) {
-      const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
-      if (!exp) continue
-      const d = new Date(exp)
-      if (isNaN(d.getTime())) continue
-      if (d.getFullYear() === y && (d.getMonth() + 1) === m && d <= nowD) {
-        expSum += Number(r['Total Expected Repayment Derived']) || 0
-        repSum += Number(r['Total Repayment Derived']) || 0
+    // Only calculate if viewing current month, otherwise use filtered data
+    if (selectedYear === y && selectedMonth === m) {
+      let expSum = 0
+      let repSum = 0
+      for (const r of rows) {
+        const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
+        if (!exp) continue
+        const d = new Date(exp)
+        if (isNaN(d.getTime())) continue
+        if (d.getFullYear() === y && (d.getMonth() + 1) === m && d <= nowD) {
+          expSum += Number(r['Total Expected Repayment Derived']) || 0
+          repSum += Number(r['Total Repayment Derived']) || 0
+        }
       }
+      if (expSum > 0) {
+        const pct = (repSum / expSum) * 100
+        return `${pct.toFixed(1)}%`
+      }
+      return '0.0%'
     }
-    if (expSum > 0) {
-      const pct = (repSum / expSum) * 100
+    // For past months, use filtered data (already filtered by month)
+    if (totalExpectedMonth > 0) {
+      const pct = (totalCollectedMonth / totalExpectedMonth) * 100
       return `${pct.toFixed(1)}%`
     }
     return '0.0%'
-  }, [rows])
+  }, [rows, selectedYear, selectedMonth, totalExpectedMonth, totalCollectedMonth])
 
   // Daily series for Expected vs Collected over selected month (based on Expected Matured On Date)
   const dailyExpectedVsCollected = useMemo(() => {

@@ -1188,6 +1188,10 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
     // Support excluding client IDs
     const excludeClientIds = req.query.excludeClientIds ? req.query.excludeClientIds.split(',').map(id => id.trim()).filter(Boolean) : null
 
+    // Support filtering by month/year for "Expected Matured On Date"
+    const month = req.query.month ? parseInt(req.query.month, 10) : null
+    const year = req.query.year ? parseInt(req.query.year, 10) : null
+
     // Build WHERE clause
     const whereConditions = []
     const params = []
@@ -1202,44 +1206,66 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
 
     if (allowedZidisha.length > 0) {
       const allowedNorm = new Set(
-        allowedZidisha.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+        allowedZidisha.map((b) => String(b || '').trim()).filter(Boolean)
       )
       if (branch) {
-        const bNorm = String(branch || '').trim().toLowerCase()
+        const bNorm = String(branch || '').trim()
         if (!allowedNorm.has(bNorm)) {
           return res.status(403).json({ error: 'Branch not allowed for this user' })
         }
       } else {
+        // Use COLLATE NOCASE for case-insensitive matching (can use index)
         const placeholders = allowedZidisha.map(() => '?').join(', ')
-        whereConditions.push(`LOWER(TRIM("Branch Name")) IN (${placeholders})`)
-        params.push(...allowedZidisha.map((b) => String(b || '').trim().toLowerCase()))
+        whereConditions.push(`"Branch Name" COLLATE NOCASE IN (${placeholders})`)
+        params.push(...allowedZidisha.map((b) => String(b || '').trim()))
       }
     }
 
     if (product) {
-      whereConditions.push('LOWER(TRIM("Product Name")) = LOWER(?)')
+      // Use LIKE for case-insensitive matching (can use index with COLLATE NOCASE)
+      whereConditions.push('"Product Name" COLLATE NOCASE = ?')
       params.push(product.trim())
     } else if (products && products.length > 0) {
-      // Filter by multiple products
+      // Filter by multiple products - use COLLATE NOCASE for case-insensitive matching
       const placeholders = products.map(() => '?').join(', ')
-      whereConditions.push(`LOWER(TRIM("Product Name")) IN (${placeholders})`)
-      params.push(...products.map(p => p.toLowerCase().trim()))
+      whereConditions.push(`"Product Name" COLLATE NOCASE IN (${placeholders})`)
+      params.push(...products.map(p => p.trim()))
     }
 
     if (branch) {
-      whereConditions.push('LOWER(TRIM("Branch Name")) = LOWER(?)')
+      // Use COLLATE NOCASE for case-insensitive matching (can use index)
+      whereConditions.push('"Branch Name" COLLATE NOCASE = ?')
       params.push(branch.trim())
     }
 
     if (excludeBranch) {
-      whereConditions.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+      // Use COLLATE NOCASE for case-insensitive matching
+      whereConditions.push('"Branch Name" COLLATE NOCASE != ?')
       params.push(excludeBranch.trim())
     }
     
     if (excludeClientIds && excludeClientIds.length > 0) {
       const placeholders = excludeClientIds.map(() => '?').join(', ')
-      whereConditions.push(`TRIM("Client Id") NOT IN (${placeholders})`)
+      whereConditions.push(`"Client Id" NOT IN (${placeholders})`)
       params.push(...excludeClientIds.map(id => id.trim()))
+    }
+
+    // Filter by month/year if provided (for Expected Matured On Date)
+    if (month && year && month >= 1 && month <= 12) {
+      // Parse dates in format YYYY-MM-DD or DD/MM/YYYY
+      // We'll match dates that start with YYYY-MM or contain the month/year
+      const monthStr = String(month).padStart(2, '0')
+      const yearStr = String(year)
+      
+      // Match ISO format (YYYY-MM-DD) or DD/MM/YYYY format
+      // For ISO: year-month pattern
+      // For DD/MM/YYYY: /month/year pattern (with leading zero)
+      whereConditions.push(`(
+        ("Expected Matured On Date" LIKE ?) OR 
+        ("Expected Matured On Date" LIKE ?) OR
+        (substr("Expected Matured On Date", 7, 4) = ? AND substr("Expected Matured On Date", 4, 2) = ?)
+      )`)
+      params.push(`${yearStr}-${monthStr}-%`, `%/${monthStr}/${yearStr}%`, yearStr, monthStr)
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : ''
@@ -1250,7 +1276,9 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
     const total = totalRow?.count || 0
 
     // Get rows with filters
-    const dataQuery = `SELECT * FROM zidisha_data ${whereClause} ORDER BY rowid DESC LIMIT ? OFFSET ?`
+    // Remove ORDER BY for better performance - let client sort if needed
+    // If ordering is needed, use indexed column instead of rowid
+    const dataQuery = `SELECT * FROM zidisha_data ${whereClause} LIMIT ? OFFSET ?`
     const rows = db.prepare(dataQuery).all(...params, pageSize, offset)
 
     res.json({

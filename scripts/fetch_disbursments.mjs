@@ -859,6 +859,16 @@ function initZidishaTable(db) {
       -- NO UNIQUE CONSTRAINT
     );
   `)
+  
+  // Create indexes for better query performance
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_branch_name ON ${ZIDISHA_TABLE}("Branch Name")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_product_name ON ${ZIDISHA_TABLE}("Product Name")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_client_id ON ${ZIDISHA_TABLE}("Client Id")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_expected_matured ON ${ZIDISHA_TABLE}("Expected Matured On Date")`)
+  } catch (e) {
+    console.warn('Error creating indexes for zidisha_data:', e.message)
+  }
   const cols = db.prepare(`PRAGMA table_info(${ZIDISHA_TABLE});`).all().map(c => c.name)
   if (!cols.includes('Date Of Birth')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Date Of Birth" TEXT;`)
