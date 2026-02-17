@@ -89,14 +89,22 @@ async function fetchAll() {
   const pageSize = basePayload.count
   while (true) {
     const payload = { ...basePayload, from: page, end_date: getTodayDMY() }
-    const { meta, results } = await fetchDisbursments(payload)
+    const { meta, results } = await fetchDisbursements(payload)
     if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
     if (!results.length) break
     all.push(...results)
-    // Stop when we receive a partial page – safer than relying on TotalResults,
-    // which can change while we are paging.
-    if (!pageSize || results.length < pageSize) break
+    // Continue pagination: if we know the total and have fetched all, stop
+    if (total != null && all.length >= total) {
+      console.log(`[Disbursements] Fetched all ${total} results across ${page} page(s)`)
+      break
+    }
+    // Stop if we got a partial page (less than requested pageSize) AND we don't have a total count
+    // If we have a total count, continue until we've fetched all results
+    if (!pageSize || (results.length < pageSize && total == null)) break
     page += 1
+  }
+  if (total != null && all.length < total) {
+    console.warn(`[Disbursements] Warning: Expected ${total} results but only fetched ${all.length}`)
   }
   return { total, results: all }
 }
@@ -1249,30 +1257,40 @@ function insertZidishaDaily(db, row, columns) {
 
     // === Disbursements ingestion ===
     if (!SKIP_DISBURSEMENTS) {
-      const latest = getLatestDisbursedDate(db)
-      if (latest) {
-        const latestDate = parseDMY(latest)
-        const defaultStart = parseDMY(basePayload.start_date)
-        if (latestDate) {
-          // Start from (latest disbursed date - lookback window), but not before default start date
-          const start = new Date(latestDate.getTime())
-          start.setDate(start.getDate() - DISBURSEMENTS_LOOKBACK_DAYS)
-          if (defaultStart && start < defaultStart) {
-            start.setTime(defaultStart.getTime())
-          }
-          const startDMY = formatDMY(start)
-          const startKey = dmyToSortKey(startDMY)
-          if (startDMY && startKey) {
-            // Delete all rows in the lookback window so we can upsert fresh data
-            db.prepare(`
-              DELETE FROM ${TABLE}
-              WHERE disbursed_date IS NOT NULL
-                AND TRIM(disbursed_date) <> ''
-                AND (substr(disbursed_date,7,4) || substr(disbursed_date,4,2) || substr(disbursed_date,1,2)) >= ?
-            `).run(startKey)
-            basePayload.start_date = startDMY
+      // Check if this is an initial fetch (table is empty or very small) vs incremental update
+      const rowCount = db.prepare(`SELECT COUNT(*) as c FROM ${TABLE}`).get().c
+      const isInitialFetch = rowCount === 0
+      
+      if (!isInitialFetch) {
+        // Incremental fetch: use lookback window
+        const latest = getLatestDisbursedDate(db)
+        if (latest) {
+          const latestDate = parseDMY(latest)
+          const defaultStart = parseDMY(basePayload.start_date)
+          if (latestDate) {
+            // Start from (latest disbursed date - lookback window), but not before default start date
+            const start = new Date(latestDate.getTime())
+            start.setDate(start.getDate() - DISBURSEMENTS_LOOKBACK_DAYS)
+            if (defaultStart && start < defaultStart) {
+              start.setTime(defaultStart.getTime())
+            }
+            const startDMY = formatDMY(start)
+            const startKey = dmyToSortKey(startDMY)
+            if (startDMY && startKey) {
+              // Delete all rows in the lookback window so we can upsert fresh data
+              db.prepare(`
+                DELETE FROM ${TABLE}
+                WHERE disbursed_date IS NOT NULL
+                  AND TRIM(disbursed_date) <> ''
+                  AND (substr(disbursed_date,7,4) || substr(disbursed_date,4,2) || substr(disbursed_date,1,2)) >= ?
+              `).run(startKey)
+              basePayload.start_date = startDMY
+              console.log(`[Disbursements] Incremental fetch: using lookback window from ${startDMY} to ${getTodayDMY()}`)
+            }
           }
         }
+      } else {
+        console.log(`[Disbursements] Initial fetch: fetching all data from ${basePayload.start_date} to ${getTodayDMY()}`)
       }
 
       const { total, results } = await fetchAll()
