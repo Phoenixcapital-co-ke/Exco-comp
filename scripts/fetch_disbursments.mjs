@@ -48,7 +48,7 @@ const COLLECTIONS_LOOKBACK_DAYS = Number(process.env.COLLECTIONS_LOOKBACK_DAYS |
 const basePayload = {
   from: 1,
   count: 1000,
-  start_date: '01/01/2024',
+  start_date: '01/01/2019',
   end_date: getTodayDMY(),
   do_not_include_restructured_loans: 1,
   do_not_include_not_released_loans: 1,
