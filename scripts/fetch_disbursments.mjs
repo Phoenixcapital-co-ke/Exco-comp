@@ -89,7 +89,7 @@ async function fetchAll() {
   const pageSize = basePayload.count
   while (true) {
     const payload = { ...basePayload, from: page, end_date: getTodayDMY() }
-    const { meta, results } = await fetchDisbursements(payload)
+    const { meta, results } = await fetchDisbursments(payload)
     if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
     if (!results.length) break
     all.push(...results)
