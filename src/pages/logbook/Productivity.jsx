@@ -13,10 +13,26 @@ function LogbookProductivity() {
   const [staffParData, setStaffParData] = useState([])
   const [staffParLoading, setStaffParLoading] = useState(true)
   const [staffParError, setStaffParError] = useState(null)
+  const [salesData, setSalesData] = useState([]) // { borrower_access_id, newSales, repeatSales }
   const [expandedRows, setExpandedRows] = useState(new Set())
 
   useEffect(() => {
     loadBorrowerData()
+  }, [selectedMonth, selectedYear])
+
+  useEffect(() => {
+    const loadSalesData = async () => {
+      try {
+        const res = await fetch(API_URLS.logbook.productivitySales(selectedMonth, selectedYear), { credentials: 'include' })
+        if (!res.ok) return
+        const data = await res.json()
+        setSalesData(Array.isArray(data) ? data : [])
+      } catch (e) {
+        console.error('Error loading productivity sales:', e)
+        setSalesData([])
+      }
+    }
+    loadSalesData()
   }, [selectedMonth, selectedYear])
 
   useEffect(() => {
@@ -82,6 +98,21 @@ function LogbookProductivity() {
     }
     return map
   }, [staffParData])
+
+  // Map borrower_access_id -> { newSales, repeatSales }
+  const salesMap = useMemo(() => {
+    const map = new Map()
+    for (const entry of salesData) {
+      const id = String(entry.borrower_access_id || '').trim()
+      if (id) {
+        map.set(id, {
+          newSales: Number(entry.newSales) || 0,
+          repeatSales: Number(entry.repeatSales) || 0
+        })
+      }
+    }
+    return map
+  }, [salesData])
 
   // Calculate summary stats
   const totalBorrowers = borrowerData.length
@@ -203,13 +234,12 @@ function LogbookProductivity() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Borrower Access ID</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Portfolio</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Repayment Amount</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Percentage Achieved</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Percent Over 100%</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Commission</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -246,31 +276,45 @@ function LogbookProductivity() {
                   // PAR calculations
                   const parPercentage = parRateMap.get(String(item.borrower_access_id || '')) || 0
                   const parTarget = 8 // PAR target is always 8%
-                  // PAR uses range-based scoring: Below 8% = 100%, 9-12% = 80%, 12-15% = 60%
-                  // Note: Lower PAR is better, so we use inverted logic
+                  // Percentage Achieved = inverted (lower PAR is better): target/actual * 100
                   let parPercentageAchieved = null
                   let parPercentOver100 = null
                   let parPerformanceScore = null
                   if (parPercentage > 0) {
-                    // Calculate percentage achieved (inverted: lower PAR is better)
                     parPercentageAchieved = parTarget > 0 ? ((parTarget / parPercentage) * 100) : null
-                    
-                    // Determine performance score based on PAR ranges
-                    if (parPercentage <= 8) {
-                      parPercentOver100 = 100
-                      parPerformanceScore = 100
-                    } else if (parPercentage <= 12) {
-                      parPercentOver100 = 80
-                      parPerformanceScore = 80
-                    } else if (parPercentage <= 15) {
-                      parPercentOver100 = 60
-                      parPerformanceScore = 60
-                    } else {
-                      // Above 15%, calculate as percentage of target (inverted)
-                      parPercentOver100 = Math.max(0, ((parTarget / parPercentage) * 100))
-                      parPerformanceScore = parPercentOver100 >= 100 ? 100 : parPercentOver100
+                    // Percent Over 100% from Percentage Achieved: IF(D6>=110%,100%,IF(D6>=90%,80%,IF(D6>=70%,60%,IF(D6<70,D6))))
+                    if (parPercentageAchieved != null) {
+                      const d6 = parPercentageAchieved
+                      parPercentOver100 = d6 >= 110 ? 100 : d6 >= 90 ? 80 : d6 >= 70 ? 60 : d6
+                      parPerformanceScore = parPercentOver100
                     }
                   }
+                  
+                  // Sales and weighted performance for Commission (G10 = Weighted Performance Performance column)
+                  const sales = salesMap.get(String(item.borrower_access_id || '')) || {}
+                  const newSalesVal = Number(sales.newSales) || 0
+                  const repeatSalesVal = Number(sales.repeatSales) || 0
+                  const NEW_SALES_TARGET = 1000000
+                  const REPEAT_SALES_TARGET = 2000000
+                  const newSalesPct = NEW_SALES_TARGET > 0 ? (newSalesVal / NEW_SALES_TARGET) * 100 : null
+                  const repeatSalesPct = REPEAT_SALES_TARGET > 0 ? (repeatSalesVal / REPEAT_SALES_TARGET) * 100 : null
+                  const newSalesOver100 = newSalesPct != null ? (newSalesPct >= 100 ? 100 : newSalesPct) : null
+                  const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
+                  const d8 = newSalesPct
+                  const b8 = newSalesVal
+                  const c8 = NEW_SALES_TARGET
+                  const repeatSalesPercentOver100 = (d8 != null && d8 >= 100) ? 100 : (b8 < c8 && d8 != null) ? d8 : repeatSalesOver100Base
+                  const perfCollection = percentOver100 != null ? (percentOver100 / 100) * 40 : 0
+                  const perfPortfolio = portfolioPerformanceScore != null ? (portfolioPerformanceScore / 100) * 10 : 0
+                  const perfPar = parPerformanceScore != null ? (parPerformanceScore / 100) * 20 : 0
+                  const perfNewSales = newSalesOver100 != null ? (newSalesOver100 / 100) * 10 : 0
+                  const perfRepeatSales = repeatSalesPercentOver100 != null ? (repeatSalesPercentOver100 / 100) * 20 : 0
+                  const totalPerformance = perfCollection + perfPortfolio + perfPar + perfNewSales + perfRepeatSales
+                  // PAR Commission: =IF(G10>=90%,12500,IF(G10>=80%,10000,IF(G10>=70%,7500,IF(G10<70%,0))))
+                  const parCommission = totalPerformance >= 90 ? 12500 : totalPerformance >= 80 ? 10000 : totalPerformance >= 70 ? 7500 : 0
+                  const netSalesActuals = (repeatSalesPercentOver100 != null && repeatSalesPercentOver100 >= 50) ? repeatSalesVal : 0
+                  const netSalesCommission = netSalesActuals * 0.02
+                  const totalCommission = parCommission + netSalesCommission
                   
                   const borrowerId = item.borrower_access_id || `row-${index}`
                   const isExpanded = expandedRows.has(borrowerId)
@@ -288,11 +332,8 @@ function LogbookProductivity() {
                             ) : (
                               <ChevronRight className="w-4 h-4 text-gray-500" />
                             )}
-                            {item.borrower_access_id || 'N/A'}
+                            {item.name || '—'}
                           </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                          {item.name || '—'}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                           {formatKES(portfolioVal)}
@@ -307,12 +348,12 @@ function LogbookProductivity() {
                           {percentageAchieved === null ? '—' : `${percentageAchieved.toFixed(1)}%`}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {percentOver100 === null ? '—' : `${percentOver100.toFixed(1)}%`}
+                          {formatKES(totalCommission)}
                         </td>
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50">
-                          <td colSpan={7} className="px-6 py-6">
+                          <td colSpan={6} className="px-6 py-6">
                             <div className="bg-white rounded-lg border border-gray-200 p-6">
                               <h4 className="text-lg font-semibold text-gray-900 mb-6">Performance Breakdown</h4>
                               
@@ -366,33 +407,63 @@ function LogbookProductivity() {
                                           {parPerformanceScore !== null ? `${((parPerformanceScore / 100) * 20).toFixed(2)}%` : '—'}
                                         </td>
                                       </tr>
-                                      <tr className="bg-gray-50">
-                                        <td className="px-4 py-3 text-sm font-medium text-gray-900">New Sales</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">10%</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                      </tr>
-                                      <tr>
-                                        <td className="px-4 py-3 text-sm font-medium text-gray-900">Repeat Sales</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">20%</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">—</td>
-                                      </tr>
-                                      <tr className="bg-blue-50 border-t-2 border-blue-200">
-                                        <td className="px-4 py-3 text-sm font-semibold text-gray-900">Weighted Performance</td>
-                                        <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right" colSpan={5}>—</td>
-                                        <td className="px-4 py-3 text-sm font-semibold text-blue-900 text-right">—</td>
-                                      </tr>
-                                      <tr>
-                                        <td className="px-4 py-3 text-sm font-medium text-gray-900">Net Sales</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right" colSpan={6}>—</td>
-                                      </tr>
+                                      {(() => {
+                                        const sales = salesMap.get(String(item.borrower_access_id || '')) || {}
+                                        const newSalesVal = Number(sales.newSales) || 0
+                                        const repeatSalesVal = Number(sales.repeatSales) || 0
+                                        const NEW_SALES_TARGET = 1000000
+                                        const REPEAT_SALES_TARGET = 2000000
+                                        const newSalesPct = NEW_SALES_TARGET > 0 ? (newSalesVal / NEW_SALES_TARGET) * 100 : null
+                                        const repeatSalesPct = REPEAT_SALES_TARGET > 0 ? (repeatSalesVal / REPEAT_SALES_TARGET) * 100 : null
+                                        const newSalesOver100 = newSalesPct != null ? (newSalesPct >= 100 ? 100 : newSalesPct) : null
+                                        const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
+                                        // Repeat Sales Percent Over 100%: =IF(D8>=100%,100%,IF(B8<C8,D8)) where D8=New Sales % Achieved, B8=New Sales Actuals, C8=New Sales Target
+                                        const d8 = newSalesPct
+                                        const b8 = newSalesVal
+                                        const c8 = NEW_SALES_TARGET
+                                        const repeatSalesPercentOver100 = (d8 != null && d8 >= 100) ? 100 : (b8 < c8 && d8 != null) ? d8 : repeatSalesOver100Base
+                                        // Sum of Weight and Performance columns for Weighted Performance row
+                                        const perfCollection = percentOver100 != null ? (percentOver100 / 100) * 40 : 0
+                                        const perfPortfolio = portfolioPerformanceScore != null ? (portfolioPerformanceScore / 100) * 10 : 0
+                                        const perfPar = parPerformanceScore != null ? (parPerformanceScore / 100) * 20 : 0
+                                        const perfNewSales = newSalesOver100 != null ? (newSalesOver100 / 100) * 10 : 0
+                                        const perfRepeatSales = repeatSalesPercentOver100 != null ? (repeatSalesPercentOver100 / 100) * 20 : 0
+                                        const totalWeight = 40 + 10 + 20 + 10 + 20
+                                        const totalPerformance = perfCollection + perfPortfolio + perfPar + perfNewSales + perfRepeatSales
+                                        return (
+                                          <>
+                                            <tr className="bg-gray-50">
+                                              <td className="px-4 py-3 text-sm font-medium text-gray-900">New Sales</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(newSalesVal)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(NEW_SALES_TARGET)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{newSalesPct != null ? `${newSalesPct.toFixed(1)}%` : '—'}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{newSalesOver100 != null ? `${newSalesOver100.toFixed(1)}%` : '—'}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">10%</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{newSalesOver100 != null ? `${((newSalesOver100 / 100) * 10).toFixed(2)}%` : '—'}</td>
+                                            </tr>
+                                            <tr>
+                                              <td className="px-4 py-3 text-sm font-medium text-gray-900">Repeat Sales</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(repeatSalesVal)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(REPEAT_SALES_TARGET)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{repeatSalesPct != null ? `${repeatSalesPct.toFixed(1)}%` : '—'}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{repeatSalesPercentOver100 != null ? `${repeatSalesPercentOver100.toFixed(1)}%` : '—'}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">20%</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{repeatSalesPercentOver100 != null ? `${((repeatSalesPercentOver100 / 100) * 20).toFixed(2)}%` : '—'}</td>
+                                            </tr>
+                                            <tr className="bg-blue-50 border-t-2 border-blue-200">
+                                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">Weighted Performance</td>
+                                              <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right" colSpan={4}>—</td>
+                                              <td className="px-4 py-3 text-sm font-semibold text-blue-900 text-right">{totalWeight}%</td>
+                                              <td className="px-4 py-3 text-sm font-semibold text-blue-900 text-right">{totalPerformance.toFixed(2)}%</td>
+                                            </tr>
+                                            <tr>
+                                              <td className="px-4 py-3 text-sm font-medium text-gray-900">Net Sales</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES((repeatSalesPercentOver100 != null && repeatSalesPercentOver100 >= 50) ? repeatSalesVal : 0)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right" colSpan={5}>—</td>
+                                            </tr>
+                                          </>
+                                        )
+                                      })()}
                                     </tbody>
                                   </table>
                                 </div>
@@ -464,23 +535,15 @@ function LogbookProductivity() {
                                   <div className="space-y-3">
                                     <div className="flex justify-between items-center">
                                       <span className="text-sm text-gray-700">PAR Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">—</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatKES(parCommission)}</span>
                                     </div>
                                     <div className="flex justify-between items-center">
                                       <span className="text-sm text-gray-700">Net Sales Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">—</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatKES(netSalesCommission)}</span>
                                     </div>
                                     <div className="border-t border-gray-300 pt-2 flex justify-between items-center">
                                       <span className="text-sm font-semibold text-gray-900">Total Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">—</span>
-                                    </div>
-                                    <div className="flex justify-between items-center">
-                                      <span className="text-sm text-gray-700">Retainer</span>
-                                      <span className="text-sm font-semibold text-gray-900">—</span>
-                                    </div>
-                                    <div className="border-t-2 border-gray-400 pt-2 flex justify-between items-center">
-                                      <span className="text-base font-bold text-gray-900">Total Pay</span>
-                                      <span className="text-base font-bold text-gray-900">—</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatKES(totalCommission)}</span>
                                     </div>
                                   </div>
                                 </div>

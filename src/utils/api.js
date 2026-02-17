@@ -25,6 +25,7 @@ export const API_URLS = {
     borrowers: `${API_BASE}/api/logbook/borrowers`,
     branches: `${API_BASE}/api/logbook/branches`,
     collectorPerformance: (month, year) => `${API_BASE}/api/logbook/collector-performance?month=${month}&year=${year}`,
+    productivitySales: (month, year) => `${API_BASE}/api/logbook/productivity-sales?month=${month}&year=${year}`,
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,

@@ -2089,6 +2089,116 @@ app.get('/api/logbook/collector-performance', (req, res) => {
   }
 });
 
+// New sales vs repeat sales for Logbook Productivity (by Borrower Access ID, selected month)
+// New sales = sum(disbursed) for loans in the month where borrower_no appears for the first time ever in Logbook_Disbursement
+// Repeat sales = sum(disbursed) for loans in the month where borrower_no had an earlier disbursement in the table
+app.get('/api/logbook/productivity-sales', (req, res) => {
+  try {
+    const { month, year } = req.query
+    const monthNum = parseInt(month, 10)
+    const yearNum = parseInt(year, 10)
+    if (!monthNum || monthNum < 1 || monthNum > 12 || !yearNum || yearNum < 2000 || yearNum > 2100) {
+      return res.status(400).json({ error: 'Month and year are required' })
+    }
+
+    const allowedBranches = getAllowedLogbookBranches(req)
+    const hasBranchRestrictions = allowedBranches.length > 0
+    const allowedSet = hasBranchRestrictions ? new Set(allowedBranches) : null
+
+    // Disbursement date format: DD/MM/YYYY
+    const parseDMY = (str) => {
+      if (!str) return null
+      const s = String(str).trim()
+      const parts = s.split('/')
+      if (parts.length < 3) return null
+      const dd = parseInt(parts[0], 10)
+      const mm = parseInt(parts[1], 10)
+      const yyyy = parseInt(parts[2], 10)
+      if (isNaN(dd) || isNaN(mm) || isNaN(yyyy)) return null
+      return new Date(yyyy, mm - 1, dd)
+    }
+
+    let disbursementRows = db.prepare(`
+      SELECT loan_id, disbursed_date, branch, disbursed, borrower_no, loan_officer
+      FROM Logbook_Disbursement
+      WHERE disbursed_date IS NOT NULL AND TRIM(disbursed_date) <> ''
+        AND (borrower_no IS NOT NULL AND TRIM(borrower_no) <> '')
+        AND disbursed IS NOT NULL
+    `).all()
+
+    if (hasBranchRestrictions) {
+      disbursementRows = disbursementRows.filter((r) => {
+        const code = String(r.branch || '').trim()
+        return code && allowedSet.has(code)
+      })
+    }
+
+    // Earliest disbursed_date per borrower_no (across entire table)
+    const earliestByBorrowerNo = new Map()
+    for (const r of disbursementRows) {
+      const bn = String(r.borrower_no || '').trim()
+      if (!bn) continue
+      const d = parseDMY(r.disbursed_date)
+      if (!d) continue
+      const existing = earliestByBorrowerNo.get(bn)
+      if (!existing || d < existing) earliestByBorrowerNo.set(bn, d)
+    }
+
+    // Map loan_officer name (normalized) -> borrower_access_id
+    const normalizeName = (v) => String(v || '').trim().toLowerCase()
+    const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all()
+    const nameToAccessId = new Map()
+    for (const lo of loRows) {
+      const key = normalizeName(lo.name)
+      if (key) nameToAccessId.set(key, String(lo.borrower_access_id).trim())
+    }
+
+    // For selected month: classify each row as new or repeat and aggregate by borrower_access_id
+    const newSalesByOfficer = new Map()
+    const repeatSalesByOfficer = new Map()
+    for (const r of disbursementRows) {
+      const d = parseDMY(r.disbursed_date)
+      if (!d || d.getFullYear() !== yearNum || d.getMonth() + 1 !== monthNum) continue
+
+      const borrowerNo = String(r.borrower_no || '').trim()
+      if (!borrowerNo) continue
+
+      const officerName = String(r.loan_officer || '').trim()
+      const accessId = officerName ? nameToAccessId.get(normalizeName(officerName)) : null
+      if (!accessId) continue
+
+      const amount = Number(r.disbursed) || 0
+      if (amount <= 0) continue
+
+      const firstEver = earliestByBorrowerNo.get(borrowerNo)
+      // New sale = borrower_no appears for the first time ever in the table, and that first time is in the selected month
+      const isNewSale = firstEver &&
+        firstEver.getFullYear() === yearNum &&
+        (firstEver.getMonth() + 1) === monthNum
+
+      if (isNewSale) {
+        newSalesByOfficer.set(accessId, (newSalesByOfficer.get(accessId) || 0) + amount)
+      } else {
+        repeatSalesByOfficer.set(accessId, (repeatSalesByOfficer.get(accessId) || 0) + amount)
+      }
+    }
+
+    const result = []
+    const allIds = new Set([...newSalesByOfficer.keys(), ...repeatSalesByOfficer.keys()])
+    for (const id of allIds) {
+      result.push({
+        borrower_access_id: id,
+        newSales: newSalesByOfficer.get(id) || 0,
+        repeatSales: repeatSalesByOfficer.get(id) || 0
+      })
+    }
+    res.json(result)
+  } catch (e) {
+    console.error('Error fetching productivity sales:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/logbook/borrowers', (req, res) => {
   try {
     const allowed = getAllowedLogbookBranches(req)
