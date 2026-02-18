@@ -30,6 +30,7 @@ function LogbookProductivity() {
   const [salesData, setSalesData] = useState([]) // { borrower_access_id, newSales, repeatSales }
   const [disbursementData, setDisbursementData] = useState([])
   const [branchData, setBranchData] = useState([])
+  const [parHistory, setParHistory] = useState([])
   const [repaymentsProcessor, setRepaymentsProcessor] = useState(null)
   const [selectedBranch, setSelectedBranch] = useState('ALL')
   const [expandedRows, setExpandedRows] = useState(new Set())
@@ -68,14 +69,15 @@ function LogbookProductivity() {
     loadMonthYearData()
   }, [selectedMonth, selectedYear])
 
-  // Load static data once on mount (parallel)
+  // Load critical static data once on mount (parallel) - optimized for speed
   useEffect(() => {
     const loadStaticData = async () => {
       try {
-        const [parRes, branchRes, disbursementRes] = await Promise.all([
+        // Load critical data in parallel (PAR, branches, history needed for cards)
+        const [parRes, branchRes, historyRes] = await Promise.all([
           fetch(API_URLS.par.borrowerAccess, { credentials: 'include' }),
           fetch(API_URLS.par.branches, { credentials: 'include' }),
-          fetch(API_URLS.logbook.disbursements, { credentials: 'include' })
+          fetch(API_URLS.par.history, { credentials: 'include' })
         ])
         
         if (parRes.ok) {
@@ -91,21 +93,40 @@ function LogbookProductivity() {
           setBranchData(Array.isArray(data) ? data : [])
         }
         
-        if (disbursementRes.ok) {
-          const data = await disbursementRes.json()
-          setDisbursementData(Array.isArray(data) ? data : [])
+        if (historyRes.ok) {
+          const data = await historyRes.json()
+          setParHistory(Array.isArray(data) ? data : [])
         }
       } catch (e) {
         console.error('Error loading static data:', e)
         setStaffParError(e.message)
         setStaffParData([])
         setBranchData([])
-        setDisbursementData([])
+        setParHistory([])
       } finally {
         setStaffParLoading(false)
       }
     }
     loadStaticData()
+  }, [])
+
+  // Defer disbursement data loading (large dataset, not critical for initial render)
+  useEffect(() => {
+    // Load disbursements after initial render to improve page load time
+    const timer = setTimeout(async () => {
+      try {
+        const disbursementRes = await fetch(API_URLS.logbook.disbursements, { credentials: 'include' })
+        if (disbursementRes.ok) {
+          const data = await disbursementRes.json()
+          setDisbursementData(Array.isArray(data) ? data : [])
+        }
+      } catch (e) {
+        console.error('Error loading disbursement data:', e)
+        setDisbursementData([])
+      }
+    }, 300) // Small delay to prioritize critical data
+    
+    return () => clearTimeout(timer)
   }, [])
 
   // Load repayments data only if borrowerData doesn't have total_repayment_amount (lazy/deferred)
@@ -314,17 +335,19 @@ function LogbookProductivity() {
     return sum
   }, [filteredBorrowerData, repaymentsProcessor, selectedMonth, selectedYear, selectedBranch, branchData])
   
-  // Total Portfolio: from branchData.openLoans if branch selected, otherwise sum from borrowerData
+  // Total Portfolio: matching PAR page "Open Loans" logic
   const totalPortfolio = useMemo(() => {
     if (selectedBranch === 'ALL') {
-      // Sum from all branches
-      return branchData.reduce((sum, branch) => sum + (Number(branch.openLoans) || 0), 0)
+      // For "ALL" branches: use latest PAR history entry (same as PAR page "Open Loans" card)
+      if (parHistory.length === 0) return 0
+      const latest = parHistory[0]
+      return Number(latest?.Open_loans || latest?.open_loans || 0)
     } else {
-      // Get portfolio from selected branch
+      // For specific branch: use branch's openLoans from branchData (same as PAR page "PAR by Branch" table)
       const branch = branchData.find(b => b.code === selectedBranch)
       return branch ? (Number(branch.openLoans) || 0) : 0
     }
-  }, [branchData, selectedBranch])
+  }, [selectedBranch, parHistory, branchData])
 
   const totalTarget = useMemo(() => 
     filteredBorrowerData.reduce((sum, item) => sum + (Number(item.target) || 0), 0),
@@ -343,82 +366,103 @@ function LogbookProductivity() {
     [overallPercentageAchieved]
   )
 
-  // Calculate average PAR (filtered by branch)
+  // Calculate PAR (matching PAR page logic)
   const averagePAR = useMemo(() => {
-    if (filteredStaffParData.length === 0) return null
-    const parRates = filteredStaffParData
-      .map(entry => Number(entry.parRate) || 0)
-      .filter(rate => rate > 0)
-    if (parRates.length === 0) return null
-    const sum = parRates.reduce((acc, rate) => acc + rate, 0)
-    return sum / parRates.length
-  }, [filteredStaffParData])
+    if (selectedBranch === 'ALL') {
+      // For "ALL" branches: use latest PAR history entry (same as PAR page)
+      if (parHistory.length === 0) return null
+      const latest = parHistory[0]
+      const pastMissed = Number(latest?.Past_Arrears_missed || latest?.past_arrears_missed || 0)
+      const openLoans = Number(latest?.Open_loans || latest?.open_loans || 0)
+      if (openLoans === 0) return null
+      return (pastMissed / openLoans) * 100
+    } else {
+      // For specific branch: use branch's parRate from branchData (same as PAR page "PAR by Branch" table)
+      const branch = branchData.find(b => b.code === selectedBranch)
+      if (!branch || branch.parRate == null) return null
+      return Number(branch.parRate)
+    }
+  }, [selectedBranch, parHistory, branchData])
 
-  // Memoize chart data to avoid recalculating on every render
+  // Memoize chart data to avoid recalculating on every render - optimized with early returns and for loops
   const parPerformanceChartData = useMemo(() => {
-    return filteredStaffParData
-      .map(entry => {
-        const id = String(entry.officerId || '').trim()
-        const name = borrowerIdToName.get(id) || id || 'N/A'
-        return {
-          name: name,
-          id: id,
-          parRate: entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0,
-          openLoans: Number(entry.openLoans) || 0,
-          pastMissed: Number(entry.pastMissed) || 0
-        }
+    if (!filteredStaffParData.length) return []
+    const data = []
+    for (let i = 0; i < filteredStaffParData.length; i++) {
+      const entry = filteredStaffParData[i]
+      const id = String(entry.officerId || '').trim()
+      const name = borrowerIdToName.get(id) || id || 'N/A'
+      const openLoans = Number(entry.openLoans) || 0
+      const pastMissed = Number(entry.pastMissed) || 0
+      data.push({
+        name,
+        id,
+        parRate: openLoans > 0 ? (pastMissed / openLoans * 100) : 0,
+        openLoans,
+        pastMissed
       })
-      .sort((a, b) => a.parRate - b.parRate)
-      .slice(0, 15)
+    }
+    return data.sort((a, b) => a.parRate - b.parRate).slice(0, 15)
   }, [filteredStaffParData, borrowerIdToName])
 
   const portfolioChartData = useMemo(() => {
-    return filteredStaffParData
-      .map(entry => {
-        const id = String(entry.officerId || '').trim()
-        const name = borrowerIdToName.get(id) || id || 'N/A'
-        return {
-          name: name,
-          id: id,
-          openLoans: Number(entry.openLoans) || 0,
-          pastMissed: Number(entry.pastMissed) || 0
-        }
+    if (!filteredStaffParData.length) return []
+    const data = []
+    for (let i = 0; i < filteredStaffParData.length; i++) {
+      const entry = filteredStaffParData[i]
+      const id = String(entry.officerId || '').trim()
+      const name = borrowerIdToName.get(id) || id || 'N/A'
+      const openLoans = Number(entry.openLoans) || 0
+      const pastMissed = Number(entry.pastMissed) || 0
+      data.push({
+        name,
+        id,
+        parRate: openLoans > 0 ? (pastMissed / openLoans * 100) : 0,
+        openLoans,
+        pastMissed
       })
-      .sort((a, b) => b.openLoans - a.openLoans)
-      .slice(0, 15)
+    }
+    return data.sort((a, b) => b.openLoans - a.openLoans).slice(0, 15)
   }, [filteredStaffParData, borrowerIdToName])
 
   const topPerformersData = useMemo(() => {
-    return filteredStaffParData
-      .map(entry => {
-        const id = String(entry.officerId || '').trim()
-        const name = borrowerIdToName.get(id) || id || 'N/A'
-        return {
-          id: id,
-          name: name,
-          parRate: entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0,
-          openLoans: Number(entry.openLoans) || 0
-        }
+    if (!filteredStaffParData.length) return []
+    const data = []
+    for (let i = 0; i < filteredStaffParData.length; i++) {
+      const entry = filteredStaffParData[i]
+      const id = String(entry.officerId || '').trim()
+      const name = borrowerIdToName.get(id) || id || 'N/A'
+      const openLoans = Number(entry.openLoans) || 0
+      const pastMissed = Number(entry.pastMissed) || 0
+      data.push({
+        id,
+        name,
+        parRate: openLoans > 0 ? (pastMissed / openLoans * 100) : 0,
+        openLoans
       })
-      .sort((a, b) => a.parRate - b.parRate)
-      .slice(0, 5)
+    }
+    return data.sort((a, b) => a.parRate - b.parRate).slice(0, 5)
   }, [filteredStaffParData, borrowerIdToName])
 
-  // Memoize PAR distribution pie chart data
+  // Memoize PAR distribution pie chart data - optimized with for loop
   const parDistributionData = useMemo(() => {
+    if (!filteredStaffParData.length) return []
     const categories = [
       { name: 'Excellent (<8%)', value: 0, color: '#10b981' },
       { name: 'Good (8-12%)', value: 0, color: '#3b82f6' },
       { name: 'Fair (12-15%)', value: 0, color: '#f59e0b' },
       { name: 'Poor (>15%)', value: 0, color: '#ef4444' }
     ]
-    filteredStaffParData.forEach(entry => {
-      const parRate = entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0
+    for (let i = 0; i < filteredStaffParData.length; i++) {
+      const entry = filteredStaffParData[i]
+      const openLoans = Number(entry.openLoans) || 0
+      if (openLoans === 0) continue
+      const parRate = (Number(entry.pastMissed) || 0) / openLoans * 100
       if (parRate < 8) categories[0].value++
       else if (parRate < 12) categories[1].value++
       else if (parRate < 15) categories[2].value++
       else categories[3].value++
-    })
+    }
     return categories.filter(c => c.value > 0)
   }, [filteredStaffParData])
 
