@@ -108,27 +108,35 @@ function LogbookProductivity() {
     loadStaticData()
   }, [])
 
-  // Load repayments data lazily (defer until after initial render for faster page load)
+  // Load repayments data only if borrowerData doesn't have total_repayment_amount (lazy/deferred)
   useEffect(() => {
     if (repaymentsProcessor) return // Already loaded
     
-    // Defer loading repayments data to improve initial page load time
-    const timer = setTimeout(() => {
-      const loadRepaymentsData = async () => {
-        try {
-          const processor = new LogbookDataProcessor()
-          await processor.loadRepaymentsData()
-          setRepaymentsProcessor(processor)
-        } catch (e) {
-          console.error('Error loading repayments data:', e)
-          setRepaymentsProcessor(null)
-        }
-      }
-      loadRepaymentsData()
-    }, 100) // Small delay to let other data load first
+    // Check if we actually need repayments data - borrowerData might already have what we need
+    const hasRepaymentData = borrowerData.length > 0 && borrowerData.some(item => 
+      item.total_repayment_amount != null && Number(item.total_repayment_amount) > 0
+    )
     
-    return () => clearTimeout(timer)
-  }, [repaymentsProcessor])
+    // Only load if we don't have repayment data in borrowerData
+    if (!hasRepaymentData) {
+      // Defer loading repayments data significantly to improve initial page load time
+      const timer = setTimeout(() => {
+        const loadRepaymentsData = async () => {
+          try {
+            const processor = new LogbookDataProcessor()
+            await processor.loadRepaymentsData()
+            setRepaymentsProcessor(processor)
+          } catch (e) {
+            console.error('Error loading repayments data:', e)
+            setRepaymentsProcessor(null)
+          }
+        }
+        loadRepaymentsData()
+      }, 1000) // Even longer delay - load in background after page renders
+      
+      return () => clearTimeout(timer)
+    }
+  }, [repaymentsProcessor, borrowerData])
 
 
   // Toggle row expansion (memoized to avoid recreating function)
@@ -241,8 +249,18 @@ function LogbookProductivity() {
   // Calculate summary stats (filtered by branch)
   const totalBorrowers = filteredBorrowerData.length
   
-  // Calculate total collection from repaymentsData (optimized with early filtering)
+  // Calculate total collection - use borrowerData first (faster), fallback to repaymentsProcessor if needed
   const totalRepayment = useMemo(() => {
+    // First try: use borrowerData which already has total_repayment_amount aggregated
+    // This is much faster than looping through all repayments
+    if (filteredBorrowerData.length > 0) {
+      const sum = filteredBorrowerData.reduce((acc, item) => {
+        return acc + (Number(item.total_repayment_amount) || 0)
+      }, 0)
+      if (sum > 0) return sum
+    }
+    
+    // Fallback: use repaymentsProcessor if borrowerData doesn't have the data
     if (!repaymentsProcessor || !repaymentsProcessor.repaymentsData) return 0
     const repayments = repaymentsProcessor.repaymentsData
     if (!repayments.length) return 0
@@ -294,7 +312,7 @@ function LogbookProductivity() {
     }
     
     return sum
-  }, [repaymentsProcessor, selectedMonth, selectedYear, selectedBranch, branchData])
+  }, [filteredBorrowerData, repaymentsProcessor, selectedMonth, selectedYear, selectedBranch, branchData])
   
   // Total Portfolio: from branchData.openLoans if branch selected, otherwise sum from borrowerData
   const totalPortfolio = useMemo(() => {
@@ -911,20 +929,21 @@ function LogbookProductivity() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
           <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
         </div>
-      ) : staffParLoading && staffParData.length === 0 ? (
+      ) : staffParLoading || staffParData.length === 0 ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
-          Loading staff productivity metrics...
+          {staffParLoading ? 'Loading staff productivity metrics...' : 'No staff productivity data available. Ensure PAR snapshots are running.'}
         </div>
-      ) : staffParData.length === 0 ? (
+      ) : filteredStaffParData.length === 0 ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
-          No staff productivity data available. Ensure PAR snapshots are running.
+          No data available for selected branch.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* PAR Performance Chart */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Performance by Staff</h3>
-            <ResponsiveContainer width="100%" height={350}>
+            {parPerformanceChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
               <BarChart
                 data={parPerformanceChartData}
                 margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
@@ -957,12 +976,18 @@ function LogbookProductivity() {
                 />
               </BarChart>
             </ResponsiveContainer>
+            ) : (
+              <div className="h-[350px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
           </div>
 
           {/* Portfolio Distribution Chart */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Portfolio Distribution by Staff</h3>
-            <ResponsiveContainer width="100%" height={350}>
+            {portfolioChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
               <BarChart
                 data={portfolioChartData}
                 margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
@@ -997,12 +1022,18 @@ function LogbookProductivity() {
                 />
               </BarChart>
             </ResponsiveContainer>
+            ) : (
+              <div className="h-[350px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
           </div>
 
           {/* PAR Distribution Pie Chart */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Rate Distribution</h3>
-            <ResponsiveContainer width="100%" height={300}>
+            {parDistributionData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
                   data={parDistributionData}
@@ -1022,13 +1053,19 @@ function LogbookProductivity() {
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
           </div>
 
           {/* Top Performers Summary */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Performers Summary</h3>
-            <div className="space-y-4">
-              {topPerformersData.map((entry, index) => (
+            {topPerformersData.length > 0 ? (
+              <div className="space-y-4">
+                {topPerformersData.map((entry, index) => (
                   <div key={entry.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div className="flex items-center gap-3">
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
@@ -1057,7 +1094,12 @@ function LogbookProductivity() {
                     </div>
                   </div>
                 ))}
-            </div>
+              </div>
+            ) : (
+              <div className="py-8 text-center text-gray-500 text-sm">
+                No data available
+              </div>
+            )}
           </div>
         </div>
       )}
