@@ -1,7 +1,21 @@
-import React, { useState, useEffect, useMemo } from 'react'
-import { Activity, Users, Target, Award, ChevronDown, ChevronRight } from 'lucide-react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { Activity, Users, Target, Award, ChevronDown, ChevronRight, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  Legend, 
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell
+} from 'recharts'
 import { API_URLS } from '../../utils/api.js'
 import { formatKES } from '../../utils/format.js'
+import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 
 function LogbookProductivity() {
   const nowInit = new Date()
@@ -14,79 +28,121 @@ function LogbookProductivity() {
   const [staffParLoading, setStaffParLoading] = useState(true)
   const [staffParError, setStaffParError] = useState(null)
   const [salesData, setSalesData] = useState([]) // { borrower_access_id, newSales, repeatSales }
+  const [disbursementData, setDisbursementData] = useState([])
+  const [branchData, setBranchData] = useState([])
+  const [repaymentsProcessor, setRepaymentsProcessor] = useState(null)
+  const [selectedBranch, setSelectedBranch] = useState('ALL')
   const [expandedRows, setExpandedRows] = useState(new Set())
 
+  // Load data that depends on month/year
   useEffect(() => {
-    loadBorrowerData()
-  }, [selectedMonth, selectedYear])
-
-  useEffect(() => {
-    const loadSalesData = async () => {
+    const loadMonthYearData = async () => {
       try {
-        const res = await fetch(API_URLS.logbook.productivitySales(selectedMonth, selectedYear), { credentials: 'include' })
-        if (!res.ok) return
-        const data = await res.json()
-        setSalesData(Array.isArray(data) ? data : [])
+        const [borrowerRes, salesRes] = await Promise.all([
+          fetch(API_URLS.logbook.collectorPerformance(selectedMonth, selectedYear), { credentials: 'include' }),
+          fetch(API_URLS.logbook.productivitySales(selectedMonth, selectedYear), { credentials: 'include' })
+        ])
+        
+        if (borrowerRes.ok) {
+          const data = await borrowerRes.json()
+          setBorrowerData(Array.isArray(data) ? data : [])
+          setError(null)
+        } else {
+          throw new Error(`Failed to load borrower data (${borrowerRes.status})`)
+        }
+        
+        if (salesRes.ok) {
+          const data = await salesRes.json()
+          setSalesData(Array.isArray(data) ? data : [])
+        }
       } catch (e) {
-        console.error('Error loading productivity sales:', e)
+        console.error('Error loading month/year data:', e)
+        setError(e.message)
+        setBorrowerData([])
         setSalesData([])
+      } finally {
+        setLoading(false)
       }
     }
-    loadSalesData()
+    setLoading(true)
+    loadMonthYearData()
   }, [selectedMonth, selectedYear])
 
+  // Load static data once on mount (parallel)
   useEffect(() => {
-    loadStaffParData()
+    const loadStaticData = async () => {
+      try {
+        const [parRes, branchRes, disbursementRes] = await Promise.all([
+          fetch(API_URLS.par.borrowerAccess, { credentials: 'include' }),
+          fetch(API_URLS.par.branches, { credentials: 'include' }),
+          fetch(API_URLS.logbook.disbursements, { credentials: 'include' })
+        ])
+        
+        if (parRes.ok) {
+          const data = await parRes.json()
+          setStaffParData(Array.isArray(data) ? data : [])
+          setStaffParError(null)
+        } else {
+          throw new Error(`Failed to load staff PAR data: ${parRes.status}`)
+        }
+        
+        if (branchRes.ok) {
+          const data = await branchRes.json()
+          setBranchData(Array.isArray(data) ? data : [])
+        }
+        
+        if (disbursementRes.ok) {
+          const data = await disbursementRes.json()
+          setDisbursementData(Array.isArray(data) ? data : [])
+        }
+      } catch (e) {
+        console.error('Error loading static data:', e)
+        setStaffParError(e.message)
+        setStaffParData([])
+        setBranchData([])
+        setDisbursementData([])
+      } finally {
+        setStaffParLoading(false)
+      }
+    }
+    loadStaticData()
   }, [])
 
-  const loadBorrowerData = async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      const res = await fetch(API_URLS.logbook.collectorPerformance(selectedMonth, selectedYear), { credentials: 'include' })
-      if (!res.ok) {
-        throw new Error(`Failed to load borrower data (${res.status})`)
+  // Load repayments data lazily (defer until after initial render for faster page load)
+  useEffect(() => {
+    if (repaymentsProcessor) return // Already loaded
+    
+    // Defer loading repayments data to improve initial page load time
+    const timer = setTimeout(() => {
+      const loadRepaymentsData = async () => {
+        try {
+          const processor = new LogbookDataProcessor()
+          await processor.loadRepaymentsData()
+          setRepaymentsProcessor(processor)
+        } catch (e) {
+          console.error('Error loading repayments data:', e)
+          setRepaymentsProcessor(null)
+        }
       }
-      const data = await res.json()
-      setBorrowerData(Array.isArray(data) ? data : [])
-    } catch (e) {
-      console.error('Error loading borrower data:', e)
-      setError(e.message)
-      setBorrowerData([])
-    } finally {
-      setLoading(false)
-    }
-  }
+      loadRepaymentsData()
+    }, 100) // Small delay to let other data load first
+    
+    return () => clearTimeout(timer)
+  }, [repaymentsProcessor])
 
-  const loadStaffParData = async () => {
-    try {
-      setStaffParLoading(true)
-      setStaffParError(null)
-      const res = await fetch(API_URLS.par.borrowerAccess, { credentials: 'include' })
-      if (!res.ok) {
-        throw new Error(`Failed to load staff PAR data (${res.status})`)
+
+  // Toggle row expansion (memoized to avoid recreating function)
+  const toggleRowExpansion = useCallback((borrowerId) => {
+    setExpandedRows(prev => {
+      const newExpanded = new Set(prev)
+      if (newExpanded.has(borrowerId)) {
+        newExpanded.delete(borrowerId)
+      } else {
+        newExpanded.add(borrowerId)
       }
-      const data = await res.json()
-      setStaffParData(Array.isArray(data) ? data : [])
-    } catch (e) {
-      console.error('Error loading staff PAR data:', e)
-      setStaffParError(e.message)
-      setStaffParData([])
-    } finally {
-      setStaffParLoading(false)
-    }
-  }
-
-  // Toggle row expansion
-  const toggleRowExpansion = (borrowerId) => {
-    const newExpanded = new Set(expandedRows)
-    if (newExpanded.has(borrowerId)) {
-      newExpanded.delete(borrowerId)
-    } else {
-      newExpanded.add(borrowerId)
-    }
-    setExpandedRows(newExpanded)
-  }
+      return newExpanded
+    })
+  }, [])
 
   // Create a map of borrower_access_id to PAR rate
   const parRateMap = useMemo(() => {
@@ -114,15 +170,267 @@ function LogbookProductivity() {
     return map
   }, [salesData])
 
-  // Calculate summary stats
-  const totalBorrowers = borrowerData.length
-  const totalRepayment = borrowerData.reduce((sum, item) => sum + (Number(item.total_repayment_amount) || 0), 0)
-  const totalPortfolio = borrowerData.reduce((sum, item) => sum + (Number(item.portfolio) || 0), 0)
-  const totalTarget = borrowerData.reduce((sum, item) => sum + (Number(item.target) || 0), 0)
-  const overallPercentageAchieved = totalTarget > 0 ? (totalRepayment / totalTarget) * 100 : null
-  const overallPercentOver100 = overallPercentageAchieved !== null
-    ? (overallPercentageAchieved >= 100 ? 100 : overallPercentageAchieved)
-    : null
+  // Branch options for filter
+  const branchOptions = useMemo(() => {
+    const options = [{ code: 'ALL', name: 'All Branches' }]
+    const seen = new Set()
+    for (const branch of branchData) {
+      if (branch.code && !seen.has(branch.code)) {
+        seen.add(branch.code)
+        options.push({ code: branch.code, name: branch.name || branch.code })
+      }
+    }
+    return options
+  }, [branchData])
+
+  // Map borrower_access_id -> branches[] from PAR borrower-access (same as PAR page "PAR per Borrower Access ID" table)
+  const borrowerIdToBranches = useMemo(() => {
+    const map = new Map()
+    for (const entry of staffParData) {
+      const id = String(entry.officerId ?? '').trim()
+      if (!id) continue
+      const branches = Array.isArray(entry.branches) ? entry.branches : []
+      map.set(id, branches)
+    }
+    return map
+  }, [staffParData])
+
+  // Map borrower_access_id -> name from borrowerData
+  const borrowerIdToName = useMemo(() => {
+    const map = new Map()
+    for (const item of borrowerData) {
+      const id = String(item.borrower_access_id ?? '').trim()
+      const name = item.name || ''
+      if (id && name) {
+        map.set(id, name)
+      }
+    }
+    return map
+  }, [borrowerData])
+
+  // Filter borrower data by branch using same logic as PAR page: entry.branches.includes(branchCode)
+  const filteredBorrowerData = useMemo(() => {
+    if (selectedBranch === 'ALL') return borrowerData
+    return borrowerData.filter(item => {
+      const id = String(item.borrower_access_id ?? '').trim()
+      const branches = borrowerIdToBranches.get(id)
+      return branches && branches.length > 0 && branches.includes(selectedBranch)
+    })
+  }, [borrowerData, selectedBranch, borrowerIdToBranches])
+
+  // Filter staff PAR data by branch
+  const filteredStaffParData = useMemo(() => {
+    if (selectedBranch === 'ALL') return staffParData
+    return staffParData.filter(entry => {
+      // Check if staff member belongs to selected branch
+      const branches = entry.branches || []
+      const branch = entry.branch || ''
+      return Array.isArray(branches) && branches.includes(selectedBranch) || branch === selectedBranch
+    })
+  }, [staffParData, selectedBranch])
+
+  // Filter disbursement data by branch
+  const filteredDisbursementData = useMemo(() => {
+    if (selectedBranch === 'ALL') return disbursementData
+    return disbursementData.filter(loan => {
+      const branch = loan.branch || loan.Branch || ''
+      return String(branch).trim() === String(selectedBranch).trim()
+    })
+  }, [disbursementData, selectedBranch])
+
+  // Calculate summary stats (filtered by branch)
+  const totalBorrowers = filteredBorrowerData.length
+  
+  // Calculate total collection from repaymentsData (optimized with early filtering)
+  const totalRepayment = useMemo(() => {
+    if (!repaymentsProcessor || !repaymentsProcessor.repaymentsData) return 0
+    const repayments = repaymentsProcessor.repaymentsData
+    if (!repayments.length) return 0
+    
+    const y = selectedYear
+    const m = selectedMonth
+    const normalizeName = (name) => String(name || '').replace(/\s*branch$/i, '').trim()
+    
+    // Pre-compute branch normalization if filtering by branch
+    let normalizedSelectedBranch = null
+    let selectedBranchCode = null
+    if (selectedBranch !== 'ALL') {
+      const selectedBranchInfo = branchData.find(b => b.code === selectedBranch)
+      normalizedSelectedBranch = normalizeName(selectedBranchInfo?.name || selectedBranch)
+      selectedBranchCode = selectedBranch
+    }
+    
+    let sum = 0
+    const getBranchName = repaymentsProcessor.getBranchName
+    
+    // Optimize: filter early by date, then by branch
+    for (let i = 0; i < repayments.length; i++) {
+      const r = repayments[i]
+      const s = String(r.repayment_collected_date || '').trim()
+      if (!s) continue
+      
+      const dateParts = s.split('/')
+      if (dateParts.length < 3) continue
+      
+      const mm = Number(dateParts[1])
+      const yyyy = Number(dateParts[2])
+      
+      // Early exit: skip if not matching month/year
+      if (yyyy !== y || mm !== m) continue
+      
+      const code = String(r.branch || r.Branch || '').trim()
+      if (!code) continue
+      
+      // Filter by branch if not 'ALL'
+      if (selectedBranch !== 'ALL') {
+        if (code !== selectedBranchCode) {
+          const branchName = getBranchName ? getBranchName(code) : code
+          const normalizedBranch = normalizeName(branchName)
+          if (normalizedBranch !== normalizedSelectedBranch) continue
+        }
+      }
+      
+      sum += (Number(r.repayment_amount) || 0)
+    }
+    
+    return sum
+  }, [repaymentsProcessor, selectedMonth, selectedYear, selectedBranch, branchData])
+  
+  // Total Portfolio: from branchData.openLoans if branch selected, otherwise sum from borrowerData
+  const totalPortfolio = useMemo(() => {
+    if (selectedBranch === 'ALL') {
+      // Sum from all branches
+      return branchData.reduce((sum, branch) => sum + (Number(branch.openLoans) || 0), 0)
+    } else {
+      // Get portfolio from selected branch
+      const branch = branchData.find(b => b.code === selectedBranch)
+      return branch ? (Number(branch.openLoans) || 0) : 0
+    }
+  }, [branchData, selectedBranch])
+
+  const totalTarget = useMemo(() => 
+    filteredBorrowerData.reduce((sum, item) => sum + (Number(item.target) || 0), 0),
+    [filteredBorrowerData]
+  )
+  
+  const overallPercentageAchieved = useMemo(() => 
+    totalTarget > 0 ? (totalRepayment / totalTarget) * 100 : null,
+    [totalTarget, totalRepayment]
+  )
+  
+  const overallPercentOver100 = useMemo(() =>
+    overallPercentageAchieved !== null
+      ? (overallPercentageAchieved >= 100 ? 100 : overallPercentageAchieved)
+      : null,
+    [overallPercentageAchieved]
+  )
+
+  // Calculate average PAR (filtered by branch)
+  const averagePAR = useMemo(() => {
+    if (filteredStaffParData.length === 0) return null
+    const parRates = filteredStaffParData
+      .map(entry => Number(entry.parRate) || 0)
+      .filter(rate => rate > 0)
+    if (parRates.length === 0) return null
+    const sum = parRates.reduce((acc, rate) => acc + rate, 0)
+    return sum / parRates.length
+  }, [filteredStaffParData])
+
+  // Memoize chart data to avoid recalculating on every render
+  const parPerformanceChartData = useMemo(() => {
+    return filteredStaffParData
+      .map(entry => {
+        const id = String(entry.officerId || '').trim()
+        const name = borrowerIdToName.get(id) || id || 'N/A'
+        return {
+          name: name,
+          id: id,
+          parRate: entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0,
+          openLoans: Number(entry.openLoans) || 0,
+          pastMissed: Number(entry.pastMissed) || 0
+        }
+      })
+      .sort((a, b) => a.parRate - b.parRate)
+      .slice(0, 15)
+  }, [filteredStaffParData, borrowerIdToName])
+
+  const portfolioChartData = useMemo(() => {
+    return filteredStaffParData
+      .map(entry => {
+        const id = String(entry.officerId || '').trim()
+        const name = borrowerIdToName.get(id) || id || 'N/A'
+        return {
+          name: name,
+          id: id,
+          openLoans: Number(entry.openLoans) || 0,
+          pastMissed: Number(entry.pastMissed) || 0
+        }
+      })
+      .sort((a, b) => b.openLoans - a.openLoans)
+      .slice(0, 15)
+  }, [filteredStaffParData, borrowerIdToName])
+
+  const topPerformersData = useMemo(() => {
+    return filteredStaffParData
+      .map(entry => {
+        const id = String(entry.officerId || '').trim()
+        const name = borrowerIdToName.get(id) || id || 'N/A'
+        return {
+          id: id,
+          name: name,
+          parRate: entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0,
+          openLoans: Number(entry.openLoans) || 0
+        }
+      })
+      .sort((a, b) => a.parRate - b.parRate)
+      .slice(0, 5)
+  }, [filteredStaffParData, borrowerIdToName])
+
+  // Memoize PAR distribution pie chart data
+  const parDistributionData = useMemo(() => {
+    const categories = [
+      { name: 'Excellent (<8%)', value: 0, color: '#10b981' },
+      { name: 'Good (8-12%)', value: 0, color: '#3b82f6' },
+      { name: 'Fair (12-15%)', value: 0, color: '#f59e0b' },
+      { name: 'Poor (>15%)', value: 0, color: '#ef4444' }
+    ]
+    filteredStaffParData.forEach(entry => {
+      const parRate = entry.openLoans > 0 ? ((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100) : 0
+      if (parRate < 8) categories[0].value++
+      else if (parRate < 12) categories[1].value++
+      else if (parRate < 15) categories[2].value++
+      else categories[3].value++
+    })
+    return categories.filter(c => c.value > 0)
+  }, [filteredStaffParData])
+
+  // Calculate total disbursement for selected month/year (filtered by branch) - optimized
+  const totalDisbursement = useMemo(() => {
+    if (!filteredDisbursementData.length) return 0
+    let sum = 0
+    const y = selectedYear
+    const m = selectedMonth
+    
+    // Optimize: parse date inline and filter early
+    for (let i = 0; i < filteredDisbursementData.length; i++) {
+      const loan = filteredDisbursementData[i]
+      const dateStr = String(loan.disbursed_date || loan['Disbursed Date'] || '').trim()
+      if (!dateStr) continue
+      
+      const parts = dateStr.split(/[\/\-]/)
+      if (parts.length < 3) continue
+      
+      const mm = Number(parts[1])
+      const yyyy = Number(parts[2])
+      
+      // Early exit: skip if not matching month/year
+      if (yyyy !== y || mm !== m) continue
+      
+      const amt = loan.disbursed != null ? Number(loan.disbursed) : Number(loan.Disbursed || 0)
+      sum += (amt || 0)
+    }
+    return sum
+  }, [filteredDisbursementData, selectedMonth, selectedYear])
 
   return (
     <div className="space-y-6">
@@ -156,6 +464,18 @@ function LogbookProductivity() {
               ))}
             </select>
           </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Branch</label>
+            <select 
+              className="border border-gray-300 rounded px-2 py-1 text-sm bg-white" 
+              value={selectedBranch} 
+              onChange={(e) => setSelectedBranch(e.target.value)}
+            >
+              {branchOptions.map(branch => (
+                <option key={branch.code} value={branch.code}>{branch.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -164,11 +484,11 @@ function LogbookProductivity() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Loans Processed</p>
-              <p className="text-2xl font-bold text-gray-900">224</p>
+              <p className="text-sm font-medium text-gray-600">Total Portfolio</p>
+              <p className="text-2xl font-bold text-gray-900">{formatKES(totalPortfolio)}</p>
             </div>
             <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <Activity size={24} />
+              <DollarSign size={24} />
             </div>
           </div>
         </div>
@@ -176,11 +496,25 @@ function LogbookProductivity() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Avg Collection Rate</p>
-              <p className="text-2xl font-bold text-gray-900">96.4%</p>
+              <p className="text-sm font-medium text-gray-600">PAR</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {averagePAR !== null ? `${averagePAR.toFixed(2)}%` : '—'}
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
+              <AlertTriangle size={24} />
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Collection</p>
+              <p className="text-2xl font-bold text-gray-900">{formatKES(totalRepayment)}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
-              <Target size={24} />
+              <TrendingUp size={24} />
             </div>
           </div>
         </div>
@@ -188,23 +522,11 @@ function LogbookProductivity() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Active Staff</p>
-              <p className="text-2xl font-bold text-gray-900">5</p>
+              <p className="text-sm font-medium text-gray-600">Disbursement</p>
+              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursement)}</p>
             </div>
             <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
-              <Users size={24} />
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Top Performer</p>
-              <p className="text-2xl font-bold text-gray-900">David</p>
-            </div>
-            <div className="p-3 rounded-lg bg-yellow-50 text-yellow-600">
-              <Award size={24} />
+              <Activity size={24} />
             </div>
           </div>
         </div>
@@ -226,9 +548,9 @@ function LogbookProductivity() {
             <div className="px-6 py-12 text-center">
               <p className="text-sm text-red-600">Error loading data: {error}</p>
             </div>
-          ) : borrowerData.length === 0 && !loading ? (
+          ) : filteredBorrowerData.length === 0 && !loading ? (
             <div className="px-6 py-12 text-center">
-              <p className="text-sm text-gray-500">No borrower data available for the selected month</p>
+              <p className="text-sm text-gray-500">No borrower data available for the selected month and branch</p>
             </div>
           ) : (
             <table className="min-w-full divide-y divide-gray-200">
@@ -243,7 +565,7 @@ function LogbookProductivity() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {borrowerData.map((item, index) => {
+                {filteredBorrowerData.map((item, index) => {
                   const targetVal = Number(item.target) || 0
                   const repaymentVal = Number(item.total_repayment_amount) || 0
                   const portfolioVal = Number(item.portfolio) || 0
@@ -563,7 +885,7 @@ function LogbookProductivity() {
                   )
                 })}
               </tbody>
-              {borrowerData.length > 0 && (
+              {filteredBorrowerData.length > 0 && (
                 <tfoot className="bg-gray-50">
                   <tr>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900" colSpan={2}>Total</td>
@@ -584,77 +906,161 @@ function LogbookProductivity() {
         </div>
       </div>
 
-      {/* Productivity Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">Staff Productivity Metrics</h3>
+      {/* Staff Productivity Visualizations */}
+      {staffParError ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+          <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
         </div>
-        <div className="overflow-x-auto">
-          {staffParError ? (
-            <div className="px-6 py-12 text-center">
-              <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
-            </div>
-          ) : staffParLoading && staffParData.length === 0 ? (
-            <div className="px-6 py-12 text-center text-gray-500 text-sm">
-              Loading staff productivity metrics...
-            </div>
-          ) : staffParData.length === 0 ? (
-            <div className="px-6 py-12 text-center text-gray-500 text-sm">
-              No staff productivity data available. Ensure PAR snapshots are running.
-            </div>
-          ) : (
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Borrower Access ID
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Snapshot Date
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Open Loans (Portfolio)
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Past-Missed Repayment
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    PAR %
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {staffParData.map((entry) => (
-                  <tr key={entry.officerId} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {entry.officerId || 'N/A'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {entry.snapshotTime
-                        ? new Date(entry.snapshotTime).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: '2-digit',
-                            timeZone: 'Africa/Nairobi',
-                          })
-                        : '—'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {formatKES(Number(entry.openLoans) || 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {formatKES(Number(entry.pastMissed) || 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {entry.openLoans > 0 ? `${((Number(entry.pastMissed) || 0) / Number(entry.openLoans) * 100).toFixed(1)}%` : '—'}
-                    </td>
-                  </tr>
+      ) : staffParLoading && staffParData.length === 0 ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
+          Loading staff productivity metrics...
+        </div>
+      ) : staffParData.length === 0 ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
+          No staff productivity data available. Ensure PAR snapshots are running.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* PAR Performance Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Performance by Staff</h3>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart
+                data={parPerformanceChartData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={0}
+                />
+                <YAxis 
+                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft' }}
+                />
+                <Tooltip 
+                  formatter={(value, name) => {
+                    if (name === 'parRate') return [`${value.toFixed(2)}%`, 'PAR Rate']
+                    if (name === 'openLoans') return [formatKES(value), 'Open Loans']
+                    if (name === 'pastMissed') return [formatKES(value), 'Past Missed']
+                    return [value, name]
+                  }}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="parRate" 
+                  name="PAR Rate" 
+                  fill="#ef4444"
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Portfolio Distribution Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Portfolio Distribution by Staff</h3>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart
+                data={portfolioChartData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={0}
+                />
+                <YAxis 
+                  label={{ value: 'Amount (KES)', angle: -90, position: 'insideLeft' }}
+                  tickFormatter={(value) => `${(value / 1000000).toFixed(1)}M`}
+                />
+                <Tooltip 
+                  formatter={(value) => formatKES(value)}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="openLoans" 
+                  name="Open Loans (Portfolio)" 
+                  fill="#3b82f6"
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar 
+                  dataKey="pastMissed" 
+                  name="Past Missed" 
+                  fill="#f59e0b"
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* PAR Distribution Pie Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Rate Distribution</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={parDistributionData}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                  outerRadius={100}
+                  fill="#8884d8"
+                  dataKey="value"
+                >
+                  {parDistributionData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Top Performers Summary */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Performers Summary</h3>
+            <div className="space-y-4">
+              {topPerformersData.map((entry, index) => (
+                  <div key={entry.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
+                        index === 0 ? 'bg-yellow-500' : 
+                        index === 1 ? 'bg-gray-400' : 
+                        index === 2 ? 'bg-orange-600' : 
+                        'bg-gray-300'
+                      }`}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{entry.name}</p>
+                        <p className="text-xs text-gray-500">Portfolio: {formatKES(entry.openLoans)}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-sm font-semibold ${
+                        entry.parRate < 8 ? 'text-green-600' :
+                        entry.parRate < 12 ? 'text-blue-600' :
+                        entry.parRate < 15 ? 'text-yellow-600' :
+                        'text-red-600'
+                      }`}>
+                        {entry.parRate.toFixed(2)}%
+                      </p>
+                      <p className="text-xs text-gray-500">PAR Rate</p>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
