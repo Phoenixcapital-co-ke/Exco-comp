@@ -3805,6 +3805,7 @@ app.get('/api/par/branches', async (req, res) => {
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
     const allowedBranches = getAllowedLogbookBranches(req)
+    const { branch } = req.query // Optional branch filter
 
     // Get the latest snapshot time
     const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
@@ -3813,24 +3814,13 @@ app.get('/api/par/borrower-access', async (req, res) => {
     }
     const latestTime = latestPar.time
 
-    // Return cached if same snapshot time (filtered per user)
-    if (parBorrowerAccessCache.time === latestPar.time && parBorrowerAccessCache.data) {
-      const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
-      const data = !allowedSet
-        ? parBorrowerAccessCache.data
-        : parBorrowerAccessCache.data.filter((entry) => {
-            if (!Array.isArray(entry.branches) || entry.branches.length === 0) return false
-            return entry.branches.some((code) => {
-              const c = String(code ?? '').trim()
-              return c && allowedSet.has(c)
-            })
-          })
-      return res.json(data)
-    }
-
     // Load saved loan records for the snapshot
-    const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
-    const pastMissedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+    const openLoansRows = branch 
+      ? db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ? AND branch_code = ?').all(latestTime, branch)
+      : db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+    const pastMissedRows = branch
+      ? db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ? AND branch_code = ?').all(latestTime, branch)
+      : db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
 
     const officerMap = new Map()
 
@@ -3903,7 +3893,10 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     officerData.sort((a, b) => b.parRate - a.parRate)
 
-    parBorrowerAccessCache = { time: latestPar.time, data: officerData }
+    // Only cache if no branch filter (to avoid cache complexity)
+    if (!branch && parBorrowerAccessCache.time !== latestPar.time) {
+      parBorrowerAccessCache = { time: latestPar.time, data: officerData }
+    }
 
     const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
     const data = !allowedSet

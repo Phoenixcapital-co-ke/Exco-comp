@@ -27,6 +27,7 @@ function LogbookProductivity() {
   const [staffParData, setStaffParData] = useState([])
   const [staffParLoading, setStaffParLoading] = useState(true)
   const [staffParError, setStaffParError] = useState(null)
+  const [initialParDataLoaded, setInitialParDataLoaded] = useState(false)
   const [salesData, setSalesData] = useState([]) // { borrower_access_id, newSales, repeatSales }
   const [disbursementData, setDisbursementData] = useState([])
   const [branchData, setBranchData] = useState([])
@@ -84,6 +85,7 @@ function LogbookProductivity() {
           const data = await parRes.json()
           setStaffParData(Array.isArray(data) ? data : [])
           setStaffParError(null)
+          setInitialParDataLoaded(true)
         } else {
           throw new Error(`Failed to load staff PAR data: ${parRes.status}`)
         }
@@ -109,6 +111,40 @@ function LogbookProductivity() {
     }
     loadStaticData()
   }, [])
+
+  // Load branch-specific PAR data when branch changes (skip initial load for 'ALL' since it's loaded in first useEffect)
+  useEffect(() => {
+    // Skip if initial load hasn't completed yet and branch is 'ALL' (to avoid double-loading)
+    if (!initialParDataLoaded && selectedBranch === 'ALL') {
+      return
+    }
+    
+    const loadBranchSpecificData = async () => {
+      try {
+        setStaffParLoading(true)
+        // Fetch branch-specific data if branch is selected, otherwise fetch all data
+        const url = selectedBranch === 'ALL' 
+          ? API_URLS.par.borrowerAccess
+          : `${API_URLS.par.borrowerAccess}${API_URLS.par.borrowerAccess.includes('?') ? '&' : '?'}branch=${encodeURIComponent(selectedBranch)}`
+        const res = await fetch(url, { credentials: 'include' })
+        if (res.ok) {
+          const data = await res.json()
+          setStaffParData(Array.isArray(data) ? data : [])
+          setStaffParError(null)
+        } else {
+          throw new Error(`Failed to load PAR data: ${res.status}`)
+        }
+      } catch (e) {
+        console.error('Error loading PAR data:', e)
+        setStaffParError(e.message)
+        setStaffParData([])
+      } finally {
+        setStaffParLoading(false)
+      }
+    }
+    
+    loadBranchSpecificData()
+  }, [selectedBranch, initialParDataLoaded])
 
   // Defer disbursement data loading (large dataset, not critical for initial render)
   useEffect(() => {
@@ -173,12 +209,26 @@ function LogbookProductivity() {
     })
   }, [])
 
-  // Create a map of borrower_access_id to PAR rate
+  // Create branch-specific maps of borrower_access_id to PAR rate and portfolio (openLoans)
+  // staffParData is already filtered by branch when selectedBranch !== 'ALL' (fetched with branch parameter)
   const parRateMap = useMemo(() => {
     const map = new Map()
     for (const entry of staffParData) {
       if (entry.officerId) {
-        map.set(String(entry.officerId), Number(entry.parRate) || 0)
+        const id = String(entry.officerId)
+        map.set(id, Number(entry.parRate) || 0)
+      }
+    }
+    return map
+  }, [staffParData])
+
+  // Create branch-specific map of borrower_access_id to portfolio (openLoans)
+  const portfolioMap = useMemo(() => {
+    const map = new Map()
+    for (const entry of staffParData) {
+      if (entry.officerId) {
+        const id = String(entry.officerId)
+        map.set(id, Number(entry.openLoans) || 0)
       }
     }
     return map
@@ -630,7 +680,8 @@ function LogbookProductivity() {
                 {filteredBorrowerData.map((item, index) => {
                   const targetVal = Number(item.target) || 0
                   const repaymentVal = Number(item.total_repayment_amount) || 0
-                  const portfolioVal = Number(item.portfolio) || 0
+                  // Use branch-specific portfolio from staffParData instead of aggregated item.portfolio
+                  const portfolioVal = portfolioMap.get(String(item.borrower_access_id || '')) || 0
                   const portfolioTargetVal = Number(item.portfolioTarget) || 0
                   const percentageAchieved = targetVal > 0 ? (repaymentVal / targetVal) * 100 : null
                   const percentOver100 = percentageAchieved === null
