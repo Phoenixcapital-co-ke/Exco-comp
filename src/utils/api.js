@@ -35,6 +35,7 @@ export const API_URLS = {
     repayments: `${API_BASE}/api/boda/repayments`,
     repaymentsAll: `${API_BASE}/api/boda/repayments/all`,
     repaymentsDaily: `${API_BASE}/api/boda/repayments/daily`,
+    repaymentsByDate: `${API_BASE}/api/boda/repayments/by-date`,
     dailyLoans: `${API_BASE}/api/boda/daily-loans`,
   },
   events: `${API_BASE}/api/events`,

@@ -1606,6 +1606,39 @@ app.get('/api/boda/repayments/all', (req, res) => {
   }
 })
 
+// Boda repayments by date - which clients paid on a given date (for "paid today" filter)
+app.get('/api/boda/repayments/by-date', (req, res) => {
+  try {
+    const dateStr = String(req.query.date || '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return res.status(400).json({ error: 'date (YYYY-MM-DD) is required' })
+    }
+    const dateStart = `${dateStr} 00:00:00`
+    const dateEnd = `${dateStr} 23:59:59`
+    const rows = db.prepare(`
+      SELECT
+        "Client Id" as clientId,
+        "Loan Id" as loanId,
+        SUM(CAST("Transaction Amount" AS REAL)) as amount
+      FROM boda_repayments
+      WHERE "Submitted On Date" >= ? AND "Submitted On Date" <= ?
+        AND "Transaction Amount" IS NOT NULL
+        AND "Transaction Amount" != ''
+        AND CAST("Transaction Amount" AS REAL) > 0
+      GROUP BY "Client Id", "Loan Id"
+    `).all(dateStart, dateEnd)
+    const map = {}
+    for (const row of rows) {
+      const key = `${String(row.clientId || '').trim()}|${String(row.loanId || '').trim()}`
+      if (key !== '|') map[key] = Number(row.amount || 0)
+    }
+    res.json(map)
+  } catch (e) {
+    console.error('[Boda Repayments By Date] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Boda daily repayments endpoint - get daily repayment breakdown for a month
 app.get('/api/boda/repayments/daily', (req, res) => {
   try {
@@ -1711,12 +1744,16 @@ app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
       const outstandingKey = findKey(
         (k) => k.includes('total') && k.includes('outstanding')
       )
+      const clientNameKey = findKey((k) => k.includes('client') && k.includes('name'))
+      const clientIdKey = findKey((k) => k.includes('client') && (k.includes('id') || k === 'client id'))
 
       return {
         branchName: branchKey ? row[branchKey] : 'Unknown',
         dueDate: dueKey ? row[dueKey] : null,
         totalExpected: expectedKey ? normalizeNumber(row[expectedKey]) : 0,
         totalOutstanding: outstandingKey ? normalizeNumber(row[outstandingKey]) : 0,
+        clientName: clientNameKey ? String(row[clientNameKey] || '').trim() : '',
+        clientId: clientIdKey ? String(row[clientIdKey] ?? '').trim() : '',
       }
     })
 

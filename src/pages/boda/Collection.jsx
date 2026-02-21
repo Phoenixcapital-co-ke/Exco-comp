@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle, DollarSign, Target, Zap, Calendar, Users, BarChart3 } from 'lucide-react'
+import { TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle, DollarSign, Target, Zap, Calendar, Users, BarChart3, ChevronDown, ChevronRight } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
@@ -24,6 +24,8 @@ function BodaCollection() {
   const [loadingDailyLoans, setLoadingDailyLoans] = useState(true)
   const [error, setError] = useState(null)
   const [clientSearchFilter, setClientSearchFilter] = useState('')
+  const [expandedDailyBranches, setExpandedDailyBranches] = useState(new Set())
+  const [repaymentsTodayMap, setRepaymentsTodayMap] = useState({})
 
   useEffect(() => {
     const controller = new AbortController()
@@ -103,6 +105,31 @@ function BodaCollection() {
     }
     if (selectedMonth && selectedYear) {
       loadRepayments()
+    }
+  }, [selectedMonth, selectedYear])
+
+  // Fetch repayments for "today" (same day-of-month in selected month) - for Client Performance "paid today" filter
+  useEffect(() => {
+    const loadRepaymentsToday = async () => {
+      const now = new Date()
+      const day = now.getDate()
+      const dateStr = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      try {
+        const res = await fetch(`${API_URLS.boda.repaymentsByDate}?date=${encodeURIComponent(dateStr)}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          setRepaymentsTodayMap({})
+          return
+        }
+        const data = await res.json()
+        setRepaymentsTodayMap(data || {})
+      } catch (e) {
+        setRepaymentsTodayMap({})
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadRepaymentsToday()
     }
   }, [selectedMonth, selectedYear])
 
@@ -295,16 +322,23 @@ function BodaCollection() {
       .sort((a, b) => b.totalExpected - a.totalExpected)
   }, [rows, selectedMonth, selectedYear, repaymentMap, allRepaymentsMap, MS_PER_DAY])
 
-  // Filter client performance data by search term
+  // Client Performance table: only clients who made a payment today (same day-of-month in selected month)
+  const clientsPaidToday = useMemo(() => {
+    return clientPerformanceData.filter(
+      (c) => (repaymentsTodayMap[`${c.clientId}|${c.loanId}`] || 0) > 0
+    )
+  }, [clientPerformanceData, repaymentsTodayMap])
+
+  // Filter client performance data by search term (applied on top of "paid today" list)
   const filteredClientPerformanceData = useMemo(() => {
     if (!clientSearchFilter.trim()) {
-      return clientPerformanceData
+      return clientsPaidToday
     }
     const searchTerm = clientSearchFilter.toLowerCase().trim()
-    return clientPerformanceData.filter(item => 
+    return clientsPaidToday.filter((item) =>
       item.client.toLowerCase().includes(searchTerm)
     )
-  }, [clientPerformanceData, clientSearchFilter])
+  }, [clientsPaidToday, clientSearchFilter])
 
   // Daily Expected vs Collected (Current Month) - based on active days and daily installments
   const dailyExpectedVsCollected = useMemo(() => {
@@ -411,7 +445,7 @@ function BodaCollection() {
     }
   }, [availableDueDays, selectedDueDay, selectedMonth, selectedYear, now])
 
-  // Branch Summary Table (with Due Date filter)
+  // Branch Summary Table (with Due Date filter) - includes clients per branch for expandable rows
   const branchSummary = useMemo(() => {
     const branchMap = new Map()
     
@@ -432,21 +466,33 @@ function BodaCollection() {
     
     for (const r of filteredRows) {
       const branchName = cleanBranchName(r.branchName || r['Branch Name'] || 'Unknown')
+      const expected = Number(r.totalExpected || r['Total Expected Repayment Derived'] || 0)
+      const outstanding = Number(r.totalOutstanding || r['Total Outstanding Derived'] || 0)
+      const amountPaid = Math.max(0, expected - outstanding)
+      const ratePercent = expected > 0 ? (amountPaid / expected) * 100 : 0
+      const clientName = r.clientName || r['Client Name'] || r.client_name || 'Unknown'
+      const clientId = r.clientId || r['Client Id'] || r.client_id || ''
       
       if (!branchMap.has(branchName)) {
         branchMap.set(branchName, {
           branch: branchName,
           totalExpected: 0,
           totalOutstanding: 0,
+          clients: [],
         })
       }
       
       const entry = branchMap.get(branchName)
-      const expected = Number(r.totalExpected || r['Total Expected Repayment Derived'] || 0)
-      const outstanding = Number(r.totalOutstanding || r['Total Outstanding Derived'] || 0)
-      
       entry.totalExpected += expected
       entry.totalOutstanding += outstanding
+      entry.clients.push({
+        clientName,
+        clientId,
+        expected,
+        outstanding,
+        amountPaid,
+        ratePercent,
+      })
     }
     
     // Calculate rate % = (Total Expected - Total Outstanding) / Total Expected and sort
@@ -945,6 +991,7 @@ function BodaCollection() {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
+                    <th className="w-9 px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" />
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Branch Name
                     </th>
@@ -960,28 +1007,91 @@ function BodaCollection() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {branchSummary.map((branch, idx) => (
-                    <tr key={branch.branch} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50 hover:bg-gray-100'}>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
-                        {branch.branch}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
-                        {formatKES(branch.totalExpected)}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
-                        {formatKES(branch.totalOutstanding)}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right">
-                        <span className={`font-semibold ${
-                          branch.ratePercent >= 50 ? 'text-green-600' :
-                          branch.ratePercent >= 30 ? 'text-yellow-600' :
-                          'text-green-600'
-                        }`}>
-                          {branch.ratePercent.toFixed(2)}%
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {branchSummary.map((branch, idx) => {
+                    const isExpanded = expandedDailyBranches.has(branch.branch)
+                    const hasClients = branch.clients && branch.clients.length > 0
+                    return (
+                      <React.Fragment key={branch.branch}>
+                        <tr
+                          className={idx % 2 === 0 ? 'bg-white hover:bg-gray-50' : 'bg-gray-50 hover:bg-gray-100'}
+                          onClick={() => hasClients && setExpandedDailyBranches(prev => {
+                            const next = new Set(prev)
+                            if (next.has(branch.branch)) next.delete(branch.branch)
+                            else next.add(branch.branch)
+                            return next
+                          })}
+                          role={hasClients ? 'button' : undefined}
+                          tabIndex={hasClients ? 0 : undefined}
+                          onKeyDown={e => {
+                            if (!hasClients) return
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              setExpandedDailyBranches(prev => {
+                                const next = new Set(prev)
+                                if (next.has(branch.branch)) next.delete(branch.branch)
+                                else next.add(branch.branch)
+                                return next
+                              })
+                            }
+                          }}
+                        >
+                          <td className="w-9 px-2 py-3 whitespace-nowrap text-gray-500">
+                            {hasClients ? (
+                              isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />
+                            ) : null}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {branch.branch}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
+                            {formatKES(branch.totalExpected)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">
+                            {formatKES(branch.totalOutstanding)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right">
+                            <span className={`font-semibold ${
+                              branch.ratePercent >= 50 ? 'text-green-600' :
+                              branch.ratePercent >= 30 ? 'text-yellow-600' :
+                              'text-green-600'
+                            }`}>
+                              {branch.ratePercent.toFixed(2)}%
+                            </span>
+                          </td>
+                        </tr>
+                        {isExpanded && hasClients && (
+                          <tr className="bg-gray-50/80">
+                            <td colSpan={5} className="px-4 py-2">
+                              <div className="overflow-x-auto rounded border border-gray-200 bg-white">
+                                <table className="min-w-full divide-y divide-gray-100 text-sm">
+                                  <thead className="bg-gray-100">
+                                    <tr>
+                                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-600 uppercase">Client</th>
+                                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Amount paid</th>
+                                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">%</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-100">
+                                    {branch.clients.map((c, i) => (
+                                      <tr key={`${c.clientId}-${i}`} className="hover:bg-gray-50">
+                                        <td className="px-4 py-2 font-medium text-gray-900">{c.clientName || 'Unknown'}</td>
+                                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.amountPaid)}</td>
+                                        <td className="px-4 py-2 text-right">
+                                          <span className={c.ratePercent >= 50 ? 'text-green-600' : c.ratePercent >= 30 ? 'text-yellow-600' : 'text-gray-600'}>
+                                            {c.ratePercent.toFixed(1)}%
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1187,10 +1297,13 @@ function BodaCollection() {
         </div>
       </div>
 
-      {/* Client Performance Table */}
+      {/* Client Performance Table - only clients who made a payment today */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Clients who made a payment today</p>
+          </div>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -1236,7 +1349,7 @@ function BodaCollection() {
               {filteredClientPerformanceData.length === 0 && (
                 <tr>
                     <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>
-                      {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No client data available'}
+                      {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No clients made a payment today'}
                     </td>
                 </tr>
               )}
