@@ -1319,6 +1319,7 @@ function BodaCollection() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client</th>
+                <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Paid Today</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Daily Installment</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">MTD Target</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">EoM Target</th>
@@ -1331,9 +1332,11 @@ function BodaCollection() {
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredClientPerformanceData.map((item, idx) => {
                 const eomRate = item.eomTarget > 0 ? (item.repaidCurrentMonth / item.eomTarget) * 100 : 0
+                const paidToday = repaymentsTodayMap[`${item.clientId}|${item.loanId}`] || 0
                 return (
                   <tr key={idx} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.client}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-green-600 text-right">{formatKES(paidToday)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.dailyInstallment)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.mtdTarget)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{formatKES(item.eomTarget)}</td>
@@ -1348,8 +1351,8 @@ function BodaCollection() {
               })}
               {filteredClientPerformanceData.length === 0 && (
                 <tr>
-                    <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>
-                      {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No clients made a payment today'}
+                    <td className="px-6 py-6 text-center text-gray-500" colSpan={9}>
+                      {clientSearchFilter.trim() ? 'No clients found matching your search' : 'No clients made a payment today. Data is from table boda_repayments (column Submitted On Date).'}
                     </td>
                 </tr>
               )}

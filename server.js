@@ -1607,26 +1607,28 @@ app.get('/api/boda/repayments/all', (req, res) => {
 })
 
 // Boda repayments by date - which clients paid on a given date (for "paid today" filter)
+// Table: boda_repayments. Columns: "Client Id", "Loan Id", "Submitted On Date", "Transaction Amount"
 app.get('/api/boda/repayments/by-date', (req, res) => {
   try {
     const dateStr = String(req.query.date || '').trim()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
       return res.status(400).json({ error: 'date (YYYY-MM-DD) is required' })
     }
-    const dateStart = `${dateStr} 00:00:00`
-    const dateEnd = `${dateStr} 23:59:59`
+    // Next calendar day for exclusive upper bound (matches "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS")
+    const [y, m, d] = dateStr.split('-').map(Number)
+    const nextDayStr = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
     const rows = db.prepare(`
       SELECT
         "Client Id" as clientId,
         "Loan Id" as loanId,
         SUM(CAST("Transaction Amount" AS REAL)) as amount
       FROM boda_repayments
-      WHERE "Submitted On Date" >= ? AND "Submitted On Date" <= ?
+      WHERE "Submitted On Date" >= ? AND "Submitted On Date" < ?
         AND "Transaction Amount" IS NOT NULL
         AND "Transaction Amount" != ''
         AND CAST("Transaction Amount" AS REAL) > 0
       GROUP BY "Client Id", "Loan Id"
-    `).all(dateStart, dateEnd)
+    `).all(dateStr, nextDayStr)
     const map = {}
     for (const row of rows) {
       const key = `${String(row.clientId || '').trim()}|${String(row.loanId || '').trim()}`
