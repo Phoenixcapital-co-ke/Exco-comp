@@ -30,6 +30,7 @@ export const API_URLS = {
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,
     branches: `${API_BASE}/api/zidisha/branches`,
+    branchesAll: `${API_BASE}/api/zidisha/branches/all`,
   },
   boda: {
     repayments: `${API_BASE}/api/boda/repayments`,

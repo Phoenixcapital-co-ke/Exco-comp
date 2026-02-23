@@ -38,7 +38,8 @@ function ZidishaTargets() {
 
   const loadBranches = async () => {
     try {
-      const res = await fetch(API_URLS.zidisha.branches, { credentials: 'include' })
+      // Use branches/all so "Add Monthly Targets (All Branches)" includes every branch (targets + zidisha_data)
+      const res = await fetch(API_URLS.zidisha.branchesAll, { credentials: 'include' })
       if (res.ok) {
         const data = await res.json()
         const names = Array.isArray(data)

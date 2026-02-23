@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { DollarSign, Calendar, TrendingUp, Users, Loader2 } from 'lucide-react'
+import { DollarSign, Calendar, TrendingUp, Users, Loader2, Target } from 'lucide-react'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -17,18 +17,26 @@ import {
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { API_URLS } from '../../utils/api.js'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
 const MONTH_NAMES = [null, 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function BodaDisbursement() {
   const [rows, setRows] = useState([])
+  const [targets, setTargets] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   const [selectedYear, setSelectedYear] = useState(null)
   const [selectedMonth, setSelectedMonth] = useState(null)
   const [selectedDay, setSelectedDay] = useState(null)
+
+  const cleanBranchName = (name = '') => {
+    const trimmed = String(name || '').trim()
+    const noSuffix = trimmed.replace(/\s*branch\s*$/i, '').trim()
+    return noSuffix || trimmed
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -51,6 +59,21 @@ function BodaDisbursement() {
     }
     load()
     return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    const loadTargets = async () => {
+      try {
+        const res = await fetch(API_URLS.targets.zidisha.list, { credentials: 'include' })
+        if (res.ok) {
+          const data = await res.json()
+          setTargets(Array.isArray(data) ? data : [])
+        }
+      } catch (e) {
+        console.error('Failed to load Zidisha targets', e)
+      }
+    }
+    loadTargets()
   }, [])
 
   const now = new Date()
@@ -285,6 +308,57 @@ function BodaDisbursement() {
       .map(([branch, total]) => ({ branch, total }))
       .sort((a, b) => b.total - a.total)
   }, [rows, selectedYear, selectedMonth])
+
+  // Targets for selected month/year (Zidisha_Targets - used for Boda as well)
+  const selectedTargets = useMemo(() => {
+    return targets.filter(
+      (t) => Number(t.month) === selectedMonth && Number(t.year) === selectedYear && t.active
+    )
+  }, [targets, selectedMonth, selectedYear])
+
+  const targetMap = useMemo(() => {
+    const map = new Map()
+    selectedTargets.forEach((t) => {
+      const key = cleanBranchName(t.branch || '')
+      if (key) map.set(key, { ...t, branch: key })
+    })
+    return map
+  }, [selectedTargets])
+
+  // Branches that have "Zidisha Boda" product (appear in rows)
+  const bodaBranches = useMemo(() => {
+    const set = new Set()
+    for (const row of rows) {
+      const branchName = cleanBranchName((row['Branch Name'] || row.branch_name || '').trim())
+      if (branchName && branchName !== 'Unknown') set.add(branchName)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  }, [rows])
+
+  // Disbursement vs Target by Branch (selected month) – only branches that have Zidisha Boda product
+  const disbursementVsTargetByBranch = useMemo(() => {
+    if (!selectedYear || !selectedMonth || !bodaBranches.length) return []
+    const branchActual = new Map()
+    for (const row of rows) {
+      const branchName = cleanBranchName((row['Branch Name'] || row.branch_name || 'Unknown').trim() || 'Unknown')
+      const amt = Number(row['Principal Amount']) || 0
+      const ds = row['Disbursed On Date'] || row.disbursed_on_date
+      if (!amt || !ds) continue
+      const d = new Date(ds)
+      if (isNaN(d.getTime())) continue
+      if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
+      branchActual.set(branchName, (branchActual.get(branchName) || 0) + amt)
+    }
+    const results = []
+    for (const branch of bodaBranches) {
+      const actual = branchActual.get(branch) || 0
+      const targetRow = targetMap.get(branch)
+      const target = targetRow ? Number(targetRow.disbursementTarget) || 0 : 0
+      const percentage = target > 0 ? (actual / target) * 100 : 0
+      results.push({ branch, actual, target, percentage })
+    }
+    return results.sort((a, b) => Math.max(b.actual, b.target) - Math.max(a.actual, a.target))
+  }, [rows, selectedYear, selectedMonth, bodaBranches, targetMap])
 
   const monthlyTrend = useMemo(() => {
     // Base the 12-month window around the selected year/month, falling back to "now"
@@ -572,7 +646,67 @@ function BodaDisbursement() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Disbursement vs Target | Daily Branch Breakdown | Loan Officer Performance – same row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Disbursement vs Target by Branch (selected month) */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Target className="text-orange-600" size={20} />
+            <h3 className="text-lg font-semibold text-gray-900">
+              Disbursement vs Target by Branch ({selectedYear && selectedMonth ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
+            </h3>
+          </div>
+          {!loading && selectedYear && selectedMonth && disbursementVsTargetByBranch.length > 0 ? (
+            <ResponsiveContainer width="100%" height={360}>
+              <BarChart
+                data={disbursementVsTargetByBranch.map((item) => ({
+                  branch: item.branch.length > 14 ? item.branch.substring(0, 14) + '…' : item.branch,
+                  fullBranch: item.branch,
+                  actual: item.actual,
+                  target: item.target > 0 ? item.target : 0,
+                  percentage: item.percentage,
+                }))}
+                margin={{ top: 20, right: 30, left: 20, bottom: 80 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="branch"
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={0}
+                />
+                <YAxis tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === 'actual') return [formatKES(value), 'Actual Disbursement']
+                    if (name === 'target') return [formatKES(value), 'Target']
+                    return [value, name]
+                  }}
+                  labelFormatter={(_, payload) => {
+                    const p = Array.isArray(payload) ? payload[0] : payload
+                    return p?.payload?.fullBranch ?? _
+                  }}
+                  contentStyle={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.98)',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                  }}
+                />
+                <Legend />
+                <Bar dataKey="actual" name="Actual Disbursement" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="target" name="Target" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[360px] flex items-center justify-center text-gray-500 text-sm">
+              {!selectedYear || !selectedMonth ? 'Select year and month.' : 'No Boda branch data for this month.'}
+            </div>
+          )}
+        </div>
+
+        {/* Daily Branch Breakdown */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Daily Branch Breakdown</h3>
           {selectedYear && selectedMonth ? (
@@ -640,13 +774,14 @@ function BodaDisbursement() {
               )
             })()
           ) : (
-            <div className="h-24 flex items-center text-gray-500">Select a year and month to view breakdown.</div>
+            <div className="h-64 flex items-center text-gray-500 text-sm">Select a year and month to view breakdown.</div>
           )}
         </div>
 
+        {/* Loan Officer Performance */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Loan Officer Performance ({selectedYear || '—'})
+            Loan Officer Performance ({selectedYear ?? '—'})
           </h3>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={officerPerformance} layout="vertical" margin={{ left: 60 }}>

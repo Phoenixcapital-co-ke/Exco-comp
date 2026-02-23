@@ -3224,6 +3224,30 @@ app.delete('/api/targets/logbook/:id', (req, res) => {
   }
 })
 
+// Zidisha branches for targets (all branches: from Zidisha_Targets + zidisha_data, no user filter)
+app.get('/api/zidisha/branches/all', (req, res) => {
+  try {
+    const fromTargets = dbRW.prepare("SELECT DISTINCT TRIM(branch) AS name FROM Zidisha_Targets WHERE branch IS NOT NULL AND TRIM(branch) <> ''").all()
+    const fromData = db.prepare(`
+      SELECT DISTINCT TRIM("Branch Name") AS name
+      FROM zidisha_data
+      WHERE "Branch Name" IS NOT NULL AND TRIM("Branch Name") <> '' AND LOWER(TRIM("Branch Name")) <> 'advans branch'
+    `).all()
+    const seen = new Set()
+    const names = []
+    for (const row of [...fromTargets, ...fromData]) {
+      const name = String(row?.name || '').trim()
+      if (!name || seen.has(name.toLowerCase())) continue
+      seen.add(name.toLowerCase())
+      names.push(name)
+    }
+    names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    res.json(names)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Zidisha Targets
 app.get('/api/targets/zidisha', (req, res) => {
   try {
