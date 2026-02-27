@@ -2183,7 +2183,7 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
       if (!existing || d < existing) earliestByBorrowerNo.set(bn, d)
     }
 
-    // Map loan_officer name (normalized) -> borrower_access_id
+    // Map LO name (normalized) -> borrower_access_id
     const normalizeName = (v) => String(v || '').trim().toLowerCase()
     const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all()
     const nameToAccessId = new Map()
@@ -2202,9 +2202,9 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
       const borrowerNo = String(r.borrower_no || '').trim()
       if (!borrowerNo) continue
 
-      // Use Sales Person field to attach sales to borrower_access_id; fallback to loan_officer if needed
-      const officerName = String(r.sales_person || r.loan_officer || '').trim()
-      const accessId = officerName ? nameToAccessId.get(normalizeName(officerName)) : null
+      // Attach sales to borrower_access_id by matching Sales Person name to LO name
+      const salesName = String(r.sales_person || '').trim()
+      const accessId = salesName ? nameToAccessId.get(normalizeName(salesName)) : null
       if (!accessId) continue
 
       const amount = Number(r.disbursed) || 0

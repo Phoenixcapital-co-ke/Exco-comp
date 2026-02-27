@@ -738,11 +738,11 @@ function LogbookProductivity() {
                   const newSalesOver100 = newSalesPct != null
                     ? (newSalesPct >= 100 ? 100 : (newSalesVal < NEW_SALES_TARGET ? newSalesPct : null))
                     : null
-                  const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
-                  const d8 = newSalesPct
-                  const b8 = newSalesVal
-                  const c8 = NEW_SALES_TARGET
-                  const repeatSalesPercentOver100 = (d8 != null && d8 >= 100) ? 100 : (b8 < c8 && d8 != null) ? d8 : repeatSalesOver100Base
+                  // Repeat Sales Percent Over 100%: =IF(D9>=100%,100%,IF(B9<C9,D9))
+                  // where D9 = repeatSalesPct, B9 = repeatSalesVal, C9 = REPEAT_SALES_TARGET
+                  const repeatSalesPercentOver100 = repeatSalesPct != null
+                    ? (repeatSalesPct >= 100 ? 100 : (repeatSalesVal < REPEAT_SALES_TARGET ? repeatSalesPct : null))
+                    : null
                   const perfCollection = percentOver100 != null ? (percentOver100 / 100) * 40 : 0
                   const perfPortfolio = portfolioPerformanceScore != null ? (portfolioPerformanceScore / 100) * 10 : 0
                   const perfPar = parPerformanceScore != null ? (parPerformanceScore / 100) * 20 : 0
@@ -859,12 +859,11 @@ function LogbookProductivity() {
                                         const newSalesOver100 = newSalesPct != null
                                           ? (newSalesPct >= 100 ? 100 : (newSalesVal < NEW_SALES_TARGET ? newSalesPct : null))
                                           : null
-                                        const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
-                                        // Repeat Sales Percent Over 100%: =IF(D8>=100%,100%,IF(B8<C8,D8)) where D8=New Sales % Achieved, B8=New Sales Actuals, C8=New Sales Target
-                                        const d8 = newSalesPct
-                                        const b8 = newSalesVal
-                                        const c8 = NEW_SALES_TARGET
-                                        const repeatSalesPercentOver100 = (d8 != null && d8 >= 100) ? 100 : (b8 < c8 && d8 != null) ? d8 : repeatSalesOver100Base
+                                        // Repeat Sales Percent Over 100%: =IF(D9>=100%,100%,IF(B9<C9,D9))
+                                        // where D9 = repeatSalesPct, B9 = repeatSalesVal, C9 = REPEAT_SALES_TARGET
+                                        const repeatSalesPercentOver100 = repeatSalesPct != null
+                                          ? (repeatSalesPct >= 100 ? 100 : (repeatSalesVal < REPEAT_SALES_TARGET ? repeatSalesPct : null))
+                                          : null
                                         // Sum of Weight and Performance columns for Weighted Performance row
                                         const perfCollection = percentOver100 != null ? (percentOver100 / 100) * 40 : 0
                                         const perfPortfolio = portfolioPerformanceScore != null ? (portfolioPerformanceScore / 100) * 10 : 0
