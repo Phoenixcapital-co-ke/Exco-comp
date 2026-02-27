@@ -2158,7 +2158,7 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
     }
 
     let disbursementRows = db.prepare(`
-      SELECT loan_id, disbursed_date, branch, disbursed, borrower_no, loan_officer
+      SELECT loan_id, disbursed_date, branch, disbursed, borrower_no, loan_officer, sales_person
       FROM Logbook_Disbursement
       WHERE disbursed_date IS NOT NULL AND TRIM(disbursed_date) <> ''
         AND (borrower_no IS NOT NULL AND TRIM(borrower_no) <> '')
@@ -2202,7 +2202,8 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
       const borrowerNo = String(r.borrower_no || '').trim()
       if (!borrowerNo) continue
 
-      const officerName = String(r.loan_officer || '').trim()
+      // Use Sales Person field to attach sales to borrower_access_id; fallback to loan_officer if needed
+      const officerName = String(r.sales_person || r.loan_officer || '').trim()
       const accessId = officerName ? nameToAccessId.get(normalizeName(officerName)) : null
       if (!accessId) continue
 
