@@ -733,7 +733,11 @@ function LogbookProductivity() {
                   const REPEAT_SALES_TARGET = 2000000
                   const newSalesPct = NEW_SALES_TARGET > 0 ? (newSalesVal / NEW_SALES_TARGET) * 100 : null
                   const repeatSalesPct = REPEAT_SALES_TARGET > 0 ? (repeatSalesVal / REPEAT_SALES_TARGET) * 100 : null
-                  const newSalesOver100 = newSalesPct != null ? (newSalesPct >= 100 ? 100 : newSalesPct) : null
+                  // New Sales Percent Over 100%: =IF(D8>=100%,100%,IF(B8<C8,D8))
+                  // where D8 = newSalesPct, B8 = newSalesVal, C8 = NEW_SALES_TARGET
+                  const newSalesOver100 = newSalesPct != null
+                    ? (newSalesPct >= 100 ? 100 : (newSalesVal < NEW_SALES_TARGET ? newSalesPct : null))
+                    : null
                   const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
                   const d8 = newSalesPct
                   const b8 = newSalesVal
@@ -850,7 +854,11 @@ function LogbookProductivity() {
                                         const REPEAT_SALES_TARGET = 2000000
                                         const newSalesPct = NEW_SALES_TARGET > 0 ? (newSalesVal / NEW_SALES_TARGET) * 100 : null
                                         const repeatSalesPct = REPEAT_SALES_TARGET > 0 ? (repeatSalesVal / REPEAT_SALES_TARGET) * 100 : null
-                                        const newSalesOver100 = newSalesPct != null ? (newSalesPct >= 100 ? 100 : newSalesPct) : null
+                                        // New Sales Percent Over 100%: =IF(D8>=100%,100%,IF(B8<C8,D8))
+                                        // where D8 = newSalesPct, B8 = newSalesVal, C8 = NEW_SALES_TARGET
+                                        const newSalesOver100 = newSalesPct != null
+                                          ? (newSalesPct >= 100 ? 100 : (newSalesVal < NEW_SALES_TARGET ? newSalesPct : null))
+                                          : null
                                         const repeatSalesOver100Base = repeatSalesPct != null ? (repeatSalesPct >= 100 ? 100 : repeatSalesPct) : null
                                         // Repeat Sales Percent Over 100%: =IF(D8>=100%,100%,IF(B8<C8,D8)) where D8=New Sales % Achieved, B8=New Sales Actuals, C8=New Sales Target
                                         const d8 = newSalesPct
