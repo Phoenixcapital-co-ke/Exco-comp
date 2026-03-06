@@ -992,6 +992,7 @@ function BodaCollection() {
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch Name</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Active Loans</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Paid Today</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% Accounts Paid Today</th>
                 </tr>
               </thead>
@@ -1000,6 +1001,7 @@ function BodaCollection() {
                   <tr key={row.branch} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-gray-900 font-medium">{row.branch}</td>
                     <td className="px-4 py-3 text-right text-gray-900">{row.activeLoans.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right text-gray-900">{row.paidTodayCount.toLocaleString()}</td>
                     <td className="px-4 py-3 text-right">
                       <span className={row.percentPaidToday >= 50 ? 'text-green-600' : row.percentPaidToday >= 25 ? 'text-yellow-600' : 'text-gray-600'}>
                         {row.percentPaidToday.toFixed(1)}%
