@@ -576,6 +576,33 @@ function BodaCollection() {
     return result.sort((a, b) => b.totalExpected - a.totalExpected)
   }, [rows, clientPerformanceData])
 
+  // Branches with active loans count and % of accounts that had a payment today
+  const branchActiveLoansAndPaymentToday = useMemo(() => {
+    const branchMap = new Map()
+    for (const r of rows) {
+      const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
+      const clientId = (r['Client Id'] || r.client_id || '').trim()
+      const loanId = (r['Loan ID'] || r.loan_id || '').trim()
+      const repaymentKey = `${clientId}|${loanId}`
+      const paidToday = (repaymentsTodayMap[repaymentKey] || 0) > 0
+
+      if (!branchMap.has(branchName)) {
+        branchMap.set(branchName, { activeLoans: 0, paidTodayCount: 0 })
+      }
+      const entry = branchMap.get(branchName)
+      entry.activeLoans += 1
+      if (paidToday) entry.paidTodayCount += 1
+    }
+    return Array.from(branchMap.entries())
+      .map(([branch, v]) => ({
+        branch,
+        activeLoans: v.activeLoans,
+        paidTodayCount: v.paidTodayCount,
+        percentPaidToday: v.activeLoans > 0 ? (v.paidTodayCount / v.activeLoans) * 100 : 0,
+      }))
+      .sort((a, b) => b.activeLoans - a.activeLoans)
+  }, [rows, repaymentsTodayMap])
+
   // Principal collection per branch (for selected month) based on Zidisha Boda rows
   const principalByBranch = useMemo(() => {
     const branchMap = new Map()
@@ -955,6 +982,39 @@ function BodaCollection() {
         </div>
       </div>
 
+      {/* Branches: Active Loans & % Paid Today */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Branches – Active Loans & Payments Today</h3>
+        {branchActiveLoansAndPaymentToday.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch Name</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Active Loans</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% Accounts Paid Today</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {branchActiveLoansAndPaymentToday.map((row) => (
+                  <tr key={row.branch} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-gray-900 font-medium">{row.branch}</td>
+                    <td className="px-4 py-3 text-right text-gray-900">{row.activeLoans.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className={row.percentPaidToday >= 50 ? 'text-green-600' : row.percentPaidToday >= 25 ? 'text-yellow-600' : 'text-gray-600'}>
+                        {row.percentPaidToday.toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-gray-500 text-sm">No branch data available.</p>
+        )}
+      </div>
+
       {/* Daily Break-down + Daily Expected vs Collected */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Daily Break-down */}
@@ -1067,6 +1127,7 @@ function BodaCollection() {
                                   <thead className="bg-gray-100">
                                     <tr>
                                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-600 uppercase">Client</th>
+                                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Total Expected</th>
                                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Amount paid</th>
                                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">%</th>
                                     </tr>
@@ -1075,6 +1136,7 @@ function BodaCollection() {
                                     {branch.clients.map((c, i) => (
                                       <tr key={`${c.clientId}-${i}`} className="hover:bg-gray-50">
                                         <td className="px-4 py-2 font-medium text-gray-900">{c.clientName || 'Unknown'}</td>
+                                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.expected)}</td>
                                         <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.amountPaid)}</td>
                                         <td className="px-4 py-2 text-right">
                                           <span className={c.ratePercent >= 50 ? 'text-green-600' : c.ratePercent >= 30 ? 'text-yellow-600' : 'text-gray-600'}>

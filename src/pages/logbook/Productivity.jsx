@@ -120,29 +120,29 @@ function LogbookProductivity() {
     }
     
     const loadBranchSpecificData = async () => {
-      try {
-        setStaffParLoading(true)
+    try {
+      setStaffParLoading(true)
         // Fetch branch-specific data if branch is selected, otherwise fetch all data
         const url = selectedBranch === 'ALL' 
           ? API_URLS.par.borrowerAccess
           : `${API_URLS.par.borrowerAccess}${API_URLS.par.borrowerAccess.includes('?') ? '&' : '?'}branch=${encodeURIComponent(selectedBranch)}`
         const res = await fetch(url, { credentials: 'include' })
         if (res.ok) {
-          const data = await res.json()
-          setStaffParData(Array.isArray(data) ? data : [])
+      const data = await res.json()
+      setStaffParData(Array.isArray(data) ? data : [])
           setStaffParError(null)
         } else {
           throw new Error(`Failed to load PAR data: ${res.status}`)
         }
-      } catch (e) {
+    } catch (e) {
         console.error('Error loading PAR data:', e)
-        setStaffParError(e.message)
-        setStaffParData([])
-      } finally {
-        setStaffParLoading(false)
-      }
+      setStaffParError(e.message)
+      setStaffParData([])
+    } finally {
+      setStaffParLoading(false)
     }
-    
+  }
+
     loadBranchSpecificData()
   }, [selectedBranch, initialParDataLoaded])
 
@@ -411,7 +411,7 @@ function LogbookProductivity() {
   
   const overallPercentOver100 = useMemo(() =>
     overallPercentageAchieved !== null
-      ? (overallPercentageAchieved >= 100 ? 100 : overallPercentageAchieved)
+    ? (overallPercentageAchieved >= 100 ? 100 : overallPercentageAchieved)
       : null,
     [overallPercentageAchieved]
   )
@@ -764,29 +764,29 @@ function LogbookProductivity() {
                         className="hover:bg-gray-50 cursor-pointer transition-colors"
                         onClick={() => toggleRowExpansion(borrowerId)}
                       >
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                           <div className="flex items-center gap-2">
                             {isExpanded ? (
                               <ChevronDown className="w-4 h-4 text-gray-500" />
                             ) : (
                               <ChevronRight className="w-4 h-4 text-gray-500" />
                             )}
-                            {item.name || '—'}
+                        {item.name || '—'}
                           </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {formatKES(portfolioVal)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {formatKES(targetVal)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {formatKES(repaymentVal)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {percentageAchieved === null ? '—' : `${percentageAchieved.toFixed(1)}%`}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                        {formatKES(portfolioVal)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                        {formatKES(targetVal)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                        {formatKES(repaymentVal)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                        {percentageAchieved === null ? '—' : `${percentageAchieved.toFixed(1)}%`}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                           {formatKES(totalCommission)}
                         </td>
                       </tr>
@@ -998,8 +998,8 @@ function LogbookProductivity() {
                                 </p>
                               </div>
                             </div>
-                          </td>
-                        </tr>
+                      </td>
+                    </tr>
                       )}
                     </React.Fragment>
                   )
@@ -1027,19 +1027,19 @@ function LogbookProductivity() {
       </div>
 
       {/* Staff Productivity Visualizations */}
-      {staffParError ? (
+          {staffParError ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-          <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
-        </div>
+              <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
+            </div>
       ) : staffParLoading || staffParData.length === 0 ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
           {staffParLoading ? 'Loading staff productivity metrics...' : 'No staff productivity data available. Ensure PAR snapshots are running.'}
-        </div>
+            </div>
       ) : filteredStaffParData.length === 0 ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
           No data available for selected branch.
-        </div>
-      ) : (
+            </div>
+          ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* PAR Performance Chart */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -1201,9 +1201,9 @@ function LogbookProductivity() {
               <div className="py-8 text-center text-gray-500 text-sm">
                 No data available
               </div>
-            )}
-          </div>
+          )}
         </div>
+      </div>
       )}
     </div>
   )

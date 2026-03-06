@@ -230,6 +230,27 @@ function BodaDashboard() {
                     <p className="text-gray-500">No data available</p>
                   </div>
                 )}
+                {branchCounts.length > 0 && (
+                  <div className="mt-4 overflow-x-auto">
+                    <h4 className="text-sm font-semibold text-gray-900 mb-2">Loans by Branch</h4>
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium text-gray-600">Branch Name</th>
+                          <th className="px-3 py-2 text-right font-medium text-gray-600">Loans</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-100">
+                        {branchCounts.map((b) => (
+                          <tr key={b.name}>
+                            <td className="px-3 py-2 text-gray-900">{b.name}</td>
+                            <td className="px-3 py-2 text-right text-gray-900">{b.count.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
               
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
