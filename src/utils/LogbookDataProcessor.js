@@ -7,7 +7,7 @@ export class LogbookDataProcessor {
     this.country = country || null
     this.disbursementsData = null
     this.repaymentsData = null
-    this.branchNamesLoaded = false
+    this.branchesData = null
     
     // Branch name mappings
     this.branchNames = {
@@ -21,32 +21,36 @@ export class LogbookDataProcessor {
     }
   }
 
-  async loadBranchNames() {
-    if (this.branchNamesLoaded) return
+  async loadBranchesData() {
     try {
-      const base = API_URLS.branches.list
-      const url = this.country ? `${base}?country=${encodeURIComponent(this.country)}` : base
+      if (Array.isArray(this.branchesData) && this.branchesData.length) return this.branchesData
+      const baseUrl = API_URLS.logbook.branches
+      const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const res = await fetch(url, { credentials: 'include' })
-      if (!res.ok) {
-        this.branchNamesLoaded = true
-        return
-      }
-      const rows = await res.json().catch(() => [])
-      for (const r of Array.isArray(rows) ? rows : []) {
-        const code = String(r.code ?? '').trim()
-        const name = String(r.name ?? '').trim()
-        if (code && name) this.branchNames[code] = name
-      }
+      if (!res.ok) return null
+      const data = await res.json()
+      this.branchesData = Array.isArray(data) ? data : []
+      return this.branchesData
     } catch {
-      // ignore
-    } finally {
-      this.branchNamesLoaded = true
+      return null
     }
   }
 
   // Helper method to get branch name
   getBranchName(branchCode) {
-    const full = this.branchNames[branchCode]
+    const code = String(branchCode ?? '').trim()
+    if (!code) return 'Unknown'
+
+    // Prefer DB-configured branch names (Logbook_Branches)
+    if (Array.isArray(this.branchesData) && this.branchesData.length) {
+      const found = this.branchesData.find((b) => String(b.code ?? '').trim() === code)
+      const name = found?.name
+      if (name && String(name).trim()) {
+        return String(name).replace(/\s*branch$/i, '').trim()
+      }
+    }
+
+    const full = this.branchNames[code]
     if (!full) return `Branch ${branchCode}`
     // Remove trailing "BRANCH"/"Branch"
     return String(full).replace(/\s*branch$/i, '').trim()
@@ -144,7 +148,7 @@ export class LogbookDataProcessor {
   // Load disbursements data from backend API
   async loadDisbursementsData() {
     try {
-      await this.loadBranchNames()
+      await this.loadBranchesData()
       const baseUrl = API_URLS.logbook.disbursements
       const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const response = await fetch(url, { credentials: 'include' })
@@ -159,7 +163,7 @@ export class LogbookDataProcessor {
   // Load repayments data from backend API
   async loadRepaymentsData() {
     try {
-      await this.loadBranchNames()
+      await this.loadBranchesData()
       const baseUrl = API_URLS.logbook.collections
       const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const response = await fetch(url, { credentials: 'include' })
