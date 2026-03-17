@@ -69,7 +69,7 @@ function Routes() {
       <Route path="/auth/confirm" element={<ConfirmAccount />} />
 
       {/* Default route */}
-      <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard /></RequireAuth>} />
+      <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard country="Kenya" /></RequireAuth>} />
       
       {/* Logbook routes */}
       <Route path="/logbook/dashboard" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard /></RequireAuth>} />

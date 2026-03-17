@@ -58,7 +58,9 @@ function LogbookDisbursement({ country }) {
   useEffect(() => {
     const loadTargets = async () => {
       try {
-        const res = await fetch(API_URLS.targets.logbook.list, { credentials: 'include' })
+        const base = API_URLS.targets.logbook.list
+        const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
+        const res = await fetch(url, { credentials: 'include' })
         if (res.ok) {
           const t = await res.json()
           setTargets(Array.isArray(t) ? t : [])
@@ -68,7 +70,7 @@ function LogbookDisbursement({ country }) {
       }
     }
     loadTargets()
-  }, [])
+  }, [country])
 
   if (loading) {
     return (

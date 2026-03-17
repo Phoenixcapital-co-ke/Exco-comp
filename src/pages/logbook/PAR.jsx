@@ -184,15 +184,33 @@ function LogbookPAR({ country }) {
     return () => clearInterval(interval)
   }, [loadHistory, loadBranchData, loadBorrowerData, loadLoanOfficers, loadLastRunTime])
 
-  const latestPastMissed = history.length ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0) : null
-  const latestOpenLoans = history.length ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0) : null
-  
+  const latestPastMissed = history.length
+    ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0)
+    : null
+  const latestOpenLoans = history.length
+    ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
+    : null
+
+  // For country pages, compute totals from branch-level PAR (already country-filtered by backend)
+  const countryTotals = useMemo(() => {
+    const open = Array.isArray(branchData)
+      ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
+      : 0
+    const missed = Array.isArray(branchData)
+      ? branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
+      : 0
+    return { openLoans: open, pastMissed: missed }
+  }, [branchData])
+
+  const scopedOpenLoans = country ? countryTotals.openLoans : latestOpenLoans
+  const scopedPastMissed = country ? countryTotals.pastMissed : latestPastMissed
+
   const par30Plus = useMemo(() => {
-    if (latestPastMissed != null && latestOpenLoans != null && latestOpenLoans > 0) {
-      return ((latestPastMissed / latestOpenLoans) * 100).toFixed(1)
+    if (scopedPastMissed != null && scopedOpenLoans != null && scopedOpenLoans > 0) {
+      return ((scopedPastMissed / scopedOpenLoans) * 100).toFixed(1)
     }
     return null
-  }, [latestPastMissed, latestOpenLoans])
+  }, [scopedPastMissed, scopedOpenLoans])
 
   const branchOptions = useMemo(() => {
     const options = [{ code: 'ALL', name: 'All Branches' }]
@@ -447,7 +465,7 @@ function LogbookPAR({ country }) {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">Open Loans</p>
-              {historyLoading ? (
+              {(country ? branchLoading : historyLoading) ? (
                 <>
                   <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
                   <div className="h-4 bg-gray-200 rounded animate-pulse w-40"></div>
@@ -455,9 +473,9 @@ function LogbookPAR({ country }) {
               ) : (
                 <>
               <p className="text-2xl font-bold text-gray-900">
-                {latestOpenLoans != null ? formatMoney(latestOpenLoans) : '—'}
+                {scopedOpenLoans != null ? formatMoney(scopedOpenLoans) : '—'}
               </p>
-              {latestOpenLoans != null && (
+              {scopedOpenLoans != null && (
                 <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
                   )}
                 </>
@@ -473,7 +491,7 @@ function LogbookPAR({ country }) {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">High Risk Loans</p>
-              {historyLoading ? (
+              {(country ? branchLoading : historyLoading) ? (
                 <>
                   <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
                   <div className="h-4 bg-gray-200 rounded animate-pulse w-44"></div>
@@ -481,9 +499,9 @@ function LogbookPAR({ country }) {
               ) : (
                 <>
               <p className="text-2xl font-bold text-gray-900">
-                    {latestPastMissed != null ? formatMoney(latestPastMissed) : '—'}
+                    {scopedPastMissed != null ? formatMoney(scopedPastMissed) : '—'}
               </p>
-              {latestPastMissed != null && (
+              {scopedPastMissed != null && (
                 <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
                   )}
                 </>

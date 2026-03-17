@@ -3191,10 +3191,29 @@ app.get('/api/zidisha/branches', (req, res) => {
 // Logbook Targets
 app.get('/api/targets/logbook', (req, res) => {
   try {
-    const rows = dbRW
+    const country = req.query && req.query.country != null ? String(req.query.country).trim() : ''
+    let rows = dbRW
       .prepare('SELECT * FROM Logbook_Targets ORDER BY year DESC, month DESC, branch COLLATE NOCASE')
       .all()
       .map(mapTargetRow)
+
+    // Optional country filter: only return targets for branches in Logbook_Branches for that country
+    if (country) {
+      const normalize = (v) =>
+        String(v || '')
+          .trim()
+          .replace(/\s+/g, ' ')
+          .replace(/\s*branch\s*$/i, '')
+          .toLowerCase()
+
+      const branchRows = dbRW
+        .prepare('SELECT name FROM Logbook_Branches WHERE country = ?')
+        .all(country)
+      const branchNameSet = new Set(branchRows.map((r) => normalize(r.name)).filter(Boolean))
+
+      rows = rows.filter((t) => branchNameSet.has(normalize(t.branch)))
+    }
+
     res.json(rows)
   } catch (e) {
     res.status(500).json({ error: e.message })

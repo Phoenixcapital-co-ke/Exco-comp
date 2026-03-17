@@ -3,10 +3,10 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const ROLE_DEFAULT_ROUTE = {
-  superuser: '/logbook/dashboard',
-  admin: '/logbook/dashboard',
-  manager: '/logbook/dashboard',
-  logbook: '/logbook/dashboard',
+  superuser: '/logbook/kenya/dashboard',
+  admin: '/logbook/kenya/dashboard',
+  manager: '/logbook/kenya/dashboard',
+  logbook: '/logbook/kenya/dashboard',
   zidisha: '/zidisha/dashboard',
   advans: '/advans/dashboard',
   boda: '/boda/dashboard',

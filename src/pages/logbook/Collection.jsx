@@ -53,7 +53,9 @@ function LogbookCollection({ country }) {
   useEffect(() => {
     const loadTargets = async () => {
       try {
-        const res = await fetch(API_URLS.targets.logbook.list, { credentials: 'include' })
+        const base = API_URLS.targets.logbook.list
+        const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
+        const res = await fetch(url, { credentials: 'include' })
         if (res.ok) {
           const t = await res.json()
           setTargets(Array.isArray(t) ? t : [])
@@ -63,7 +65,7 @@ function LogbookCollection({ country }) {
       }
     }
     loadTargets()
-  }, [])
+  }, [country])
 
   // Listen to global month/year changes from header
   useEffect(() => {

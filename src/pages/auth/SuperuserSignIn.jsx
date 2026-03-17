@@ -37,7 +37,7 @@ function SuperuserSignIn() {
         throw new Error('Access denied. Superuser credentials required.')
       }
       login(data.user)
-      const target = location.state?.from?.pathname || '/logbook/dashboard'
+      const target = location.state?.from?.pathname || '/logbook/kenya/dashboard'
       navigate(target, { replace: true })
     } catch (err) {
       setError(err.message)
