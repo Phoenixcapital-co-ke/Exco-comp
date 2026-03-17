@@ -15,9 +15,11 @@ import {
 } from 'recharts'
 import { API_URLS } from '../../utils/api.js'
 import { formatKES } from '../../utils/format.js'
+import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 
-function LogbookProductivity() {
+function LogbookProductivity({ country }) {
+  const { formatMoney } = useLogbookCurrency()
   const nowInit = new Date()
   const [selectedMonth, setSelectedMonth] = useState(nowInit.getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
@@ -40,9 +42,14 @@ function LogbookProductivity() {
   useEffect(() => {
     const loadMonthYearData = async () => {
       try {
+        const basePerfUrl = API_URLS.logbook.collectorPerformance(selectedMonth, selectedYear)
+        const perfUrl = country ? `${basePerfUrl}&country=${encodeURIComponent(country)}` : basePerfUrl
+        const baseSalesUrl = API_URLS.logbook.productivitySales(selectedMonth, selectedYear)
+        const salesUrl = country ? `${baseSalesUrl}&country=${encodeURIComponent(country)}` : baseSalesUrl
+
         const [borrowerRes, salesRes] = await Promise.all([
-          fetch(API_URLS.logbook.collectorPerformance(selectedMonth, selectedYear), { credentials: 'include' }),
-          fetch(API_URLS.logbook.productivitySales(selectedMonth, selectedYear), { credentials: 'include' })
+          fetch(perfUrl, { credentials: 'include' }),
+          fetch(salesUrl, { credentials: 'include' })
         ])
         
         if (borrowerRes.ok) {
@@ -68,17 +75,24 @@ function LogbookProductivity() {
     }
     setLoading(true)
     loadMonthYearData()
-  }, [selectedMonth, selectedYear])
+  }, [selectedMonth, selectedYear, country])
 
   // Load critical static data once on mount (parallel) - optimized for speed
   useEffect(() => {
     const loadStaticData = async () => {
       try {
         // Load critical data in parallel (PAR, branches, history needed for cards)
+        const parBase = API_URLS.par.borrowerAccess
+        const parUrl = country ? `${parBase}?country=${encodeURIComponent(country)}` : parBase
+        const branchesBase = API_URLS.par.branches
+        const branchesUrl = country ? `${branchesBase}?country=${encodeURIComponent(country)}` : branchesBase
+        const historyBase = API_URLS.par.history
+        const historyUrl = country ? `${historyBase}?country=${encodeURIComponent(country)}` : historyBase
+
         const [parRes, branchRes, historyRes] = await Promise.all([
-          fetch(API_URLS.par.borrowerAccess, { credentials: 'include' }),
-          fetch(API_URLS.par.branches, { credentials: 'include' }),
-          fetch(API_URLS.par.history, { credentials: 'include' })
+          fetch(parUrl, { credentials: 'include' }),
+          fetch(branchesUrl, { credentials: 'include' }),
+          fetch(historyUrl, { credentials: 'include' })
         ])
         
         if (parRes.ok) {
@@ -110,7 +124,7 @@ function LogbookProductivity() {
       }
     }
     loadStaticData()
-  }, [])
+  }, [country])
 
   // Load branch-specific PAR data when branch changes (skip initial load for 'ALL' since it's loaded in first useEffect)
   useEffect(() => {
@@ -123,9 +137,11 @@ function LogbookProductivity() {
     try {
       setStaffParLoading(true)
         // Fetch branch-specific data if branch is selected, otherwise fetch all data
+        const base = API_URLS.par.borrowerAccess
+        const withCountry = country ? `${base}?country=${encodeURIComponent(country)}` : base
         const url = selectedBranch === 'ALL' 
-          ? API_URLS.par.borrowerAccess
-          : `${API_URLS.par.borrowerAccess}${API_URLS.par.borrowerAccess.includes('?') ? '&' : '?'}branch=${encodeURIComponent(selectedBranch)}`
+          ? withCountry
+          : `${withCountry}${withCountry.includes('?') ? '&' : '?'}branch=${encodeURIComponent(selectedBranch)}`
         const res = await fetch(url, { credentials: 'include' })
         if (res.ok) {
       const data = await res.json()
@@ -144,14 +160,16 @@ function LogbookProductivity() {
   }
 
     loadBranchSpecificData()
-  }, [selectedBranch, initialParDataLoaded])
+  }, [selectedBranch, initialParDataLoaded, country])
 
   // Defer disbursement data loading (large dataset, not critical for initial render)
   useEffect(() => {
     // Load disbursements after initial render to improve page load time
     const timer = setTimeout(async () => {
       try {
-        const disbursementRes = await fetch(API_URLS.logbook.disbursements, { credentials: 'include' })
+        const baseDisb = API_URLS.logbook.disbursements
+        const disbUrl = country ? `${baseDisb}?country=${encodeURIComponent(country)}` : baseDisb
+        const disbursementRes = await fetch(disbUrl, { credentials: 'include' })
         if (disbursementRes.ok) {
           const data = await disbursementRes.json()
           setDisbursementData(Array.isArray(data) ? data : [])
@@ -163,7 +181,7 @@ function LogbookProductivity() {
     }, 300) // Small delay to prioritize critical data
     
     return () => clearTimeout(timer)
-  }, [])
+  }, [country])
 
   // Load repayments data only if borrowerData doesn't have total_repayment_amount (lazy/deferred)
   useEffect(() => {
@@ -180,7 +198,7 @@ function LogbookProductivity() {
       const timer = setTimeout(() => {
         const loadRepaymentsData = async () => {
           try {
-            const processor = new LogbookDataProcessor()
+            const processor = new LogbookDataProcessor(country)
             await processor.loadRepaymentsData()
             setRepaymentsProcessor(processor)
           } catch (e) {
@@ -193,7 +211,7 @@ function LogbookProductivity() {
       
       return () => clearTimeout(timer)
     }
-  }, [repaymentsProcessor, borrowerData])
+  }, [repaymentsProcessor, borrowerData, country])
 
 
   // Toggle row expansion (memoized to avoid recreating function)
@@ -597,7 +615,7 @@ function LogbookProductivity() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Portfolio</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalPortfolio)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalPortfolio)}</p>
             </div>
             <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
               <DollarSign size={24} />
@@ -623,7 +641,7 @@ function LogbookProductivity() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Collection</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalRepayment)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalRepayment)}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
               <TrendingUp size={24} />
@@ -635,7 +653,7 @@ function LogbookProductivity() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Disbursement</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursement)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalDisbursement)}</p>
             </div>
             <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
               <Activity size={24} />
@@ -775,19 +793,19 @@ function LogbookProductivity() {
                           </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                        {formatKES(portfolioVal)}
+                        {formatMoney(portfolioVal)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                        {formatKES(targetVal)}
+                        {formatMoney(targetVal)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                        {formatKES(repaymentVal)}
+                        {formatMoney(repaymentVal)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                         {percentageAchieved === null ? '—' : `${percentageAchieved.toFixed(1)}%`}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                          {formatKES(totalCommission)}
+                          {formatMoney(totalCommission)}
                         </td>
                       </tr>
                       {isExpanded && (
@@ -815,8 +833,8 @@ function LogbookProductivity() {
                                     <tbody className="bg-white divide-y divide-gray-200">
                                       <tr>
                                         <td className="px-4 py-3 text-sm font-medium text-gray-900">Collection</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(repaymentVal)}</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{targetVal > 0 ? formatKES(targetVal) : '—'}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(repaymentVal)}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{targetVal > 0 ? formatMoney(targetVal) : '—'}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">{percentageAchieved === null ? '—' : `${percentageAchieved.toFixed(1)}%`}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">{percentOver100 === null ? '—' : `${percentOver100.toFixed(1)}%`}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">40%</td>
@@ -826,8 +844,8 @@ function LogbookProductivity() {
                                       </tr>
                                       <tr className="bg-gray-50">
                                         <td className="px-4 py-3 text-sm font-medium text-gray-900">Portfolio</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(portfolioVal)}</td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{portfolioTargetVal > 0 ? formatKES(portfolioTargetVal) : '—'}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(portfolioVal)}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 text-right">{portfolioTargetVal > 0 ? formatMoney(portfolioTargetVal) : '—'}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">{portfolioPercentageAchieved === null ? '—' : `${portfolioPercentageAchieved.toFixed(1)}%`}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">{portfolioPercentOver100 === null ? '—' : `${portfolioPercentOver100.toFixed(1)}%`}</td>
                                         <td className="px-4 py-3 text-sm text-gray-900 text-right">10%</td>
@@ -876,8 +894,8 @@ function LogbookProductivity() {
                                           <>
                                             <tr className="bg-gray-50">
                                               <td className="px-4 py-3 text-sm font-medium text-gray-900">New Sales</td>
-                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(newSalesVal)}</td>
-                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(NEW_SALES_TARGET)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(newSalesVal)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(NEW_SALES_TARGET)}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">{newSalesPct != null ? `${newSalesPct.toFixed(1)}%` : '—'}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">{newSalesOver100 != null ? `${newSalesOver100.toFixed(1)}%` : '—'}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">10%</td>
@@ -885,8 +903,8 @@ function LogbookProductivity() {
                                             </tr>
                                             <tr>
                                               <td className="px-4 py-3 text-sm font-medium text-gray-900">Repeat Sales</td>
-                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(repeatSalesVal)}</td>
-                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES(REPEAT_SALES_TARGET)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(repeatSalesVal)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney(REPEAT_SALES_TARGET)}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">{repeatSalesPct != null ? `${repeatSalesPct.toFixed(1)}%` : '—'}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">{repeatSalesPercentOver100 != null ? `${repeatSalesPercentOver100.toFixed(1)}%` : '—'}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right">20%</td>
@@ -900,7 +918,7 @@ function LogbookProductivity() {
                                             </tr>
                                             <tr>
                                               <td className="px-4 py-3 text-sm font-medium text-gray-900">Net Sales</td>
-                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatKES((repeatSalesPercentOver100 != null && repeatSalesPercentOver100 >= 50) ? repeatSalesVal : 0)}</td>
+                                              <td className="px-4 py-3 text-sm text-gray-900 text-right">{formatMoney((repeatSalesPercentOver100 != null && repeatSalesPercentOver100 >= 50) ? repeatSalesVal : 0)}</td>
                                               <td className="px-4 py-3 text-sm text-gray-900 text-right" colSpan={5}>—</td>
                                             </tr>
                                           </>
@@ -977,15 +995,15 @@ function LogbookProductivity() {
                                   <div className="space-y-3">
                                     <div className="flex justify-between items-center">
                                       <span className="text-sm text-gray-700">PAR Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">{formatKES(parCommission)}</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatMoney(parCommission)}</span>
                                     </div>
                                     <div className="flex justify-between items-center">
                                       <span className="text-sm text-gray-700">Net Sales Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">{formatKES(netSalesCommission)}</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatMoney(netSalesCommission)}</span>
                                     </div>
                                     <div className="border-t border-gray-300 pt-2 flex justify-between items-center">
                                       <span className="text-sm font-semibold text-gray-900">Total Commission</span>
-                                      <span className="text-sm font-semibold text-gray-900">{formatKES(totalCommission)}</span>
+                                      <span className="text-sm font-semibold text-gray-900">{formatMoney(totalCommission)}</span>
                                     </div>
                                   </div>
                                 </div>
@@ -1009,9 +1027,9 @@ function LogbookProductivity() {
                 <tfoot className="bg-gray-50">
                   <tr>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900" colSpan={2}>Total</td>
-                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatKES(totalPortfolio)}</td>
-                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatKES(totalTarget)}</td>
-                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatKES(totalRepayment)}</td>
+                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalPortfolio)}</td>
+                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalTarget)}</td>
+                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalRepayment)}</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">
                       {overallPercentageAchieved === null ? '—' : `${overallPercentageAchieved.toFixed(1)}%`}
                     </td>
@@ -1064,8 +1082,8 @@ function LogbookProductivity() {
                 <Tooltip 
                   formatter={(value, name) => {
                     if (name === 'parRate') return [`${value.toFixed(2)}%`, 'PAR Rate']
-                    if (name === 'openLoans') return [formatKES(value), 'Open Loans']
-                    if (name === 'pastMissed') return [formatKES(value), 'Past Missed']
+                    if (name === 'openLoans') return [formatMoney(value), 'Open Loans']
+                    if (name === 'pastMissed') return [formatMoney(value), 'Past Missed']
                     return [value, name]
                   }}
                 />
@@ -1107,7 +1125,7 @@ function LogbookProductivity() {
                   tickFormatter={(value) => `${(value / 1000000).toFixed(1)}M`}
                 />
                 <Tooltip 
-                  formatter={(value) => formatKES(value)}
+                  formatter={(value) => formatMoney(value)}
                 />
                 <Legend />
                 <Bar 
@@ -1180,7 +1198,7 @@ function LogbookProductivity() {
                       </div>
                       <div>
                         <p className="text-sm font-medium text-gray-900">{entry.name}</p>
-                        <p className="text-xs text-gray-500">Portfolio: {formatKES(entry.openLoans)}</p>
+                        <p className="text-xs text-gray-500">Portfolio: {formatMoney(entry.openLoans)}</p>
                       </div>
                     </div>
                     <div className="text-right">

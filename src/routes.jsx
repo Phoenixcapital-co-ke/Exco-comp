@@ -79,6 +79,104 @@ function Routes() {
       <Route path="/logbook/productivity" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookProductivity /></RequireAuth>} />
       <Route path="/logbook/demographics" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDemographics /></RequireAuth>} />
       
+      {/* Logbook by country routes (currently Kenya & Uganda) */}
+      <Route
+        path="/logbook/kenya/dashboard"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDashboard country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/dashboard"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDashboard country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/kenya/disbursement"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDisbursement country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/disbursement"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDisbursement country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/kenya/collection"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookCollection country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/collection"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookCollection country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/kenya/par"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookPAR country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/par"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookPAR country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/kenya/productivity"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookProductivity country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/productivity"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookProductivity country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/kenya/demographics"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDemographics country="Kenya" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/logbook/uganda/demographics"
+        element={
+          <RequireAuth allowedRoles={LOGBOOK_ROLES}>
+            <LogbookDemographics country="Uganda" />
+          </RequireAuth>
+        }
+      />
+      
       {/* Zidisha routes */}
       <Route path="/zidisha/dashboard" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDashboard /></ZidishaBranchProvider></RequireAuth>} />
       <Route path="/zidisha/disbursement" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDisbursement /></ZidishaBranchProvider></RequireAuth>} />

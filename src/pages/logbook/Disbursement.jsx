@@ -20,9 +20,11 @@ import {
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { formatKES } from '../../utils/format.js'
+import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import { API_URLS } from '../../utils/api.js'
 
-function LogbookDisbursement() {
+function LogbookDisbursement({ country }) {
+  const { formatMoney } = useLogbookCurrency()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -35,7 +37,7 @@ function LogbookDisbursement() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const processor = new LogbookDataProcessor()
+        const processor = new LogbookDataProcessor(country)
         await processor.loadDisbursementsData()
         
         const disbursementAnalytics = processor.getDisbursementAnalytics()
@@ -51,7 +53,7 @@ function LogbookDisbursement() {
     }
 
     loadData()
-  }, [])
+  }, [country])
 
   useEffect(() => {
     const loadTargets = async () => {
@@ -741,7 +743,7 @@ function LogbookDisbursement() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Total Disbursed</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthAgg.total)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthAgg.total)}</p>
               </div>
               <div className="p-3 rounded-lg bg-green-50 text-green-600">
                 <DollarSign size={24} />
@@ -752,7 +754,7 @@ function LogbookDisbursement() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Daily Average</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthAgg.daysIn > 0 ? (selectedMonthAgg.total / selectedMonthAgg.daysIn) : 0)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthAgg.daysIn > 0 ? (selectedMonthAgg.total / selectedMonthAgg.daysIn) : 0)}</p>
               </div>
               <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
                 <Calendar size={24} />
@@ -788,7 +790,7 @@ function LogbookDisbursement() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Disbursed This Week</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedThisWeek)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalDisbursedThisWeek)}</p>
               <p className="text-sm mt-1 text-green-800">{totalDisbursedWeekChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
@@ -801,7 +803,7 @@ function LogbookDisbursement() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} Disbursed`}</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedThisMonth)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalDisbursedThisMonth)}</p>
               <p className={`text-sm mt-1 ${changeColor(totalDisbursedMonthChangePct)}`}>{totalDisbursedMonthChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
@@ -827,7 +829,7 @@ function LogbookDisbursement() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Average Loan</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(avgLoanThisMonth)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(avgLoanThisMonth)}</p>
               <p className={`text-sm mt-1 ${changeColor(avgLoanChangePct)}`}>{avgLoanChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
@@ -841,7 +843,7 @@ function LogbookDisbursement() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Disbursed Today</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalDisbursedToday)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalDisbursedToday)}</p>
               <p className={`text-sm mt-1 ${changeColor(totalDisbursedTodayChangePct)}`}>{totalDisbursedTodayChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
@@ -863,7 +865,7 @@ function LogbookDisbursement() {
               {branchMonthCards.map((b) => (
                 <div key={b.name} className="w-64 flex-shrink-0 rounded-lg border border-gray-200 p-4">
                   <div className="text-sm text-gray-600">{b.name}</div>
-                  <div className="text-xl font-semibold text-gray-900 mt-1">{formatKES(b.total)}</div>
+                  <div className="text-xl font-semibold text-gray-900 mt-1">{formatMoney(b.total)}</div>
                 </div>
               ))}
             </div>
@@ -888,10 +890,10 @@ function LogbookDisbursement() {
             <YAxis />
             <Tooltip
               formatter={(v, n) => {
-                if (n === 'overall') return [formatKES(v), 'Overall']
-                if (n === 'branch') return [formatKES(v), selectedBranch]
-                if (n === 'target') return [formatKES(v), 'Daily Target']
-                return [formatKES(v), n]
+                if (n === 'overall') return [formatMoney(v), 'Overall']
+                if (n === 'branch') return [formatMoney(v), selectedBranch]
+                if (n === 'target') return [formatMoney(v), 'Daily Target']
+                return [formatMoney(v), n]
               }}
             />
             <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
@@ -927,7 +929,7 @@ function LogbookDisbursement() {
                         const label = labelMap[entry.dataKey] || entry.name || 'Actual'
                         return (
                           <div key={index} className="text-sm" style={{ color: entry.color }}>
-                            <span className="font-semibold">{label}:</span> {formatKES(entry.value)}
+                            <span className="font-semibold">{label}:</span> {formatMoney(entry.value)}
                           </div>
                         )
                       })}
@@ -970,7 +972,7 @@ function LogbookDisbursement() {
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
+              <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -984,7 +986,7 @@ function LogbookDisbursement() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="name" />
             <YAxis />
-            <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
+            <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
             <Bar dataKey="amount" fill="#10b981" />
           </BarChart>
         </ResponsiveContainer>
@@ -1029,7 +1031,7 @@ function LogbookDisbursement() {
                     <tr key={index} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{client}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{product}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatKES(amount)}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatMoney(amount)}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{branchName}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{dateStr}</td>
                       <td className="px-6 py-4 whitespace-nowrap">

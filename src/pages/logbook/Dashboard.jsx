@@ -18,10 +18,12 @@ import {
   ResponsiveContainer 
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
+import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { API_URLS } from '../../utils/api.js'
 
-function LogbookDashboard() {
+function LogbookDashboard({ country }) {
+  const { convert, formatMoney } = useLogbookCurrency()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -36,7 +38,7 @@ function LogbookDashboard() {
     setLoading(true)
     setError(null)
     try {
-      const processor = new LogbookDataProcessor()
+      const processor = new LogbookDataProcessor(country)
       await processor.loadDisbursementsData()
       await processor.loadRepaymentsData()
       const dashboardMetrics = processor.getDashboardMetrics()
@@ -61,7 +63,9 @@ function LogbookDashboard() {
   const loadOpenLoans = async () => {
     try {
       // Use /api/par/branches which already filters by user's allowedLogbookBranches
-      const res = await fetch(API_URLS.par.branches, { credentials: 'include' })
+      const baseBranchesUrl = API_URLS.par.branches
+      const branchesUrl = country ? `${baseBranchesUrl}?country=${encodeURIComponent(country)}` : baseBranchesUrl
+      const res = await fetch(branchesUrl, { credentials: 'include' })
       if (res.ok) {
         const branchData = await res.json().catch(() => [])
         const branches = Array.isArray(branchData) ? branchData : []
@@ -77,7 +81,9 @@ function LogbookDashboard() {
         setOpenLoansChange('—')
       } else {
         // Fallback to old endpoint if branches endpoint fails
-        const fallbackRes = await fetch(API_URLS.par.history, { credentials: 'include' })
+        const baseHistoryUrl = API_URLS.par.history
+        const historyUrl = country ? `${baseHistoryUrl}?country=${encodeURIComponent(country)}` : baseHistoryUrl
+        const fallbackRes = await fetch(historyUrl, { credentials: 'include' })
         if (fallbackRes.ok) {
           const historyData = await fallbackRes.json().catch(() => [])
           const history = Array.isArray(historyData) ? historyData : []
@@ -123,7 +129,7 @@ function LogbookDashboard() {
     return () => {
       if (esRef.current) esRef.current.close()
     }
-  }, [])
+  }, [country])
 
   if (loading) {
     return (
@@ -449,7 +455,7 @@ function LogbookDashboard() {
   const stats = [
     {
       title: 'Portfolio',
-      value: openLoans != null ? formatKES(openLoans) : '—',
+      value: openLoans != null ? formatMoney(openLoans) : '—',
       change: openLoansChange,
       icon: DollarSign,
       color: 'text-green-600'
@@ -463,14 +469,14 @@ function LogbookDashboard() {
     },
     {
       title: `Total ${now.toLocaleString('en-US', { month: 'long' })} Disbursed`,
-      value: formatKES(totalDisbursedCurrentMonth),
+      value: formatMoney(totalDisbursedCurrentMonth),
       change: totalDisbursedMonthChangePct,
       icon: TrendingUp,
       color: 'text-purple-600'
     },
     {
       title: `Total ${now.toLocaleString('en-US', { month: 'long' })} Collected`,
-      value: formatKES(totalCollectedCurrentMonth),
+      value: formatMoney(totalCollectedCurrentMonth),
       change: totalCollectedMonthChangePct,
       icon: AlertTriangle,
       color: 'text-orange-600'
@@ -528,10 +534,15 @@ function LogbookDashboard() {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Logbook Dashboard</h1>
-          <p className="text-gray-600 mt-2">Real-time overview of Logbook business unit performance</p>
-        </div>
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900">
+          {country ? `Logbook - ${country}` : 'Logbook Dashboard'}
+        </h1>
+        <p className="text-gray-600 mt-2">
+          Real-time overview of Logbook business unit performance
+          {country ? ` for ${country}` : ''}
+        </p>
+      </div>
         <div className="flex items-end gap-3">
           <div>
             <label className="block text-xs text-gray-600 mb-1">Year</label>
@@ -602,7 +613,7 @@ function LogbookDashboard() {
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
+              <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
               <text x={"50%"} y={"50%"} textAnchor="middle" dominantBaseline="middle" fontSize={20} fontWeight="bold">
                 {numActiveBranches}
               </text>
@@ -616,7 +627,7 @@ function LogbookDashboard() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="branch" />
               <YAxis />
-              <Tooltip formatter={(v, n) => [formatKES(v), n]} />
+              <Tooltip formatter={(v, n) => [formatMoney(v), n]} />
               <Legend />
               <Bar dataKey="disbursed" name="Disbursed" fill="#3b82f6" />
               <Bar dataKey="collected" name="Collected" fill="#10b981" />
@@ -655,7 +666,7 @@ function LogbookDashboard() {
                         style={{ width: pct + '%' }}
                       ></div>
                     </div>
-                    <div className="min-w-[80px] tabular-nums">{formatKES(entry.value)}</div>
+                    <div className="min-w-[80px] tabular-nums">{formatMoney(entry.value)}</div>
                     <div className="min-w-[40px] text-right text-gray-500">{pct.toFixed(1)}%</div>
                   </div>
                 );
@@ -676,7 +687,7 @@ function LogbookDashboard() {
             <Tooltip
               formatter={(value, _rawName, entry) => {
                 const seriesName = entry && entry.name ? entry.name : _rawName
-                return [formatKES(value), seriesName]
+                return [formatMoney(value), seriesName]
               }}
             />
             <Legend />
@@ -702,7 +713,7 @@ function LogbookDashboard() {
                   <p className="text-sm text-gray-600">{loan.Product}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold text-gray-900">{formatKES(loan.Disbursed)}</p>
+                  <p className="font-semibold text-gray-900">{formatMoney(loan.Disbursed)}</p>
                   <p className="text-sm text-gray-600">{loan.Status}</p>
                 </div>
               </div>
@@ -720,7 +731,7 @@ function LogbookDashboard() {
                   <p className="text-sm text-gray-600">{repayment.repayment_collected_date}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold text-gray-900">{formatKES(repayment.repayment_amount)}</p>
+                  <p className="font-semibold text-gray-900">{formatMoney(repayment.repayment_amount)}</p>
                   <p className="text-sm text-gray-600">Collector: {repayment.collector_id}</p>
                 </div>
               </div>

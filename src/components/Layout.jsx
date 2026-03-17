@@ -6,6 +6,7 @@ import { useBreakpoint } from '../hooks/useBreakpoint.js'
 import { useInactivityLogout } from '../hooks/useInactivityLogout.js'
 import { API_URLS } from '../utils/api.js'
 import { useAuth } from '../context/AuthContext.jsx'
+import { LogbookCurrencyProvider } from '../context/LogbookCurrencyContext.jsx'
 
 const NO_CHROME_ROUTES = ['/login', '/done', '/auth/signin', '/auth/forgot-password', '/auth/confirm']
 const DESKTOP_BREAKPOINT = 1024
@@ -126,7 +127,8 @@ function Layout({ children }) {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <LogbookCurrencyProvider>
+      <div className="flex h-screen bg-gray-50 overflow-hidden">
       {!isDesktop && (
         <>
           <div
@@ -159,13 +161,14 @@ function Layout({ children }) {
         />
       )}
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
-        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 md:px-5 lg:px-6 lg:py-6 xl:px-8">
-          <div className="mx-auto w-full max-w-[1400px] lg:max-w-none">{children}</div>
-        </main>
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
+          <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 md:px-5 lg:px-6 lg:py-6 xl:px-8">
+            <div className="mx-auto w-full max-w-[1400px] lg:max-w-none">{children}</div>
+          </main>
+        </div>
       </div>
-    </div>
+    </LogbookCurrencyProvider>
   )
 }
 

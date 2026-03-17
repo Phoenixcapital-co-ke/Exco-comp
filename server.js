@@ -40,6 +40,22 @@ const events = new EventEmitter()
 const db = new Database('data/app.db', { readonly: true });
 // Separate write-enabled handle for inserts/updates
 const dbRW = new Database('data/app.db');
+
+// --- FX rates (cached) ---
+// NOTE: the /api/fx/rates route is registered after CORS middleware below,
+// otherwise the browser blocks it (no Access-Control-Allow-Origin header).
+let fxCache = { fetchedAt: 0, base: 'USD', rates: null }
+const FX_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6 hours
+
+async function fetchFxRatesUSD() {
+  // Free endpoint that returns many currency rates with base USD
+  const url = 'https://open.er-api.com/v6/latest/USD'
+  const resp = await fetch(url, { headers: { 'User-Agent': 'PhoenixDashboard/1.0' } })
+  if (!resp.ok) throw new Error(`FX fetch failed: ${resp.status}`)
+  const json = await resp.json()
+  if (!json || json.result !== 'success' || !json.rates) throw new Error('FX fetch returned invalid payload')
+  return { base: 'USD', rates: json.rates, fetchedAt: Date.now() }
+}
 // Ensure PAR table exists
 dbRW.prepare('CREATE TABLE IF NOT EXISTS PAR (time TEXT, Past_Arrears_missed REAL)').run();
 // Add Open_loans column if it doesn't exist
@@ -631,6 +647,17 @@ dbRW.exec(`
     active INTEGER DEFAULT 1
   );
 `);
+// Add country column if missing (migration for existing DBs)
+try {
+  const hasCountry = dbRW.prepare(
+    "SELECT COUNT(*) AS c FROM pragma_table_info('Logbook_Branches') WHERE name = 'country'"
+  ).get().c > 0
+  if (!hasCountry) {
+    dbRW.exec(`ALTER TABLE Logbook_Branches ADD COLUMN country TEXT DEFAULT 'Kenya'`)
+  }
+} catch (e) {
+  // Column may already exist or DB read-only
+}
 
 // Users table (dashboard users)
 dbRW.exec(`
@@ -1083,6 +1110,32 @@ app.use(cors({
   },
   credentials: true 
 }))
+
+// FX rates endpoint (cached). Must be registered after CORS middleware.
+app.get('/api/fx/rates', async (req, res) => {
+  try {
+    // Explicit CORS headers (some environments bypass global cors middleware)
+    const origin = req.headers.origin
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
+    }
+
+    const now = Date.now()
+    if (fxCache.rates && now - fxCache.fetchedAt < FX_CACHE_TTL_MS) {
+      return res.json({ base: fxCache.base, rates: fxCache.rates, fetchedAt: fxCache.fetchedAt })
+    }
+    const fresh = await fetchFxRatesUSD()
+    fxCache = { fetchedAt: fresh.fetchedAt, base: fresh.base, rates: fresh.rates }
+    res.json({ base: fresh.base, rates: fresh.rates, fetchedAt: fresh.fetchedAt })
+  } catch (e) {
+    // Fallback: return cached if present
+    if (fxCache.rates) {
+      return res.json({ base: fxCache.base, rates: fxCache.rates, fetchedAt: fxCache.fetchedAt, stale: true })
+    }
+    res.status(500).json({ error: e.message })
+  }
+})
 
 app.use(cookieParser())
 app.use(express.json())
@@ -1767,11 +1820,13 @@ app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
 })
 
 app.get('/api/logbook/disbursements', (req, res) => {
-  const allowed = getAllowedLogbookBranches(req)
+  const effective = getEffectiveLogbookBranches(req)
   let rows
-  if (allowed.length > 0) {
-    const placeholders = allowed.map(() => '?').join(', ')
-    rows = db.prepare(`SELECT * FROM Logbook_Disbursement WHERE branch IN (${placeholders})`).all(...allowed)
+  if (effective.length > 0) {
+    const placeholders = effective.map(() => '?').join(', ')
+    rows = db.prepare(`SELECT * FROM Logbook_Disbursement WHERE branch IN (${placeholders})`).all(...effective)
+  } else if (req.query && req.query.country != null && String(req.query.country).trim()) {
+    rows = [] // country filter but no branches in that country
   } else {
     rows = db.prepare('SELECT * FROM Logbook_Disbursement').all()
   }
@@ -1779,11 +1834,13 @@ app.get('/api/logbook/disbursements', (req, res) => {
 });
 
 app.get('/api/logbook/collections', (req, res) => {
-  const allowed = getAllowedLogbookBranches(req)
+  const effective = getEffectiveLogbookBranches(req)
   let rows
-  if (allowed.length > 0) {
-    const placeholders = allowed.map(() => '?').join(', ')
-    rows = db.prepare(`SELECT * FROM Logbook_collection WHERE branch IN (${placeholders})`).all(...allowed)
+  if (effective.length > 0) {
+    const placeholders = effective.map(() => '?').join(', ')
+    rows = db.prepare(`SELECT * FROM Logbook_collection WHERE branch IN (${placeholders})`).all(...effective)
+  } else if (req.query && req.query.country != null && String(req.query.country).trim()) {
+    rows = [] // country filter but no branches in that country
   } else {
     rows = db.prepare('SELECT * FROM Logbook_collection').all()
   }
@@ -1807,9 +1864,13 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       return res.status(400).json({ error: 'Invalid year' });
     }
 
-    const allowedBranches = getAllowedLogbookBranches(req)
-    const hasBranchRestrictions = allowedBranches.length > 0
-    const allowedSet = hasBranchRestrictions ? new Set(allowedBranches) : null
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    if (countryParam && effectiveBranches.length === 0) {
+      return res.json([])
+    }
+    const hasBranchRestrictions = effectiveBranches.length > 0
+    const allowedSet = hasBranchRestrictions ? new Set(effectiveBranches) : null
 
     // Get all borrower access IDs that have RO_Targets entries for the selected month/year
     const borrowerMap = new Map();
@@ -2140,9 +2201,13 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
       return res.status(400).json({ error: 'Month and year are required' })
     }
 
-    const allowedBranches = getAllowedLogbookBranches(req)
-    const hasBranchRestrictions = allowedBranches.length > 0
-    const allowedSet = hasBranchRestrictions ? new Set(allowedBranches) : null
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    if (countryParam && effectiveBranches.length === 0) {
+      return res.json([])
+    }
+    const hasBranchRestrictions = effectiveBranches.length > 0
+    const allowedSet = hasBranchRestrictions ? new Set(effectiveBranches) : null
 
     // Disbursement date format: DD/MM/YYYY
     const parseDMY = (str) => {
@@ -2241,18 +2306,20 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
 
 app.get('/api/logbook/borrowers', (req, res) => {
   try {
-    const allowed = getAllowedLogbookBranches(req)
+    const effective = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    if (countryParam && effective.length === 0) {
+      return res.json([])
+    }
     let rows = db.prepare('SELECT * FROM Logbook_borrowers').all()
-
-    if (allowed.length > 0) {
-      const allowedSet = new Set(allowed)
+    if (effective.length > 0) {
+      const allowedSet = new Set(effective)
       rows = rows.filter((row) => {
         const branchCode = String(row.branch ?? row.branch_code ?? '').trim()
         if (!branchCode) return false
         return allowedSet.has(branchCode)
       })
     }
-
     res.json(rows)
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -2297,10 +2364,12 @@ app.get('/api/ingest', (req, res) => {
 // Branches CRUD (Logbook only)
 app.get('/api/logbook/branches', (req, res) => {
   try {
+    const authRole = String(req.authUser?.role || '').toLowerCase()
     const allowed = getAllowedLogbookBranches(req)
-    let rows = dbRW.prepare('SELECT code, name, active FROM Logbook_Branches ORDER BY name COLLATE NOCASE').all()
+    let rows = dbRW.prepare('SELECT code, name, active, country FROM Logbook_Branches ORDER BY name COLLATE NOCASE').all()
 
-    if (allowed.length > 0) {
+    // Only enforce branch restrictions for custom users (admins/superusers should see all)
+    if (authRole === 'custom' && allowed.length > 0) {
       const allowedSet = new Set(allowed.map(code => String(code || '').trim()))
       rows = rows.filter((row) => {
         const code = String(row.code ?? '').trim()
@@ -2376,6 +2445,25 @@ function getAllowedLogbookBranches(req) {
     result.push(val)
   }
   return result
+}
+
+// Helper: branch codes to use for this request (country filter + user allowed branches)
+// When query.country is set, only branches in Logbook_Branches with that country are used.
+function getEffectiveLogbookBranches(req) {
+  const authRole = String(req.authUser?.role || '').toLowerCase()
+  // Only custom users are restricted by allowedLogbookBranches
+  const allowed = authRole === 'custom' ? getAllowedLogbookBranches(req) : []
+  const country = req.query && req.query.country != null ? String(req.query.country).trim() : ''
+  if (country) {
+    const byCountry = dbRW.prepare('SELECT code FROM Logbook_Branches WHERE country = ?').all(country)
+    let codes = byCountry.map((r) => String(r.code ?? '').trim()).filter(Boolean)
+    if (allowed.length > 0) {
+      const allowedSet = new Set(allowed)
+      codes = codes.filter((c) => allowedSet.has(c))
+    }
+    return codes
+  }
+  return allowed
 }
 
 // Helper: normalize allowed Zidisha branches from the authenticated user
@@ -3566,13 +3654,19 @@ app.delete('/api/targets/ro/:id', (req, res) => {
 
 app.post('/api/logbook/branches', (req, res) => {
   try {
-    const { code, name, active = 1 } = req.body || {}
+    const { code, name, active = 1, country } = req.body || {}
     if (!code || !name) return res.status(400).json({ error: 'code and name are required' })
+    const countryVal = (country != null && String(country).trim()) ? String(country).trim() : 'Kenya'
     dbRW.prepare(`
-      INSERT INTO Logbook_Branches (code, name, active)
-      VALUES (@code, @name, @active)
-      ON CONFLICT(code) DO UPDATE SET name=excluded.name, active=excluded.active
-    `).run({ code: String(code).trim(), name: String(name).trim(), active: active ? 1 : 0 })
+      INSERT INTO Logbook_Branches (code, name, active, country)
+      VALUES (@code, @name, @active, @country)
+      ON CONFLICT(code) DO UPDATE SET name=excluded.name, active=excluded.active, country=excluded.country
+    `).run({
+      code: String(code).trim(),
+      name: String(name).trim(),
+      active: active ? 1 : 0,
+      country: countryVal
+    })
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -3751,11 +3845,19 @@ let parBorrowerAccessCache = { time: null, data: null }
 
 app.get('/api/par/branches', async (req, res) => {
   try {
-    const allowedBranches = getAllowedLogbookBranches(req)
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
 
-    // Get all active branches with names
-    const activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()
-    
+    // Get active branches (optionally restricted by country)
+    let activeBranches
+    if (countryParam) {
+      activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1 AND country = ?').all(countryParam)
+      if (activeBranches.length === 0) {
+        return res.json([])
+      }
+    } else {
+      activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()
+    }
     if (activeBranches.length === 0) {
       return res.status(400).json({ error: 'No active branches found' })
     }
@@ -3769,14 +3871,14 @@ app.get('/api/par/branches', async (req, res) => {
 
     const latestTime = latestPar.time
 
-    // Return cached if same snapshot time (filtered per user)
+    // Return cached if same snapshot time (filtered per user/country)
     if (parBranchesCache.time === latestPar.time && parBranchesCache.data) {
-      const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
-      const data = !allowedSet
+      const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
+      const data = !effectiveSet
         ? parBranchesCache.data
         : parBranchesCache.data.filter((b) => {
             const code = String(b.code ?? '').trim()
-            return code && allowedSet.has(code)
+            return code && effectiveSet.has(code)
           })
       return res.json(data)
     }
@@ -3852,12 +3954,12 @@ app.get('/api/par/branches', async (req, res) => {
     
     parBranchesCache = { time: latestPar.time, data: branchData }
 
-    const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
-    const data = !allowedSet
+    const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
+    const data = !effectiveSet
       ? branchData
       : branchData.filter((b) => {
           const code = String(b.code ?? '').trim()
-          return code && allowedSet.has(code)
+          return code && effectiveSet.has(code)
         })
 
     res.json(data)
@@ -3868,7 +3970,8 @@ app.get('/api/par/branches', async (req, res) => {
 
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
-    const allowedBranches = getAllowedLogbookBranches(req)
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
     const { branch } = req.query // Optional branch filter
 
     // Get the latest snapshot time
@@ -3878,13 +3981,23 @@ app.get('/api/par/borrower-access', async (req, res) => {
     }
     const latestTime = latestPar.time
 
+    if (countryParam && effectiveBranches.length === 0) {
+      return res.json([])
+    }
+
     // Load saved loan records for the snapshot
-    const openLoansRows = branch 
+    let openLoansRows = branch 
       ? db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ? AND branch_code = ?').all(latestTime, branch)
       : db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
-    const pastMissedRows = branch
+    let pastMissedRows = branch
       ? db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ? AND branch_code = ?').all(latestTime, branch)
       : db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+
+    if (countryParam && effectiveBranches.length > 0) {
+      const effectiveSet = new Set(effectiveBranches)
+      openLoansRows = openLoansRows.filter((r) => effectiveSet.has(r.branch_code))
+      pastMissedRows = pastMissedRows.filter((r) => effectiveSet.has(r.branch_code))
+    }
 
     const officerMap = new Map()
 
@@ -3957,19 +4070,19 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     officerData.sort((a, b) => b.parRate - a.parRate)
 
-    // Only cache if no branch filter (to avoid cache complexity)
-    if (!branch && parBorrowerAccessCache.time !== latestPar.time) {
+    // Only cache if no branch/country filter (to avoid cache complexity)
+    if (!branch && !countryParam && parBorrowerAccessCache.time !== latestPar.time) {
       parBorrowerAccessCache = { time: latestPar.time, data: officerData }
     }
 
-    const allowedSet = allowedBranches.length > 0 ? new Set(allowedBranches) : null
-    const data = !allowedSet
+    const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
+    const data = !effectiveSet
       ? officerData
       : officerData.filter((entry) => {
           if (!Array.isArray(entry.branches) || entry.branches.length === 0) return false
           return entry.branches.some((code) => {
             const c = String(code ?? '').trim()
-            return c && allowedSet.has(c)
+            return c && effectiveSet.has(c)
           })
         })
 

@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { useNavigate } from 'react-router-dom'
 import { useLastRefresh } from '../hooks/useLastRefresh.js'
 import { useBreakpoint } from '../hooks/useBreakpoint.js'
+import { useLogbookCurrency } from '../context/LogbookCurrencyContext.jsx'
 
 const DESKTOP_BREAKPOINT = 1024
 
@@ -12,6 +13,7 @@ function Header({ onMenuClick }) {
   const navigate = useNavigate()
   const { formattedLastRefresh } = useLastRefresh()
   const isDesktop = useBreakpoint(DESKTOP_BREAKPOINT)
+  const { isNonKenyaLogbook, countryName, displayCurrency, setDisplayCurrency } = useLogbookCurrency()
 
   const handleLogout = () => {
     logout()
@@ -22,6 +24,28 @@ function Header({ onMenuClick }) {
     <header className="bg-white shadow-sm border-b border-gray-200 px-4 py-3 sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center space-x-3">
+          {isNonKenyaLogbook && (
+            <div className="flex items-center space-x-2 mr-2">
+              <span className="text-xs text-gray-500 hidden sm:inline">
+                Currency ({countryName})
+              </span>
+              <select
+                value={displayCurrency}
+                onChange={(e) => setDisplayCurrency(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1 text-xs sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="LOCAL">Local</option>
+                <option value="KES">KES</option>
+                <option value="USD">USD</option>
+                <option value="UGX">UGX</option>
+                <option value="TZS">TZS</option>
+                <option value="RWF">RWF</option>
+                <option value="BIF">BIF</option>
+                <option value="SSP">SSP</option>
+                <option value="ETB">ETB</option>
+              </select>
+            </div>
+          )}
           <button
             onClick={onMenuClick}
             className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"

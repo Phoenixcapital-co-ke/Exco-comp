@@ -6,12 +6,16 @@ export default function DataBranches() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [draft, setDraft] = useState({ code: '', name: '', active: true })
+  const [draft, setDraft] = useState({ code: '', name: '', active: true, country: 'Kenya' })
   const [saving, setSaving] = useState(false)
 
   const load = async () => {
     try {
       const res = await fetch(API_URLS.branches.list, { credentials: 'include' })
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.error || `Failed to load branches: ${res.status}`)
+      }
       const data = await res.json()
       setRows(Array.isArray(data) ? data : [])
       setLoading(false)
@@ -29,17 +33,22 @@ export default function DataBranches() {
     if (!draft.code.trim() || !draft.name.trim()) return
     try {
       setSaving(true)
-      await fetch(API_URLS.branches.upsert, {
+      const res = await fetch(API_URLS.branches.upsert, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: draft.code.trim(),
           name: draft.name.trim(),
-          active: draft.active ? 1 : 0
+          active: draft.active ? 1 : 0,
+          country: draft.country || 'Kenya',
         }),
         credentials: 'include',
       })
-      setDraft({ code: '', name: '', active: true })
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.error || `Save failed: ${res.status}`)
+      }
+      setDraft({ code: '', name: '', active: true, country: 'Kenya' })
       await load()
     } catch (e) {
       setError(e.message)
@@ -90,7 +99,7 @@ export default function DataBranches() {
       )}
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
           <div className="md:col-span-2">
             <label className="block text-xs text-gray-600 mb-1">Code</label>
             <input
@@ -108,6 +117,22 @@ export default function DataBranches() {
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               placeholder="e.g. Nairobi"
             />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Country</label>
+            <select
+              className="w-full border border-gray-300 rounded px-2 py-2 text-sm bg-white"
+              value={draft.country}
+              onChange={(e) => setDraft({ ...draft, country: e.target.value })}
+            >
+              <option value="Kenya">Kenya</option>
+              <option value="Uganda">Uganda</option>
+              <option value="Tanzania">Tanzania</option>
+              <option value="Rwanda">Rwanda</option>
+              <option value="Burundi">Burundi</option>
+              <option value="South Sudan">South Sudan</option>
+              <option value="Ethiopia">Ethiopia</option>
+            </select>
           </div>
           <div className="flex items-center space-x-2">
             <input
@@ -138,6 +163,7 @@ export default function DataBranches() {
             <tr>
               <th className="px-3 py-2 text-left font-medium text-gray-600">Code</th>
               <th className="px-3 py-2 text-left font-medium text-gray-600">Name</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-600">Country</th>
               <th className="px-3 py-2 text-left font-medium text-gray-600">Active</th>
               <th className="px-3 py-2 text-right font-medium text-gray-600">Actions</th>
             </tr>
@@ -147,10 +173,18 @@ export default function DataBranches() {
               <tr key={r.code} className="hover:bg-gray-50">
                 <td className="px-3 py-2">{r.code}</td>
                 <td className="px-3 py-2">{r.name}</td>
+                <td className="px-3 py-2">{r.country || 'Kenya'}</td>
                 <td className="px-3 py-2">{r.active ? 'Yes' : 'No'}</td>
                 <td className="px-3 py-2 text-right">
                   <button
-                    onClick={() => setDraft({ code: r.code, name: r.name, active: !!r.active })}
+                    onClick={() =>
+                      setDraft({
+                        code: r.code,
+                        name: r.name,
+                        active: !!r.active,
+                        country: r.country || 'Kenya',
+                      })
+                    }
                     className="inline-flex items-center px-2 py-1 rounded border border-gray-200 text-gray-700 hover:bg-gray-50 mr-2"
                     title="Edit"
                   >
@@ -168,7 +202,7 @@ export default function DataBranches() {
             ))}
             {!rows.length && (
               <tr>
-                <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>No branches configured.</td>
+                <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>No branches configured.</td>
               </tr>
             )}
           </tbody>

@@ -19,9 +19,11 @@ import {
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { formatKES } from '../../utils/format.js'
+import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import { API_URLS } from '../../utils/api.js'
 
-function LogbookCollection() {
+function LogbookCollection({ country }) {
+  const { formatMoney } = useLogbookCurrency()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -33,7 +35,7 @@ function LogbookCollection() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const processor = new LogbookDataProcessor()
+        const processor = new LogbookDataProcessor(country)
         await processor.loadRepaymentsData()
         
         const collectionAnalytics = processor.getCollectionAnalytics()
@@ -46,7 +48,7 @@ function LogbookCollection() {
     }
 
     loadData()
-  }, [])
+  }, [country])
 
   useEffect(() => {
     const loadTargets = async () => {
@@ -574,7 +576,7 @@ function LogbookCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">{`Total ${monthLabel} Collected`}</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(totalCollectedSelectedMonth)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(totalCollectedSelectedMonth)}</p>
               <p className="text-sm mt-1 text-green-600">{collectedVsTargetPctStr}</p>
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
@@ -587,7 +589,7 @@ function LogbookCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Principal Collected</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthPrincipal)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthPrincipal)}</p>
               <p className={`text-sm mt-1 ${changeColor(principalChangePct)}`}>{principalChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
@@ -600,7 +602,7 @@ function LogbookCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Interest Collected</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthInterest)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthInterest)}</p>
               <p className={`text-sm mt-1 ${changeColor(interestChangePct)}`}>{interestChangePct}</p>
             </div>
             <div className="p-3 rounded-lg bg-purple-50 text-purple-600">
@@ -629,7 +631,7 @@ function LogbookCollection() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Average Collections per Week (Selected Month)</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(avgCollectedAmtPerWeekSelected)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(avgCollectedAmtPerWeekSelected)}</p>
               </div>
               <div className="p-3 rounded-lg bg-green-50 text-green-600">
                 <DollarSign size={24} />
@@ -640,7 +642,7 @@ function LogbookCollection() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Average Collections per Day (Selected Month)</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(avgCollectedAmtPerDaySelected)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(avgCollectedAmtPerDaySelected)}</p>
               </div>
               <div className="p-3 rounded-lg bg-green-50 text-green-600">
                 <CheckCircle size={24} />
@@ -676,7 +678,7 @@ function LogbookCollection() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Collections This Week</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(collectionsThisWeek)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(collectionsThisWeek)}</p>
               </div>
               <div className="p-3 rounded-lg bg-green-50 text-green-600">
                 <DollarSign size={24} />
@@ -687,7 +689,7 @@ function LogbookCollection() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Collections Today</p>
-                <p className="text-2xl font-bold text-gray-900">{formatKES(collectionsToday)}</p>
+                <p className="text-2xl font-bold text-gray-900">{formatMoney(collectionsToday)}</p>
               </div>
               <div className="p-3 rounded-lg bg-green-50 text-green-600">
                 <CheckCircle size={24} />
@@ -743,7 +745,7 @@ function LogbookCollection() {
                   <Cell key={`cell-${index}`} fill={entry.color} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value) => [formatKES(value), 'Amount']} />
+              <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
             </PieChart>
           </ResponsiveContainer>
 
@@ -790,7 +792,7 @@ function LogbookCollection() {
                         <div className="flex items-center justify-between text-sm mb-1">
                           <span className="font-medium text-gray-800">{row.name}</span>
                           <span className="text-gray-500">
-                            {formatKES(row.amount)} {row.target > 0 ? ` / ${formatKES(row.target)}` : ''}
+                            {formatMoney(row.amount)} {row.target > 0 ? ` / ${formatMoney(row.target)}` : ''}
                           </span>
                         </div>
                         <div className="flex items-center space-x-2">
@@ -821,8 +823,8 @@ function LogbookCollection() {
               <YAxis />
               <Tooltip
                 formatter={(value, name) => {
-                  if (name === 'target') return [formatKES(value), 'Daily Target']
-                  return [formatKES(value), 'Collected']
+                  if (name === 'target') return [formatMoney(value), 'Daily Target']
+                  return [formatMoney(value), 'Collected']
                 }}
               />
               <Area type="monotone" dataKey="amount" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
@@ -842,8 +844,8 @@ function LogbookCollection() {
                     formatter={(value, name, entry) => {
                       const key = entry?.dataKey
                       if (key === 'percent') return [`${value.toFixed(1)}%`, 'MTD % of Target']
-                      if (key === 'target') return [formatKES(value), 'MTD Target']
-                      return [formatKES(value), 'MTD Collected']
+                      if (key === 'target') return [formatMoney(value), 'MTD Target']
+                      return [formatMoney(value), 'MTD Collected']
                     }}
                   />
                   <Legend />
@@ -885,7 +887,7 @@ function LogbookCollection() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="month" />
                 <YAxis />
-                <Tooltip formatter={(v) => [formatKES(v), 'Collected']} />
+                <Tooltip formatter={(v) => [formatMoney(v), 'Collected']} />
                 <Bar dataKey="amount" fill="#3b82f6" name="Collected" />
               </BarChart>
             </ResponsiveContainer>
@@ -899,7 +901,7 @@ function LogbookCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Fees Collected</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthFees)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthFees)}</p>
               <p className="text-sm text-gray-600 mt-1">
                 {totalCollectedSelectedMonth > 0 ? ((selectedMonthFees / totalCollectedSelectedMonth) * 100).toFixed(1) : '0.0'}% of total
               </p>
@@ -914,7 +916,7 @@ function LogbookCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Penalty Collected</p>
-              <p className="text-2xl font-bold text-gray-900">{formatKES(selectedMonthPenalty)}</p>
+              <p className="text-2xl font-bold text-gray-900">{formatMoney(selectedMonthPenalty)}</p>
               <p className="text-sm text-gray-600 mt-1">
                 {totalCollectedSelectedMonth > 0 ? ((selectedMonthPenalty / totalCollectedSelectedMonth) * 100).toFixed(1) : '0.0'}% of total
               </p>
@@ -964,16 +966,16 @@ function LogbookCollection() {
                     #{repayment.loan_id}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatKES(repayment.repayment_amount)}
+                    {formatMoney(repayment.repayment_amount)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatKES(repayment.principal_repayment_amount)}
+                    {formatMoney(repayment.principal_repayment_amount)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatKES(repayment.interest_repayment_amount)}
+                    {formatMoney(repayment.interest_repayment_amount)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatKES(repayment.fees_repayment_amount)}
+                    {formatMoney(repayment.fees_repayment_amount)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {repayment.repayment_collected_date}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { 
   ChevronDown, 
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
+import { API_URLS } from '../utils/api.js'
 
 function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const location = useLocation()
@@ -30,6 +31,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const { user, logout } = useAuth()
   const [expandedSection, setExpandedSection] = useState('logbook')
   const [expandedSubSection, setExpandedSubSection] = useState(null)
+  const [logbookCountries, setLogbookCountries] = useState([])
 
   const toggleSection = (section) => {
     setExpandedSection(prev => (prev === section ? null : section))
@@ -43,20 +45,27 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     setExpandedSubSection(prev => (prev === subSection ? null : subSection))
   }
 
-  const navigationItems = [
-    {
-      id: 'logbook',
-      label: 'Logbook',
-      icon: BookOpen,
-      items: [
-        { path: '/logbook/dashboard', label: 'Dashboard', icon: BarChart3 },
-        { path: '/logbook/disbursement', label: 'Disbursement', icon: DollarSign },
-        { path: '/logbook/collection', label: 'Collection', icon: TrendingUp },
-        { path: '/logbook/par', label: 'PAR', icon: AlertTriangle },
-        { path: '/logbook/productivity', label: 'Productivity', icon: Activity },
-        { path: '/logbook/demographics', label: 'Demographics', icon: Users }
-      ]
-    },
+  useEffect(() => {
+    const loadCountries = async () => {
+      try {
+        const res = await fetch(API_URLS.branches.list, { credentials: 'include' })
+        if (!res.ok) return
+        const data = await res.json()
+        const countries = new Set()
+        for (const row of Array.isArray(data) ? data : []) {
+          const c = (row.country || 'Kenya').trim()
+          if (c) countries.add(c)
+        }
+        setLogbookCountries(Array.from(countries).sort())
+      } catch {
+        // Ignore errors; sidebar falls back to default Logbook section
+        setLogbookCountries([])
+      }
+    }
+    loadCountries()
+  }, [])
+
+  const baseNavigationItems = [
     {
       id: 'zidisha',
       label: 'Zidisha',
@@ -153,6 +162,25 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       ]
     }
   ]
+
+  const countryLogbookSections = logbookCountries.map((country) => {
+    const slug = country.toLowerCase().replace(/\s+/g, '-')
+    return {
+      id: `logbook-${slug}`,
+      label: `Logbook - ${country}`,
+      icon: BookOpen,
+      items: [
+        { path: `/logbook/${slug}/dashboard`, label: 'Dashboard', icon: BarChart3 },
+        { path: `/logbook/${slug}/disbursement`, label: 'Disbursement', icon: DollarSign },
+        { path: `/logbook/${slug}/collection`, label: 'Collection', icon: TrendingUp },
+        { path: `/logbook/${slug}/par`, label: 'PAR', icon: AlertTriangle },
+        { path: `/logbook/${slug}/productivity`, label: 'Productivity', icon: Activity },
+        { path: `/logbook/${slug}/demographics`, label: 'Demographics', icon: Users }
+      ]
+    }
+  })
+
+  const navigationItems = [...baseNavigationItems, ...countryLogbookSections]
 
   const roleKey = String(user?.role || '').toLowerCase()
   const isCustom = roleKey === 'custom'

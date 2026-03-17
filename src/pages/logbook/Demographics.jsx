@@ -82,7 +82,7 @@ function normalizeBranchCode(value) {
   return code || 'Unknown'
 }
 
-export default function LogbookDemographics() {
+export default function LogbookDemographics({ country }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -93,9 +93,14 @@ export default function LogbookDemographics() {
     const load = async () => {
       try {
         setLoading(true)
+        const baseBorrowers = API_URLS.logbook.borrowers
+        const borrowersUrl = country ? `${baseBorrowers}?country=${encodeURIComponent(country)}` : baseBorrowers
+        const baseBranches = API_URLS.branches.list
+        const branchesUrl = country ? `${baseBranches}?country=${encodeURIComponent(country)}` : baseBranches
+
         const [borrowerRes, branchRes] = await Promise.all([
-          fetch(API_URLS.logbook.borrowers, { credentials: 'include' }),
-          fetch(API_URLS.branches.list, { credentials: 'include' }).catch(() => null)
+          fetch(borrowersUrl, { credentials: 'include' }),
+          fetch(branchesUrl, { credentials: 'include' }).catch(() => null)
         ])
         if (!borrowerRes.ok) throw new Error(`Failed to load data (${borrowerRes.status})`)
         const borrowerData = await borrowerRes.json()
@@ -117,7 +122,7 @@ export default function LogbookDemographics() {
       }
     }
     load()
-  }, [])
+  }, [country])
 
   const branches = useMemo(() => {
     const codes = new Set()

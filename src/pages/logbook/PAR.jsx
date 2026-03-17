@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { AlertTriangle, TrendingUp, Loader2, Play } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
-import { formatKES } from '../../utils/format.js'
+import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
-function LogbookPAR() {
+function LogbookPAR({ country }) {
+  const { convert, formatMoney } = useLogbookCurrency()
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState(null)
   const [history, setHistory] = useState([])
@@ -29,7 +30,7 @@ function LogbookPAR() {
       console.error('Error loading loan officers:', e)
       setLoanOfficers([])
     }
-  }, [])
+  }, [country])
 
   const loadLastRunTime = useCallback(async () => {
     try {
@@ -46,7 +47,9 @@ function LogbookPAR() {
   const loadBranchData = useCallback(async () => {
     try {
       setBranchLoading(true)
-      const res = await fetch(API_URLS.par.branches, { credentials: 'include' })
+      const base = API_URLS.par.branches
+      const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
+      const res = await fetch(url, { credentials: 'include' })
       if (!res.ok) {
         throw new Error(`Failed to load branch data: ${res.status}`)
       }
@@ -58,12 +61,14 @@ function LogbookPAR() {
     } finally {
       setBranchLoading(false)
     }
-  }, [])
+  }, [country])
 
   const loadHistory = useCallback(async () => {
     try {
       setHistoryLoading(true)
-      const historyRes = await fetch(API_URLS.par.history, { credentials: 'include' })
+      const historyBase = API_URLS.par.history
+      const historyUrl = country ? `${historyBase}?country=${encodeURIComponent(country)}` : historyBase
+      const historyRes = await fetch(historyUrl, { credentials: 'include' })
       const historyData = await historyRes.json().catch(() => [])
       setHistory(Array.isArray(historyData) ? historyData : [])
     } catch (e) {
@@ -72,7 +77,7 @@ function LogbookPAR() {
     } finally {
       setHistoryLoading(false)
     }
-  }, [])
+  }, [country])
 
   const loadBorrowerData = useCallback(async () => {
     try {
@@ -80,7 +85,9 @@ function LogbookPAR() {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 second timeout
       
-      const res = await fetch(API_URLS.par.borrowerAccess, { 
+      const base = API_URLS.par.borrowerAccess
+      const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
+      const res = await fetch(url, { 
         credentials: 'include',
         signal: controller.signal
       })
@@ -112,7 +119,9 @@ function LogbookPAR() {
       setProgress({ current: 0, total: 0, branch: null, status: 'starting' })
 
       // Connect to SSE for progress updates
-      eventSource = new EventSource(API_URLS.par.progress, { withCredentials: true })
+      const progressBase = API_URLS.par.progress
+      const progressUrl = country ? `${progressBase}?country=${encodeURIComponent(country)}` : progressBase
+      eventSource = new EventSource(progressUrl, { withCredentials: true })
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
@@ -131,7 +140,9 @@ function LogbookPAR() {
       }
 
       // Trigger the snapshot
-      const res = await fetch(API_URLS.par.fetchSnapshot, { method: 'POST', credentials: 'include' })
+      const snapshotBase = API_URLS.par.fetchSnapshot
+      const snapshotUrl = country ? `${snapshotBase}?country=${encodeURIComponent(country)}` : snapshotBase
+      const res = await fetch(snapshotUrl, { method: 'POST', credentials: 'include' })
       if (!res.ok) {
         const error = await res.json().catch(() => ({}))
         throw new Error(error?.error || `Request failed (${res.status})`)
@@ -444,7 +455,7 @@ function LogbookPAR() {
               ) : (
                 <>
               <p className="text-2xl font-bold text-gray-900">
-                {latestOpenLoans != null ? formatKES(latestOpenLoans) : '—'}
+                {latestOpenLoans != null ? formatMoney(latestOpenLoans) : '—'}
               </p>
               {latestOpenLoans != null && (
                 <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
@@ -470,7 +481,7 @@ function LogbookPAR() {
               ) : (
                 <>
               <p className="text-2xl font-bold text-gray-900">
-                    {latestPastMissed != null ? formatKES(latestPastMissed) : '—'}
+                    {latestPastMissed != null ? formatMoney(latestPastMissed) : '—'}
               </p>
               {latestPastMissed != null && (
                 <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
@@ -519,10 +530,10 @@ function LogbookPAR() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatKES(branch.openLoans)}
+                          {formatMoney(branch.openLoans)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatKES(branch.pastMissed)}
+                          {formatMoney(branch.pastMissed)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <span
@@ -623,10 +634,10 @@ function LogbookPAR() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatKES(entry.openLoans)}
+                          {formatMoney(entry.openLoans)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatKES(entry.pastMissed)}
+                          {formatMoney(entry.pastMissed)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <span

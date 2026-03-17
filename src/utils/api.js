@@ -19,6 +19,9 @@ function resolveDefaultBase() {
 export const API_BASE = resolveDefaultBase()
 
 export const API_URLS = {
+  fx: {
+    rates: `${API_BASE}/api/fx/rates`,
+  },
   logbook: {
     disbursements: `${API_BASE}/api/logbook/disbursements`,
     collections: `${API_BASE}/api/logbook/collections`,
