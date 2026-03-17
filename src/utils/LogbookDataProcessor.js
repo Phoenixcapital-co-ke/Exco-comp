@@ -7,6 +7,7 @@ export class LogbookDataProcessor {
     this.country = country || null
     this.disbursementsData = null
     this.repaymentsData = null
+    this.branchNamesLoaded = false
     
     // Branch name mappings
     this.branchNames = {
@@ -17,6 +18,29 @@ export class LogbookDataProcessor {
       '75350': 'Thika Branch',
       '8550': 'TOWN BRANCH',
       '55886': 'Utawala Branch'
+    }
+  }
+
+  async loadBranchNames() {
+    if (this.branchNamesLoaded) return
+    try {
+      const base = API_URLS.branches.list
+      const url = this.country ? `${base}?country=${encodeURIComponent(this.country)}` : base
+      const res = await fetch(url, { credentials: 'include' })
+      if (!res.ok) {
+        this.branchNamesLoaded = true
+        return
+      }
+      const rows = await res.json().catch(() => [])
+      for (const r of Array.isArray(rows) ? rows : []) {
+        const code = String(r.code ?? '').trim()
+        const name = String(r.name ?? '').trim()
+        if (code && name) this.branchNames[code] = name
+      }
+    } catch {
+      // ignore
+    } finally {
+      this.branchNamesLoaded = true
     }
   }
 
@@ -120,6 +144,7 @@ export class LogbookDataProcessor {
   // Load disbursements data from backend API
   async loadDisbursementsData() {
     try {
+      await this.loadBranchNames()
       const baseUrl = API_URLS.logbook.disbursements
       const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const response = await fetch(url, { credentials: 'include' })
@@ -134,6 +159,7 @@ export class LogbookDataProcessor {
   // Load repayments data from backend API
   async loadRepaymentsData() {
     try {
+      await this.loadBranchNames()
       const baseUrl = API_URLS.logbook.collections
       const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const response = await fetch(url, { credentials: 'include' })
