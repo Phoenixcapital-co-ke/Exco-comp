@@ -219,7 +219,8 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     superuser: navigationItems.map((item) => item.id),
     admin: navigationItems.map((item) => item.id),
     manager: navigationItems.filter((item) => item.id !== 'data').map((item) => item.id),
-    logbook: ['logbook'],
+    // Logbook role: see all Logbook country sections (ids starting with 'logbook')
+    logbook: navigationItems.filter((item) => item.id.startsWith('logbook')).map((item) => item.id),
     zidisha: ['zidisha'],
     advans: ['advans'],
     boda: ['boda'],
