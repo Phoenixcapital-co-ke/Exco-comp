@@ -3890,8 +3890,9 @@ app.get('/api/par/branches', async (req, res) => {
 
     const latestTime = latestPar.time
 
-    // Return cached if same snapshot time (filtered per user/country)
-    if (parBranchesCache.time === latestPar.time && parBranchesCache.data) {
+    // Return cached if same snapshot time (only when not country-filtered)
+    // Country-filtered results depend on Logbook_Branches config and should not reuse global cache.
+    if (!countryParam && parBranchesCache.time === latestPar.time && parBranchesCache.data) {
       const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
       const data = !effectiveSet
         ? parBranchesCache.data
