@@ -34,16 +34,36 @@ function RequireAuth({ children, allowedRoles }) {
   const isAdmin = normalizedUserRole === 'admin'
   const isCustom = normalizedUserRole === 'custom'
 
+  const hasCustomPageAccess = (path, allowedPages) => {
+    if (allowedPages.includes(path)) return true
+    const m = String(path || '').match(/^\/logbook\/[^/]+\/([^/]+)$/)
+    if (m) {
+      const legacy = `/logbook/${m[1]}`
+      if (allowedPages.includes(legacy)) return true
+    }
+    return false
+  }
+
+  const toPreferredCustomPath = (path) => {
+    // Backward compatibility: old custom pages like /logbook/dashboard
+    // should map to the country-scoped default.
+    const m = String(path || '').match(/^\/logbook\/([^/]+)$/)
+    if (m) {
+      return `/logbook/kenya/${m[1]}`
+    }
+    return path
+  }
+
   // Check page-level permissions for custom role users
   if (isCustom) {
     const allowedPages = Array.isArray(user.allowedPages) ? user.allowedPages : []
     const currentPath = location.pathname
-    const hasPageAccess = allowedPages.includes(currentPath)
+    const hasPageAccess = hasCustomPageAccess(currentPath, allowedPages)
     
     if (!hasPageAccess) {
       // Redirect to first allowed page, or login if no pages
       if (allowedPages.length > 0) {
-        return <Navigate to={allowedPages[0]} replace />
+        return <Navigate to={toPreferredCustomPath(allowedPages[0])} replace />
       }
       return <Navigate to="/login" replace />
     }

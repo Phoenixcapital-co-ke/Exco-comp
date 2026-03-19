@@ -55,7 +55,7 @@ function LogbookProductivity({ country }) {
         if (borrowerRes.ok) {
           const data = await borrowerRes.json()
           setBorrowerData(Array.isArray(data) ? data : [])
-          setError(null)
+      setError(null)
         } else {
           throw new Error(`Failed to load borrower data (${borrowerRes.status})`)
         }
@@ -64,15 +64,15 @@ function LogbookProductivity({ country }) {
           const data = await salesRes.json()
           setSalesData(Array.isArray(data) ? data : [])
         }
-      } catch (e) {
+    } catch (e) {
         console.error('Error loading month/year data:', e)
-        setError(e.message)
-        setBorrowerData([])
+      setError(e.message)
+      setBorrowerData([])
         setSalesData([])
-      } finally {
-        setLoading(false)
-      }
+    } finally {
+      setLoading(false)
     }
+  }
     setLoading(true)
     loadMonthYearData()
   }, [selectedMonth, selectedYear, country])
