@@ -2172,14 +2172,56 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         }
       }
       
-      // Attach portfolio target to rows
-      rows = rows.map((r) => ({
-        ...r,
-        portfolioTarget: portfolioTargetMap.get(String(r.borrower_access_id || '').trim()) ?? null,
-      }))
+    // Attach portfolio target to rows
+    rows = rows.map((r) => ({
+      ...r,
+      portfolioTarget: portfolioTargetMap.get(String(r.borrower_access_id || '').trim()) ?? null,
+    }))
     } catch (e) {
       console.error('Error calculating portfolio target:', e.message)
       rows = rows.map((r) => ({ ...r, portfolioTarget: null }))
+    }
+
+    // For country-scoped requests, hide "irrelevant" officers:
+    // keep only officers that have either collections activity in the month or portfolio exposure in that country.
+    if (countryParam) {
+      const activeOfficerIds = new Set()
+      for (const r of rows) {
+        const id = String(r.borrower_access_id || '').trim()
+        if (!id) continue
+        const repaid = Number(r.total_repayment_amount) || 0
+        const tx = Number(r.transaction_count) || 0
+        if (repaid > 0 || tx > 0) activeOfficerIds.add(id)
+      }
+
+      // Add officers from latest PAR snapshot for the country branches
+      try {
+        const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+        const latestTime = latestPar?.time
+        if (latestTime && effectiveBranches.length > 0) {
+          const effectiveSet = new Set(effectiveBranches)
+          const openRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+          const missedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+          const addFromLoanData = (arr) => {
+            for (const row of arr) {
+              if (!effectiveSet.has(String(row.branch_code ?? '').trim())) continue
+              let loan
+              try { loan = JSON.parse(row.loan_data) } catch { continue }
+              const ids = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
+              for (const officerId of ids) {
+                const id = String(officerId || '').trim()
+                if (id) activeOfficerIds.add(id)
+              }
+            }
+          }
+          addFromLoanData(openRows)
+          addFromLoanData(missedRows)
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      rows = rows.filter((r) => activeOfficerIds.has(String(r.borrower_access_id || '').trim()))
     }
     
     res.json(rows);
