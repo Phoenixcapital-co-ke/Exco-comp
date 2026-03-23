@@ -120,6 +120,10 @@ export const API_URLS = {
   kajea: {
     stats: `${API_BASE}/api/kajea/stats`,
     clients: `${API_BASE}/api/kajea/clients`,
+    osVehicles: `${API_BASE}/api/kajea/os/vehicles`,
+    osParkingReport: `${API_BASE}/api/kajea/os/parking-report`,
+    osSyncRun: `${API_BASE}/api/kajea/os/sync/run`,
+    osSyncRuns: `${API_BASE}/api/kajea/os/sync/runs`,
   },
   hr: {
     employees: `${API_BASE}/api/hr/employees`,

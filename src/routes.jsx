@@ -30,6 +30,7 @@ import BodaPAR from './pages/boda/PAR.jsx'
 import BodaProductivity from './pages/boda/Productivity.jsx'
 
 import KajeaClients from './pages/kajea/Clients.jsx'
+import OSParkingReport from './pages/kajea/OSParkingReport.jsx'
 
 import InsuranceDashboard from './pages/insurance/Dashboard.jsx'
 import HRDashboard from './pages/hr/Dashboard.jsx'
@@ -198,6 +199,7 @@ function Routes() {
       
       {/* Kajea routes */}
       <Route path="/kajea/clients" element={<RequireAuth><KajeaClients /></RequireAuth>} />
+      <Route path="/kajea/os-parking-report" element={<RequireAuth><OSParkingReport /></RequireAuth>} />
       
       {/* Insurance routes */}
       <Route path="/insurance/dashboard" element={<RequireAuth><InsuranceDashboard /></RequireAuth>} />

@@ -123,6 +123,80 @@ dbRW.prepare(`
   )
 `).run();
 
+
+// Oversea durable local storage tables
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS oversea_vehicles (
+    product_id TEXT PRIMARY KEY,
+    db_id TEXT NOT NULL,
+    system_no TEXT,
+    model_id TEXT,
+    model TEXT,
+    imei TEXT,
+    group_id TEXT,
+    group_name TEXT,
+    company_id TEXT,
+    company_name TEXT,
+    phone_number1 TEXT,
+    object_id TEXT,
+    name TEXT,
+    owner_name TEXT,
+    owner_phone TEXT,
+    brand TEXT,
+    type TEXT,
+    iccid TEXT,
+    veh_id TEXT,
+    tot_id TEXT,
+    timezone TEXT,
+    server_ip TEXT,
+    tracker_status TEXT,
+    activate_time TEXT,
+    expire_date TEXT,
+    cexpire_date TEXT,
+    last_sync_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    source_payload TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_oversea_vehicles_db_id ON oversea_vehicles(db_id);
+  CREATE INDEX IF NOT EXISTS idx_oversea_vehicles_system_no ON oversea_vehicles(system_no);
+`);
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS oversea_parking_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id TEXT NOT NULL,
+    db_id TEXT NOT NULL,
+    plate_no TEXT,
+    parking_day TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    park_coordinates TEXT,
+    duration_text TEXT,
+    duration_minutes REAL,
+    park_address TEXT,
+    condition_type INTEGER NOT NULL DEFAULT 1,
+    source_hash TEXT NOT NULL,
+    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    source_payload TEXT,
+    UNIQUE(product_id, db_id, start_time, end_time, source_hash)
+  );
+  CREATE INDEX IF NOT EXISTS idx_oversea_parking_product_time ON oversea_parking_records(product_id, start_time);
+  CREATE INDEX IF NOT EXISTS idx_oversea_parking_day ON oversea_parking_records(parking_day);
+`);
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS oversea_sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    status TEXT NOT NULL,
+    vehicles_seen INTEGER DEFAULT 0,
+    records_inserted INTEGER DEFAULT 0,
+    records_updated INTEGER DEFAULT 0,
+    error_message TEXT
+  );
+`);
+
 // Loan Officers table (LOs)
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS LOs (
@@ -2064,10 +2138,17 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
       const latestTime = latestPar?.time
       if (latestTime) {
-        const openLoansRows = db.prepare('SELECT loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
         const portfolioMap = new Map()
+        const accountCountMap = new Map()
+        const effectiveSet = countryParam && effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
 
         for (const row of openLoansRows) {
+          const branchCode = String(row.branch_code || '').trim()
+          if (effectiveSet && (!branchCode || !effectiveSet.has(branchCode))) {
+            continue
+          }
+
           let loan
           try {
             loan = JSON.parse(row.loan_data)
@@ -2091,25 +2172,27 @@ app.get('/api/logbook/collector-performance', (req, res) => {
               ? rawPrincipal
               : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
 
-          if (principal === 0) continue
-
           for (const officerId of borrowerAccessIds) {
             const key = String(officerId || '').trim()
             if (!key) continue
-            portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
+            accountCountMap.set(key, (Number(accountCountMap.get(key)) || 0) + 1)
+            if (principal !== 0) {
+              portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
+            }
           }
         }
 
         rows = rows.map((r) => ({
           ...r,
           portfolio: portfolioMap.get(String(r.borrower_access_id || '').trim()) ?? 0,
+          accounts: accountCountMap.get(String(r.borrower_access_id || '').trim()) ?? 0,
         }))
       } else {
-        rows = rows.map((r) => ({ ...r, portfolio: 0 }))
+        rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0 }))
       }
     } catch (e) {
       console.error('Error attaching portfolio from Open_loans:', e.message)
-      rows = rows.map((r) => ({ ...r, portfolio: 0 }))
+      rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0 }))
     }
 
     // Calculate Portfolio Target: highest Open Loans on the last day of any month
@@ -3835,8 +3918,75 @@ app.post('/api/par/fetch', async (req, res) => {
 // Read PAR history
 app.get('/api/par', (req, res) => {
   try {
-    const rows = dbRW.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC').all()
-    res.json(rows)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : ''
+
+    // Default behavior (no country filter): return stored global totals.
+    if (!countryParam) {
+      const rows = dbRW.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC').all()
+      return res.json(rows)
+    }
+
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    if (!effectiveBranches || effectiveBranches.length === 0) {
+      return res.json([])
+    }
+
+    const latestPar = dbRW.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+    const latestTime = latestPar?.time || ''
+    const sortedBranches = [...effectiveBranches].map((b) => String(b || '').trim()).filter(Boolean).sort()
+    const cacheKey = `${latestTime}|${countryParam}|${sortedBranches.join(',')}`
+    if (parHistoryCountryCache.has(cacheKey)) {
+      return res.json(parHistoryCountryCache.get(cacheKey))
+    }
+
+    // Fast path: compute country history from pre-aggregated per-officer history table.
+    // This avoids scanning/parsing all loan-level records for every request.
+    const rows = dbRW
+      .prepare(`
+        SELECT snapshot_time, open_loans, past_missed, branches
+        FROM PAR_Borrower_Access_History
+        ORDER BY snapshot_time DESC
+      `)
+      .all()
+
+    const effectiveSet = new Set(sortedBranches)
+    const bySnapshot = new Map()
+
+    for (const row of rows) {
+      let branches = []
+      try {
+        const parsed = JSON.parse(row.branches || '[]')
+        branches = Array.isArray(parsed) ? parsed : []
+      } catch {
+        branches = []
+      }
+
+      if (!branches.length) continue
+      const intersects = branches.some((code) => effectiveSet.has(String(code || '').trim()))
+      if (!intersects) continue
+
+      const snapshot = String(row.snapshot_time || '').trim()
+      if (!snapshot) continue
+
+      const open = Number(row.open_loans) || 0
+      const missed = Number(row.past_missed) || 0
+
+      const existing = bySnapshot.get(snapshot) || { time: snapshot, Past_Arrears_missed: 0, Open_loans: 0 }
+      existing.Past_Arrears_missed += missed
+      existing.Open_loans += open
+      bySnapshot.set(snapshot, existing)
+    }
+
+    const result = Array.from(bySnapshot.values()).sort((a, b) => String(b.time).localeCompare(String(a.time)))
+
+    // Keep cache bounded to avoid unbounded memory growth.
+    parHistoryCountryCache.set(cacheKey, result)
+    if (parHistoryCountryCache.size > 50) {
+      const firstKey = parHistoryCountryCache.keys().next().value
+      if (firstKey) parHistoryCountryCache.delete(firstKey)
+    }
+
+    return res.json(result)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -3903,6 +4053,7 @@ app.post('/api/par/open', async (req, res) => {
 // Simple in-memory cache keyed by latest PAR time
 let parBranchesCache = { time: null, data: null }
 let parBorrowerAccessCache = { time: null, data: null }
+let parHistoryCountryCache = new Map()
 
 app.get('/api/par/branches', async (req, res) => {
   try {
@@ -4497,23 +4648,23 @@ app.get('/api/kajea/stats', (req, res) => {
       console.warn('[Kajea Stats] white_label table not found or error:', e.message)
     }
     
-    // Count unique owner_name from oversea_devices table (if exists)
+    // Count unique owner_name from oversea_vehicles table (if exists)
     try {
-      const result = db.prepare("SELECT COUNT(DISTINCT owner_name) as count FROM oversea_devices WHERE owner_name IS NOT NULL AND owner_name != ''").get()
+      const result = db.prepare("SELECT COUNT(DISTINCT owner_name) as count FROM oversea_vehicles WHERE owner_name IS NOT NULL AND owner_name != ''").get()
       uniqueOwners = Number(result?.count || 0)
     } catch (e) {
-      console.warn('[Kajea Stats] oversea_devices table not found or error:', e.message)
+      console.warn('[Kajea Stats] oversea_vehicles table not found or error:', e.message)
     }
     
     // Sum both to get total clients
     const clientCount = whiteLabelClientCount + uniqueOwners
     
-    // Count devices from both oversea_devices and Whitelabel_devices (if exist)
+    // Count devices from both oversea_vehicles and Whitelabel_devices (if exist)
     try {
-      const result = db.prepare('SELECT COUNT(*) as count FROM oversea_devices').get()
+      const result = db.prepare('SELECT COUNT(*) as count FROM oversea_vehicles').get()
       overseaDeviceCount = Number(result?.count || 0)
     } catch (e) {
-      console.warn('[Kajea Stats] oversea_devices table not found for device count:', e.message)
+      console.warn('[Kajea Stats] oversea_vehicles table not found for device count:', e.message)
     }
     
     try {
@@ -4527,7 +4678,7 @@ app.get('/api/kajea/stats', (req, res) => {
     
     // Get vehicle types from both tables (if exist)
     try {
-      const overseaTypes = db.prepare("SELECT DISTINCT type FROM oversea_devices WHERE type IS NOT NULL AND type != ''").all()
+      const overseaTypes = db.prepare("SELECT DISTINCT type FROM oversea_vehicles WHERE type IS NOT NULL AND type != ''").all()
       overseaTypes.forEach(row => {
         if (row.type) vehicleTypes.add(row.type)
       })
@@ -4544,9 +4695,9 @@ app.get('/api/kajea/stats', (req, res) => {
       console.warn('[Kajea Stats] Error fetching whitelabel vehicle types:', e.message)
     }
     
-    // Build client growth series based on activate_time from oversea_devices
+    // Build client growth series based on activate_time from oversea_vehicles
     try {
-      const rows = db.prepare("SELECT activate_time FROM oversea_devices WHERE activate_time IS NOT NULL AND activate_time != ''").all()
+      const rows = db.prepare("SELECT activate_time FROM oversea_vehicles WHERE activate_time IS NOT NULL AND activate_time != ''").all()
       const byMonth = new Map()
       for (const row of rows) {
         const raw = String(row.activate_time || '').trim()
@@ -4590,6 +4741,564 @@ app.get('/api/kajea/stats', (req, res) => {
     })
   } catch (e) {
     console.error('[Kajea Stats] Unexpected error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Oversea Tracking helpers and local long-term store for OS-Parking report
+const OVERSEA_API_URL = 'http://api.overseetracking.com/WebProcessorApi.ashx'
+const OVERSEA_LANGUAGE_TYPE = '2B72ABC6-19D7-4653-AAEE-0BE542026D46'
+const OVERSEA_USERNAME = process.env.OVERSEA_USERNAME || 'GREGORY NYAMAO '
+const OVERSEA_PASSWORD = process.env.OVERSEA_PASSWORD || 'NYAMAO@3077'
+
+let overseaSyncInProgress = false
+
+function parseDurationMinutes(durationText) {
+  const text = String(durationText || '').trim()
+  if (!text) return null
+  const parts = text.split(':').map((x) => Number(x))
+  if (parts.some((n) => Number.isNaN(n))) return null
+  if (parts.length == 3) return (parts[0] * 60) + parts[1] + (parts[2] / 60)
+  if (parts.length == 2) return parts[0] + (parts[1] / 60)
+  return null
+}
+
+function normalizeOverseaDateTime(day, timeValue) {
+  const d = String(day || '').trim()
+  const t = String(timeValue || '').trim()
+  if (!d || !t) return null
+  const iso = `${d}T${t}`
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return null
+  const normalized = iso.length == 16 ? `${iso}:00` : iso
+  return normalized.replace('T', ' ')
+}
+
+function overseaSourceHash(row) {
+  const base = [
+    row.productId || '',
+    row.dbId || '',
+    row.startTime || '',
+    row.endTime || '',
+    row.parkCoordinates || '',
+    row.duration || '',
+  ].join('|')
+  return crypto.createHash('sha256').update(base).digest('hex')
+}
+
+async function overseaSignIn() {
+  const params = new URLSearchParams()
+  params.append('Token', '')
+  params.append('InformationType', 'User')
+  params.append('OperationType', 'SignIn')
+  params.append('LanguageType', OVERSEA_LANGUAGE_TYPE)
+  params.append('Arguments', JSON.stringify({ UserName: OVERSEA_USERNAME, Password: OVERSEA_PASSWORD }))
+  params.append('PageArguments', JSON.stringify({ PageSize: 1, PageIndex: 1 }))
+
+  const resp = await fetch(OVERSEA_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: '*/*',
+      Origin: 'http://www.overseetracking.com',
+      Referer: 'http://www.overseetracking.com/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PhoenixDashboard/1.0',
+    },
+    body: params.toString(),
+  })
+
+  const text = await resp.text()
+  let json
+  try {
+    json = JSON.parse(text)
+  } catch {
+    throw new Error(`Oversea sign-in parse failed (${resp.status}): ${(text || '').slice(0, 180)}`)
+  }
+  if (!json || json.State !== '0' || !json.Token) {
+    throw new Error(json?.Error || 'Oversea sign-in failed')
+  }
+  return json.Token
+}
+
+async function overseaRequest(token, informationType, operationType, args, pageArgs = null, useFormData = false) {
+  const headers = {
+    Accept: '*/*',
+    Origin: 'http://www.overseetracking.com',
+    Referer: 'http://www.overseetracking.com/',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PhoenixDashboard/1.0',
+  }
+
+  let body
+  if (useFormData) {
+    const form = new FormData()
+    form.append('Token', token)
+    form.append('InformationType', informationType)
+    form.append('OperationType', operationType)
+    form.append('LanguageType', OVERSEA_LANGUAGE_TYPE)
+    form.append('Arguments', JSON.stringify(args || {}))
+    if (pageArgs) form.append('PageArguments', JSON.stringify(pageArgs))
+    body = form
+  } else {
+    const params = new URLSearchParams()
+    params.append('Token', token)
+    params.append('InformationType', informationType)
+    params.append('OperationType', operationType)
+    params.append('LanguageType', OVERSEA_LANGUAGE_TYPE)
+    params.append('Arguments', JSON.stringify(args || {}))
+    if (pageArgs) params.append('PageArguments', JSON.stringify(pageArgs))
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+    body = params.toString()
+  }
+
+  const resp = await fetch(OVERSEA_API_URL, { method: 'POST', headers, body })
+  const text = await resp.text()
+  let json
+  try {
+    json = JSON.parse((text || '').trim() || '{}')
+  } catch {
+    throw new Error(`Oversea ${operationType} parse failed (${resp.status}): ${(text || '').slice(0, 180)}`)
+  }
+  if (!json || json.State !== '0') {
+    throw new Error(json?.Error || `Oversea ${operationType} failed (State=${json?.State ?? 'unknown'})`)
+  }
+  return json
+}
+
+function normalizeTracker(t) {
+  return {
+    productId: t.ProductID || '',
+    dbId: t.DbID || '',
+    systemNo: t.SystemNo || '',
+    modelId: t.ModelID || '',
+    model: t.Model || '',
+    imei: t.IMEI || '',
+    groupId: t.GroupID || '',
+    groupName: t.GroupName || '',
+    companyId: t.CompanyID || '',
+    companyName: t.CompanyName || '',
+    phoneNumber1: t.PhoneNumber1 || '',
+    objectId: t.ObjectID || '',
+    name: t.Name || '',
+    ownerName: t.OwnerName || '',
+    ownerPhone: t.OwnerPhone || '',
+    brand: t.Brand || '',
+    type: t.Type || '',
+    iccid: t.ICCID || '',
+    vehId: t.VehID || '',
+    totId: t.TotID || '',
+    timezone: t.Timezone || '',
+    serverIp: t.ServerIP || '',
+    trackerStatus: t.TrackerStatus || '',
+    activateTime: t.ActivateTime || '',
+    expireDate: t.ExpireDate || '',
+    cexpireDate: t.CExpireDate || '',
+    raw: t,
+  }
+}
+
+const upsertOverseaVehicleStmt = dbRW.prepare(`
+  INSERT INTO oversea_vehicles (
+    product_id, db_id, system_no, model_id, model, imei, group_id, group_name, company_id, company_name,
+    phone_number1, object_id, name, owner_name, owner_phone, brand, type, iccid, veh_id, tot_id, timezone,
+    server_ip, tracker_status, activate_time, expire_date, cexpire_date, last_sync_at, source_payload
+  ) VALUES (
+    @product_id, @db_id, @system_no, @model_id, @model, @imei, @group_id, @group_name, @company_id, @company_name,
+    @phone_number1, @object_id, @name, @owner_name, @owner_phone, @brand, @type, @iccid, @veh_id, @tot_id, @timezone,
+    @server_ip, @tracker_status, @activate_time, @expire_date, @cexpire_date, CURRENT_TIMESTAMP, @source_payload
+  )
+  ON CONFLICT(product_id) DO UPDATE SET
+    db_id=excluded.db_id,
+    system_no=excluded.system_no,
+    model_id=excluded.model_id,
+    model=excluded.model,
+    imei=excluded.imei,
+    group_id=excluded.group_id,
+    group_name=excluded.group_name,
+    company_id=excluded.company_id,
+    company_name=excluded.company_name,
+    phone_number1=excluded.phone_number1,
+    object_id=excluded.object_id,
+    name=excluded.name,
+    owner_name=excluded.owner_name,
+    owner_phone=excluded.owner_phone,
+    brand=excluded.brand,
+    type=excluded.type,
+    iccid=excluded.iccid,
+    veh_id=excluded.veh_id,
+    tot_id=excluded.tot_id,
+    timezone=excluded.timezone,
+    server_ip=excluded.server_ip,
+    tracker_status=excluded.tracker_status,
+    activate_time=excluded.activate_time,
+    expire_date=excluded.expire_date,
+    cexpire_date=excluded.cexpire_date,
+    last_sync_at=CURRENT_TIMESTAMP,
+    source_payload=excluded.source_payload
+`)
+
+const insertParkingStmt = dbRW.prepare(`
+  INSERT OR IGNORE INTO oversea_parking_records (
+    product_id, db_id, plate_no, parking_day, start_time, end_time, park_coordinates,
+    duration_text, duration_minutes, park_address, condition_type, source_hash, source_payload
+  ) VALUES (
+    @product_id, @db_id, @plate_no, @parking_day, @start_time, @end_time, @park_coordinates,
+    @duration_text, @duration_minutes, @park_address, @condition_type, @source_hash, @source_payload
+  )
+`)
+
+const insertSyncRunStmt = dbRW.prepare(
+  `INSERT INTO oversea_sync_runs (job_name, started_at, status) VALUES (?, ?, 'running')`
+)
+
+const finishSyncRunStmt = dbRW.prepare(`
+  UPDATE oversea_sync_runs
+  SET ended_at = ?, status = ?, vehicles_seen = ?, records_inserted = ?, records_updated = ?, error_message = ?
+  WHERE id = ?
+`)
+
+async function fetchOverseaTrackers(token) {
+  const json = await overseaRequest(
+    token,
+    'Product',
+    'GetMyTracker',
+    { TrackerType: '1' },
+    { PageSize: 500, PageIndex: 1 },
+    false,
+  )
+  const trackers = Array.isArray(json?.Data?.Tracker) ? json.Data.Tracker : []
+  return trackers.map(normalizeTracker).filter((v) => v.productId && v.dbId)
+}
+
+async function fetchParkingRows(token, vehicle, startTime, endTime, conditionType = 1, minDuration = 0, pageSize = 500) {
+  const args = {
+    ConditionType: String(conditionType),
+    MinDuration: String(minDuration),
+    ProductID: String(vehicle.productId),
+    DbID: String(vehicle.dbId),
+    StartTime: String(startTime),
+    EndTime: String(endTime),
+  }
+
+  const all = []
+  let pageIndex = 1
+  let totalPages = 1
+
+  while (pageIndex <= totalPages) {
+    let json
+    try {
+      json = await overseaRequest(token, 'ParkingRecord', 'Query', args, { PageSize: pageSize, PageIndex: pageIndex }, true)
+    } catch (err) {
+      if (pageIndex == 1) {
+        json = await overseaRequest(token, 'ParkingRecord', 'Query', args, null, true)
+      } else {
+        throw err
+      }
+    }
+
+    const rows = Array.isArray(json?.Data?.ParkingRecord)
+      ? json.Data.ParkingRecord
+      : Array.isArray(json?.Data?.Record)
+        ? json.Data.Record
+        : Array.isArray(json?.Data)
+          ? json.Data
+          : []
+
+    all.push(...rows)
+    const apiTotalPages = Number(json?.TotalPage || 0)
+    if (apiTotalPages > 0) {
+      totalPages = apiTotalPages
+      if (pageIndex >= totalPages) break
+      pageIndex += 1
+    } else {
+      break
+    }
+  }
+
+  return all
+}
+
+function mapParkingRow(vehicle, row, conditionType) {
+  const productId = row.ProductID || vehicle.productId
+  const dbId = row.DbID || vehicle.dbId
+  const day = String(row.Day || '').trim()
+  const startTime = row.StartTime || row.StartDateTime || row.Start || row.beginTime || ''
+  const endTime = row.EndTime || row.EndDateTime || row.End || row.stopTime || ''
+  const normalizedStart = normalizeOverseaDateTime(day, startTime)
+  const normalizedEnd = normalizeOverseaDateTime(day, endTime)
+  const duration = row.Duration || row.DurationTime || row.ParkTime || ''
+
+  const normalized = {
+    productId,
+    dbId,
+    plateNo: row.PlateNO || '',
+    day,
+    startTime: normalizedStart || startTime || null,
+    endTime: normalizedEnd || endTime || null,
+    parkCoordinates: row.ParkCoordinates || '',
+    duration,
+    parkAddress: row.ParkAddress || '',
+    isTotalCount: String(row.IsTotalCount || ''),
+    dayResultRowCount: row.DayResultRowCount || '',
+    totalResultRowCount: row.TotalResultRowCount || '',
+    conditionType: Number(conditionType || 1),
+    raw: row,
+  }
+  return { ...normalized, sourceHash: overseaSourceHash(normalized) }
+}
+
+function upsertVehicles(vehicles) {
+  const tx = dbRW.transaction((rows) => {
+    for (const v of rows) {
+      upsertOverseaVehicleStmt.run({
+        product_id: v.productId,
+        db_id: v.dbId,
+        system_no: v.systemNo,
+        model_id: v.modelId,
+        model: v.model,
+        imei: v.imei,
+        group_id: v.groupId,
+        group_name: v.groupName,
+        company_id: v.companyId,
+        company_name: v.companyName,
+        phone_number1: v.phoneNumber1,
+        object_id: v.objectId,
+        name: v.name,
+        owner_name: v.ownerName,
+        owner_phone: v.ownerPhone,
+        brand: v.brand,
+        type: v.type,
+        iccid: v.iccid,
+        veh_id: v.vehId,
+        tot_id: v.totId,
+        timezone: v.timezone,
+        server_ip: v.serverIp,
+        tracker_status: v.trackerStatus,
+        activate_time: v.activateTime,
+        expire_date: v.expireDate,
+        cexpire_date: v.cexpireDate,
+        source_payload: JSON.stringify(v.raw || {}),
+      })
+    }
+  })
+  tx(vehicles)
+}
+
+function insertParkingRows(rows) {
+  let inserted = 0
+  const tx = dbRW.transaction((records) => {
+    for (const r of records) {
+      const res = insertParkingStmt.run({
+        product_id: r.productId,
+        db_id: r.dbId,
+        plate_no: r.plateNo || null,
+        parking_day: r.day || null,
+        start_time: r.startTime || null,
+        end_time: r.endTime || null,
+        park_coordinates: r.parkCoordinates || null,
+        duration_text: r.duration || null,
+        duration_minutes: parseDurationMinutes(r.duration),
+        park_address: r.parkAddress || null,
+        condition_type: Number(r.conditionType || 1),
+        source_hash: r.sourceHash,
+        source_payload: JSON.stringify(r.raw || {}),
+      })
+      if (res.changes > 0) inserted += 1
+    }
+  })
+  tx(rows)
+  return inserted
+}
+
+function formatNairobiDateTime(dt) {
+  const d = dt instanceof Date ? dt : new Date(dt)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+async function runOverseaSync({ jobName = 'nightly_incremental', lookbackDays = 3, conditionType = 1, minDuration = 0 } = {}) {
+  if (overseaSyncInProgress) {
+    return { skipped: true, reason: 'sync already in progress' }
+  }
+
+  overseaSyncInProgress = true
+  const startedAtText = new Date().toISOString()
+  const runId = insertSyncRunStmt.run(jobName, startedAtText).lastInsertRowid
+
+  let vehiclesSeen = 0
+  let recordsInserted = 0
+  const recordsUpdated = 0
+
+  try {
+    const token = await overseaSignIn()
+    const vehicles = await fetchOverseaTrackers(token)
+    vehiclesSeen = vehicles.length
+    upsertVehicles(vehicles)
+
+    if (Number(lookbackDays) > 0) {
+      const end = new Date()
+      end.setHours(23, 59, 59, 0)
+      const start = new Date(end)
+      start.setDate(start.getDate() - Number(lookbackDays))
+      start.setHours(0, 0, 0, 0)
+
+      for (const vehicle of vehicles) {
+        const rawRows = await fetchParkingRows(
+          token,
+          vehicle,
+          formatNairobiDateTime(start),
+          formatNairobiDateTime(end),
+          conditionType,
+          minDuration,
+        )
+        if (!rawRows.length) continue
+        const mapped = rawRows.map((r) => mapParkingRow(vehicle, r, conditionType))
+        recordsInserted += insertParkingRows(mapped)
+      }
+    }
+
+    finishSyncRunStmt.run(new Date().toISOString(), 'success', vehiclesSeen, recordsInserted, recordsUpdated, null, runId)
+    return { status: 'success', jobName, vehiclesSeen, recordsInserted, recordsUpdated }
+  } catch (e) {
+    finishSyncRunStmt.run(new Date().toISOString(), 'failed', vehiclesSeen, recordsInserted, recordsUpdated, e.message, runId)
+    throw e
+  } finally {
+    overseaSyncInProgress = false
+  }
+}
+
+async function ensureInitialOverseaBackfill() {
+  try {
+    const row = db.prepare('SELECT COUNT(1) AS c FROM oversea_parking_records').get()
+    const count = Number(row?.c || 0)
+    if (count > 0) return
+    console.log('[OVERSEA] No local parking records found. Running initial 90-day backfill...')
+    await runOverseaSync({ jobName: 'initial_backfill', lookbackDays: 90, conditionType: 1, minDuration: 0 })
+    console.log('[OVERSEA] Initial 90-day backfill completed.')
+  } catch (e) {
+    console.error('[OVERSEA] Initial backfill failed:', e.message)
+  }
+}
+
+app.get('/api/kajea/os/vehicles', async (req, res) => {
+  try {
+    const refresh = String(req.query.refresh || '') == '1'
+    if (refresh) {
+      await runOverseaSync({ jobName: 'manual_vehicle_refresh', lookbackDays: 0 })
+    }
+
+    const rows = db.prepare(`
+      SELECT product_id, db_id, name, system_no, imei, model, owner_name, owner_phone, brand, activate_time, source_payload
+      FROM oversea_vehicles
+      ORDER BY name COLLATE NOCASE, product_id
+    `).all()
+
+    const vehicles = rows.map((r) => {
+      let raw = {}
+      try {
+        raw = JSON.parse(r.source_payload || '{}')
+      } catch {
+        raw = {}
+      }
+      return {
+        productId: r.product_id,
+        dbId: r.db_id,
+        name: r.name || '',
+        systemNo: r.system_no || '',
+        imei: r.imei || '',
+        model: r.model || '',
+        ownerName: r.owner_name || '',
+        ownerPhone: r.owner_phone || '',
+        brand: r.brand || '',
+        activateTime: r.activate_time || '',
+        raw,
+      }
+    })
+
+    res.json({ vehicles, source: 'db' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/kajea/os/parking-report', async (req, res) => {
+  try {
+    const { productId, dbId, startTime, endTime, includeTotals = '1' } = req.query
+    const p = String(productId || '').trim()
+    const d = String(dbId || '').trim()
+    const start = String(startTime || '').trim()
+    const end = String(endTime || '').trim()
+
+    if (!p || !d || !start || !end) {
+      return res.status(400).json({ error: 'productId, dbId, startTime, endTime are required' })
+    }
+
+    const rows = db.prepare(`
+      SELECT *
+      FROM oversea_parking_records
+      WHERE product_id = ?
+        AND db_id = ?
+        AND COALESCE(start_time, '') >= ?
+        AND COALESCE(start_time, '') <= ?
+      ORDER BY COALESCE(start_time, ''), id
+    `).all(p, d, start, end)
+
+    const records = rows
+      .map((r) => {
+        let raw = {}
+        try {
+          raw = JSON.parse(r.source_payload || '{}')
+        } catch {
+          raw = {}
+        }
+        const isTotalCount = String(raw.IsTotalCount || '')
+        return {
+          startTime: r.start_time || '',
+          endTime: r.end_time || '',
+          duration: r.duration_text || '',
+          address: r.park_address || '',
+          productId: r.product_id || '',
+          plateNo: r.plate_no || '',
+          day: r.parking_day || '',
+          parkCoordinates: r.park_coordinates || '',
+          isTotalCount,
+          dayResultRowCount: raw.DayResultRowCount || '',
+          totalResultRowCount: raw.TotalResultRowCount || '',
+          parkAddress: r.park_address || raw.ParkAddress || '',
+          raw,
+        }
+      })
+      .filter((r) => includeTotals == '1' || String(r.isTotalCount || '') != '1')
+
+    res.json({ records, raw: { source: 'db', count: records.length } })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/kajea/os/sync/run', async (req, res) => {
+  try {
+    const lookbackDays = Number(req.body?.lookbackDays || 3)
+    const conditionType = Number(req.body?.conditionType || 1)
+    const minDuration = Number(req.body?.minDuration || 0)
+    const jobName = String(req.body?.jobName || 'manual_sync')
+    const result = await runOverseaSync({ jobName, lookbackDays, conditionType, minDuration })
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/kajea/os/sync/runs', (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 200)
+    const runs = db.prepare(`
+      SELECT id, job_name, started_at, ended_at, status, vehicles_seen, records_inserted, records_updated, error_message
+      FROM oversea_sync_runs
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit)
+    res.json({ runs, inProgress: overseaSyncInProgress })
+  } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
@@ -4671,7 +5380,7 @@ app.get('/api/kajea/clients', (req, res) => {
     try {
       const rows = db.prepare(`
         SELECT owner_name, COUNT(*) AS devices, COUNT(DISTINCT brand) AS vehicleTypes, MAX(activate_time) AS lastActivate
-        FROM oversea_devices
+        FROM oversea_vehicles
         WHERE owner_name IS NOT NULL AND owner_name != ''
         GROUP BY owner_name
       `).all()
@@ -4683,7 +5392,7 @@ app.get('/api/kajea/clients', (req, res) => {
         })
       })
     } catch (e) {
-      console.warn('[Kajea Clients] Error aggregating oversea_devices:', e.message)
+      console.warn('[Kajea Clients] Error aggregating oversea_vehicles:', e.message)
     }
     
     // Get clients from white_label table
@@ -4705,9 +5414,9 @@ app.get('/api/kajea/clients', (req, res) => {
       console.warn('[Kajea Clients] white_label table not found or error:', e.message)
     }
     
-    // Get unique owners from oversea_devices table
+    // Get unique owners from oversea_vehicles table
     try {
-      const overseaOwners = db.prepare("SELECT DISTINCT owner_name FROM oversea_devices WHERE owner_name IS NOT NULL AND owner_name != '' ORDER BY owner_name").all()
+      const overseaOwners = db.prepare("SELECT DISTINCT owner_name FROM oversea_vehicles WHERE owner_name IS NOT NULL AND owner_name != '' ORDER BY owner_name").all()
       overseaOwners.forEach(row => {
         const agg = overseaDeviceAgg.get(row.owner_name) || { devices: 0, vehicleTypes: 0, lastActivate: null }
         clients.push({
@@ -4721,7 +5430,7 @@ app.get('/api/kajea/clients', (req, res) => {
         })
       })
     } catch (e) {
-      console.warn('[Kajea Clients] oversea_devices table not found or error:', e.message)
+      console.warn('[Kajea Clients] oversea_vehicles table not found or error:', e.message)
     }
     
     // Sort by name
@@ -4835,23 +5544,16 @@ cron.schedule('0 0 * * *', async () => {
   timezone: 'Africa/Nairobi'
 })
 
-// Every 30 minutes: fetch Oversea devices
-cron.schedule('*/30 * * * *', () => {
-  console.log(`[CRON] Running scheduled Oversea devices fetch at ${new Date().toISOString()}`)
-  const proc = spawn('node', ['scripts/fetch_oversea_devices.mjs'], { cwd: process.cwd(), shell: true })
-  proc.stdout.on('data', (chunk) => {
-    console.log(`[OVERSEA-CRON-OUT] ${chunk.toString().trimEnd()}`)
-  })
-  proc.stderr.on('data', (chunk) => {
-    console.error(`[OVERSEA-CRON-ERR] ${chunk.toString().trimEnd()}`)
-  })
-  proc.on('close', (code) => {
-    console.log(`[CRON] Oversea devices fetch completed with code ${code}`)
+// Daily at 23:00 Nairobi: sync Oversea vehicles + parking incrementally
+cron.schedule('0 23 * * *', async () => {
+  console.log(`[CRON] Running scheduled Oversea parking sync at ${new Date().toISOString()}`)
+  try {
+    const result = await runOverseaSync({ jobName: 'nightly_incremental', lookbackDays: 3, conditionType: 1, minDuration: 0 })
+    console.log(`[CRON] Oversea parking sync completed: vehicles=${result.vehiclesSeen}, inserted=${result.recordsInserted}`)
     events.emit('kajea_data_updated')
-  })
-  proc.on('error', (err) => {
-    console.error('[CRON] Oversea devices fetch failed to start:', err.message)
-  })
+  } catch (err) {
+    console.error('[CRON] Oversea parking sync failed:', err.message)
+  }
 }, {
   scheduled: true,
   timezone: 'Africa/Nairobi'
@@ -4919,6 +5621,10 @@ if (isProduction) {
     console.warn('Production mode enabled but dist/ folder not found. Run "npm run build" first.')
   }
 }
+
+setTimeout(() => {
+  ensureInitialOverseaBackfill()
+}, 15000)
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on http://0.0.0.0:${PORT}`)

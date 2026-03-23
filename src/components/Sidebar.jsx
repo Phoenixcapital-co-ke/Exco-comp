@@ -13,6 +13,7 @@ import {
   TrendingUp,
   AlertTriangle,
   Activity,
+  Car,
   LogOut,
   Target,
   PieChart,
@@ -105,7 +106,8 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       label: 'Kajea - Tech',
       icon: Cpu,
       items: [
-        { path: '/kajea/clients', label: 'Number of Clients', icon: Users }
+        { path: '/kajea/clients', label: 'Number of Clients', icon: Users },
+        { path: '/kajea/os-parking-report', label: 'OS-Parking report', icon: Car }
       ]
     },
     {
@@ -185,18 +187,6 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const roleKey = String(user?.role || '').toLowerCase()
   const isCustom = roleKey === 'custom'
   const allowedPages = Array.isArray(user?.allowedPages) ? user.allowedPages : []
-
-  // Backward-compatible custom permission check:
-  // if user has legacy /logbook/<page> access, allow /logbook/<country>/<page>.
-  const hasCustomPageAccess = (path) => {
-    if (allowedPages.includes(path)) return true
-    const m = String(path || '').match(/^\/logbook\/[^/]+\/([^/]+)$/)
-    if (m) {
-      const legacy = `/logbook/${m[1]}`
-      if (allowedPages.includes(legacy)) return true
-    }
-    return false
-  }
   
   let filteredNavigation = []
   
@@ -206,7 +196,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       const filteredItems = section.items.map(item => {
         if (item.type === 'subsection') {
           // Filter subsection items
-          const allowedSubItems = item.items.filter(subItem => hasCustomPageAccess(subItem.path))
+          const allowedSubItems = item.items.filter(subItem => allowedPages.includes(subItem.path))
           if (allowedSubItems.length === 0) return null
           return {
             ...item,
@@ -214,7 +204,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
           }
         } else {
           // Regular item - check if allowed
-          return hasCustomPageAccess(item.path) ? item : null
+          return allowedPages.includes(item.path) ? item : null
         }
       }).filter(Boolean)
       
