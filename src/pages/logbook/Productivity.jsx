@@ -341,6 +341,10 @@ function LogbookProductivity({ country }) {
     filteredBorrowerData.reduce((sum, item) => sum + (Number(item.accounts) || 0), 0),
     [filteredBorrowerData]
   )
+  const totalCustomers = useMemo(() =>
+    filteredBorrowerData.reduce((sum, item) => sum + (Number(item.customers) || 0), 0),
+    [filteredBorrowerData]
+  )
   
   // Calculate total collection - use borrowerData first (faster), fallback to repaymentsProcessor if needed
   const totalRepayment = useMemo(() => {
@@ -692,6 +696,7 @@ function LogbookProductivity({ country }) {
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Accounts</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Customers</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Portfolio</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Repayment Amount</th>
@@ -704,6 +709,7 @@ function LogbookProductivity({ country }) {
                   const targetVal = Number(item.target) || 0
                   const repaymentVal = Number(item.total_repayment_amount) || 0
                   const accountsVal = Number(item.accounts) || 0
+                  const customersVal = Number(item.customers) || 0
                   // Use branch-specific portfolio from staffParData instead of aggregated item.portfolio
                   const portfolioVal = portfolioMap.get(String(item.borrower_access_id || '')) || 0
                   const portfolioTargetVal = Number(item.portfolioTarget) || 0
@@ -802,6 +808,9 @@ function LogbookProductivity({ country }) {
                         {accountsVal.toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                        {customersVal.toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                         {formatMoney(portfolioVal)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
@@ -819,7 +828,7 @@ function LogbookProductivity({ country }) {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50">
-                          <td colSpan={7} className="px-6 py-6">
+                          <td colSpan={8} className="px-6 py-6">
                             <div className="bg-white rounded-lg border border-gray-200 p-6">
                               <h4 className="text-lg font-semibold text-gray-900 mb-6">Performance Breakdown</h4>
                               
@@ -1037,6 +1046,7 @@ function LogbookProductivity({ country }) {
                   <tr>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900">Total</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{totalAccounts.toLocaleString()}</td>
+                    <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{totalCustomers.toLocaleString()}</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalPortfolio)}</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalTarget)}</td>
                     <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatMoney(totalRepayment)}</td>

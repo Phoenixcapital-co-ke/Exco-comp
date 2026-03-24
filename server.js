@@ -2141,6 +2141,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
         const portfolioMap = new Map()
         const accountCountMap = new Map()
+        const customerSetMap = new Map()
         const effectiveSet = countryParam && effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
 
         for (const row of openLoansRows) {
@@ -2172,27 +2173,48 @@ app.get('/api/logbook/collector-performance', (req, res) => {
               ? rawPrincipal
               : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
 
+          const borrowerNo = String(
+            loan.borrower_no ??
+            loan.BorrowerNo ??
+            loan.borrower_number ??
+            loan.BorrowerNumber ??
+            loan['Borrower No'] ??
+            ''
+          ).trim()
+
           for (const officerId of borrowerAccessIds) {
             const key = String(officerId || '').trim()
             if (!key) continue
             accountCountMap.set(key, (Number(accountCountMap.get(key)) || 0) + 1)
+
+            if (!customerSetMap.has(key)) {
+              customerSetMap.set(key, new Set())
+            }
+            if (borrowerNo) {
+              customerSetMap.get(key).add(borrowerNo)
+            }
+
             if (principal !== 0) {
               portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
             }
           }
         }
 
-        rows = rows.map((r) => ({
-          ...r,
-          portfolio: portfolioMap.get(String(r.borrower_access_id || '').trim()) ?? 0,
-          accounts: accountCountMap.get(String(r.borrower_access_id || '').trim()) ?? 0,
-        }))
+        rows = rows.map((r) => {
+          const idKey = String(r.borrower_access_id || '').trim()
+          return {
+            ...r,
+            portfolio: portfolioMap.get(idKey) ?? 0,
+            accounts: accountCountMap.get(idKey) ?? 0,
+            customers: customerSetMap.get(idKey)?.size ?? 0,
+          }
+        })
       } else {
-        rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0 }))
+        rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0, customers: 0 }))
       }
     } catch (e) {
       console.error('Error attaching portfolio from Open_loans:', e.message)
-      rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0 }))
+      rows = rows.map((r) => ({ ...r, portfolio: 0, accounts: 0, customers: 0 }))
     }
 
     // Calculate Portfolio Target: highest Open Loans on the last day of any month
