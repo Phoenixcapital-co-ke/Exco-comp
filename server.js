@@ -2178,7 +2178,12 @@ app.get('/api/logbook/collector-performance', (req, res) => {
             loan.BorrowerNo ??
             loan.borrower_number ??
             loan.BorrowerNumber ??
+            loan.borrower_id ??
+            loan.BorrowerID ??
             loan['Borrower No'] ??
+            loan['Borrower ID'] ??
+            loan.client_id ??
+            loan.ClientID ??
             ''
           ).trim()
 
