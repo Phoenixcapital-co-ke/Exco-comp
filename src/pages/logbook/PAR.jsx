@@ -305,7 +305,8 @@ function LogbookPAR({ country }) {
     
     if (!monthData.length) return []
     
-    // Group by day and get latest entry for each day
+    // Group by day and get the latest *valid* entry for each day.
+    // Occasionally a snapshot can be partial (e.g., openLoans = 0) which would create a false dip.
     const dayMap = new Map()
     for (const entry of monthData) {
       const timeStr = entry.time || entry.Time
@@ -320,8 +321,14 @@ function LogbookPAR({ country }) {
         dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
       } else {
         const existing = dayMap.get(dayKey)
-        // Keep the latest entry for the day
-        if (entryDate > existing.time) {
+        // Prefer the latest valid entry (openLoans > 0). Only replace a valid existing
+        // with another valid one that is later, or replace an invalid existing with a valid one.
+        const existingValid = Number(existing.openLoans) > 0
+        const currentValid = openLoans > 0
+        if (currentValid && (!existingValid || entryDate > existing.time)) {
+          dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
+        } else if (!existingValid && !currentValid && entryDate > existing.time) {
+          // Both invalid: still keep the latest so the UI is deterministic.
           dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
         }
       }
