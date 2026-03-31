@@ -122,6 +122,8 @@ function createDb() {
       country TEXT,
       postal_code TEXT,
       zip_code TEXT,
+      seen_in_last_sync INTEGER DEFAULT 0,
+      last_seen_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -211,7 +213,7 @@ function insertOrUpdateEmployee(db, employeeData) {
         contract_start, contract_end, residential_status, gender, date_of_birth,
         id_no, pin, telephone, official_email, personal_email,
         address_1, address_2, city, state_province_county, country, postal_code, zip_code,
-        updated_at
+        seen_in_last_sync, last_seen_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(employee_id) DO UPDATE SET
         employee_number = excluded.employee_number,
@@ -243,6 +245,8 @@ function insertOrUpdateEmployee(db, employeeData) {
         country = excluded.country,
         postal_code = excluded.postal_code,
         zip_code = excluded.zip_code,
+        seen_in_last_sync = 1,
+        last_seen_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
     `)
     
@@ -276,7 +280,8 @@ function insertOrUpdateEmployee(db, employeeData) {
       stateProvinceCounty,
       country,
       postalCode,
-      zipCode
+      zipCode,
+      1
     )
     return true
   } catch (e) {
@@ -308,6 +313,9 @@ async function main() {
     
     // Initialize database
     const db = createDb()
+
+    // Mark all rows as not seen for this sync run; seen rows will be set back to 1 by upsert.
+    db.prepare('UPDATE wingubox_employees SET seen_in_last_sync = 0').run()
     
     // Extract employees from response (adjust based on actual API response structure)
     let employees = []
@@ -351,6 +359,21 @@ async function main() {
         saved++
       } else {
         skipped++
+      }
+    }
+
+    // Reconcile rows that were not returned by Wingubox.
+    // Default behavior: set active = '0' for missing employees (keeps history).
+    // Optional: permanently delete missing rows by setting WINGUBOX_PRUNE_MISSING=1.
+    const prune = ['1', 'true', 'yes'].includes(String(process.env.WINGUBOX_PRUNE_MISSING || '').toLowerCase())
+    const missingCount = db.prepare('SELECT COUNT(*) AS c FROM wingubox_employees WHERE seen_in_last_sync = 0').get().c
+    if (missingCount > 0) {
+      if (prune) {
+        db.prepare('DELETE FROM wingubox_employees WHERE seen_in_last_sync = 0').run()
+        console.log(`🧹 Pruned ${missingCount} employees not returned by API (WINGUBOX_PRUNE_MISSING=1)`)
+      } else {
+        db.prepare(`UPDATE wingubox_employees SET active = '0', updated_at = CURRENT_TIMESTAMP WHERE seen_in_last_sync = 0`).run()
+        console.log(`ℹ️ Marked ${missingCount} employees as inactive (not returned by API)`)
       }
     }
 
