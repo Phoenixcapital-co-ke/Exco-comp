@@ -1002,26 +1002,43 @@ function BodaCollection() {
             const today = new Date()
             const isCurrentMonth =
               selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
-            const cutoff = isCurrentMonth ? today : new Date(selectedYear, selectedMonth, 0)
+            const cutoffDay = isCurrentMonth
+              ? today.getDate()
+              : new Date(selectedYear, selectedMonth, 0).getDate()
             const allowedBranches = new Set((bodaBranches || []).map((b) => cleanBranchName(b).toLowerCase()))
 
             const agg = new Map()
-            for (const r of rows) {
-              const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
-              if (!exp) continue
-              const d = new Date(exp)
+            // Use the same source as the summary cards: Zidisha_Daily (dailyLoans).
+            // Expected/Outstanding come from daily rows; Collected = Expected - Outstanding.
+            for (const r of dailyLoans) {
+              const due = r.dueDate || r['Due Date']
+              if (!due) continue
+              const d = new Date(due)
               if (isNaN(d.getTime())) continue
               if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
-              if (isCurrentMonth && d > cutoff) continue
+              if (d.getDate() > cutoffDay) continue
 
-              const rawBranch = (r['Branch Name'] || r.branch_name || '').trim()
-              const b = cleanBranchName(rawBranch || 'Unknown')
+              const rawBranch = r.branchName || r['Branch Name'] || r.branch_name || 'Unknown'
+              const b = cleanBranchName(rawBranch)
               const bKey = b.toLowerCase()
               if (!b || bKey === 'unknown') continue
               if (allowedBranches.size > 0 && !allowedBranches.has(bKey)) continue
 
-              const expAmt = Number(r['Total Expected Repayment Derived']) || 0
-              const repAmt = Number(r['Total Repayment Derived']) || 0
+              const expAmt =
+                Number(
+                  r.totalExpected ??
+                    r['Total Expected Repayment Derived'] ??
+                    r['Total Expected Repayment'] ??
+                    0,
+                ) || 0
+              const outstandingAmt =
+                Number(
+                  r.totalOutstanding ??
+                    r['Total Outstanding Derived'] ??
+                    r['Total Outstanding'] ??
+                    0,
+                ) || 0
+              const repAmt = Math.max(0, expAmt - outstandingAmt)
               if (!agg.has(b)) agg.set(b, { expected: 0, collected: 0 })
               const cur = agg.get(b)
               cur.expected += expAmt
