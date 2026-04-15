@@ -410,6 +410,16 @@ function BodaCollection() {
     return noSuffix || trimmed || 'Unknown'
   }
 
+  // Branches present in the Boda dataset (Zidisha Boda product).
+  const bodaBranches = useMemo(() => {
+    const set = new Set()
+    for (const row of rows) {
+      const branchName = cleanBranchName((row['Branch Name'] || row.branch_name || '').trim())
+      if (branchName) set.add(branchName)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [rows, cleanBranchName])
+
   const availableDueDays = useMemo(() => {
     const set = new Set()
     for (const r of dailyLoans) {
@@ -981,6 +991,90 @@ function BodaCollection() {
           </div>
         </div>
       </div>
+
+      {/* MTD Collection by Branch (Boda only) */}
+      {!loading && selectedYear && selectedMonth && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">MTD Collection by Branch</h3>
+          </div>
+          {(() => {
+            const today = new Date()
+            const isCurrentMonth =
+              selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
+            const cutoff = isCurrentMonth ? today : new Date(selectedYear, selectedMonth, 0)
+            const allowedBranches = new Set((bodaBranches || []).map((b) => cleanBranchName(b).toLowerCase()))
+
+            const agg = new Map()
+            for (const r of rows) {
+              const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
+              if (!exp) continue
+              const d = new Date(exp)
+              if (isNaN(d.getTime())) continue
+              if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
+              if (isCurrentMonth && d > cutoff) continue
+
+              const rawBranch = (r['Branch Name'] || r.branch_name || '').trim()
+              const b = cleanBranchName(rawBranch || 'Unknown')
+              const bKey = b.toLowerCase()
+              if (!b || bKey === 'unknown') continue
+              if (allowedBranches.size > 0 && !allowedBranches.has(bKey)) continue
+
+              const expAmt = Number(r['Total Expected Repayment Derived']) || 0
+              const repAmt = Number(r['Total Repayment Derived']) || 0
+              if (!agg.has(b)) agg.set(b, { expected: 0, collected: 0 })
+              const cur = agg.get(b)
+              cur.expected += expAmt
+              cur.collected += repAmt
+            }
+
+            const items = Array.from(agg.entries())
+              .map(([branch, v]) => {
+                const rate = v.expected > 0 ? (v.collected / v.expected) * 100 : 0
+                const to97 = v.expected > 0 ? Math.max(0, 0.97 * v.expected - v.collected) : 0
+                return { branch, ...v, rate, to97 }
+              })
+              .sort((a, b) => {
+                if (b.rate === a.rate) return b.collected - a.collected
+                return b.rate - a.rate
+              })
+
+            return (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">To 97%</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-100">
+                    {items.map((r) => (
+                      <tr key={r.branch} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 text-gray-900">{r.branch}</td>
+                        <td className="px-3 py-2 text-right">{formatKES(r.expected)}</td>
+                        <td className="px-3 py-2 text-right">{formatKES(r.collected)}</td>
+                        <td className="px-3 py-2 text-right">{r.expected > 0 ? formatKES(r.to97) : '-'}</td>
+                        <td className="px-3 py-2 text-right">{r.rate.toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                    {!items.length && (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
+                          No data for selected period.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       {/* Branches: Active Loans & % Paid Today */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
