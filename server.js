@@ -13,8 +13,6 @@ import { existsSync } from 'fs'
 import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
-import { runGeminiChat } from './lib/gemini-chat.mjs'
-import { runGroqChat } from './lib/groq-chat.mjs'
 
 dotenv.config()
 
@@ -3070,6 +3068,8 @@ app.get('/api/auth/me', (req, res) => {
 })
 
 app.post('/api/chat', requireAuth, async (req, res) => {
+  // Assistant/chat feature removed.
+  return res.status(404).json({ error: 'Not found' })
   const provider = String(process.env.CHAT_PROVIDER || '').trim().toLowerCase()
   const groqKey = process.env.GROQ_API_KEY
   const geminiKey = process.env.GEMINI_API_KEY
