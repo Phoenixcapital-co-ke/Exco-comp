@@ -53,7 +53,6 @@ import SignIn from './pages/auth/SignIn.jsx'
 import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
 import ForgotPassword from './pages/auth/ForgotPassword.jsx'
 import ConfirmAccount from './pages/auth/ConfirmAccount.jsx'
-import Assistant from './pages/assistant/Assistant.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 
 const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook', 'user']
@@ -70,8 +69,6 @@ function Routes() {
       <Route path="/done" element={<SuperuserSignIn />} />
       <Route path="/auth/forgot-password" element={<ForgotPassword />} />
       <Route path="/auth/confirm" element={<ConfirmAccount />} />
-
-      <Route path="/assistant" element={<RequireAuth><Assistant /></RequireAuth>} />
 
       {/* Default route */}
       <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard country="Kenya" /></RequireAuth>} />
