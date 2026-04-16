@@ -13,6 +13,8 @@ import { existsSync } from 'fs'
 import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
+import { runGeminiChat } from './lib/gemini-chat.mjs'
+import { runGroqChat } from './lib/groq-chat.mjs'
 
 dotenv.config()
 
@@ -197,6 +199,54 @@ dbRW.exec(`
   );
 `);
 
+// Help / knowledge for Gemini assistant (FTS5)
+dbRW.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS chat_knowledge_fts USING fts5(
+    title,
+    body,
+    topic,
+    tokenize = 'porter'
+  );
+`)
+try {
+  const seedCount = dbRW.prepare('SELECT COUNT(*) AS c FROM chat_knowledge_fts').get().c
+  if (seedCount === 0) {
+    const ins = dbRW.prepare('INSERT INTO chat_knowledge_fts (title, body, topic) VALUES (?, ?, ?)')
+    const seedRows = [
+      [
+        'PAR (Portfolio at Risk)',
+        'PAR aggregates past-due arrears and open loans. Country-level PAR filters loans to branches in that country and the user’s allowed branch scope. Global PAR rows without a country filter use the stored PAR table totals.',
+        'logbook'
+      ],
+      [
+        'Logbook branches',
+        'Branches are stored in Logbook_Branches with code, name, country, and active flag. Custom-role users may only see branches assigned in User_Logbook_Branches.',
+        'logbook'
+      ],
+      [
+        'Zidisha',
+        'Zidisha dashboards use branch-level data from Zidisha. Users may have User_Zidisha_Branches limiting which branch names they see.',
+        'zidisha'
+      ],
+      [
+        'Oversea Kajea sync',
+        'Oversea vehicle and parking data sync jobs are recorded in oversea_sync_runs. The Kajea OS parking report uses oversea_vehicles and oversea_parking_records.',
+        'kajea'
+      ],
+      [
+        'Custom role',
+        'Users with role custom only see pages listed in User_Pages and branches in User_Logbook_Branches.',
+        'auth'
+      ]
+    ]
+    for (const row of seedRows) {
+      ins.run(row[0], row[1], row[2])
+    }
+  }
+} catch (e) {
+  console.warn('chat_knowledge_fts seed:', e.message)
+}
+
 // Loan Officers table (LOs)
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS LOs (
@@ -217,6 +267,29 @@ dbRW.exec(`
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Chat logs (assistant observability)
+try {
+  dbRW.exec(`
+    CREATE TABLE IF NOT EXISTS Chat_Logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      user_id INTEGER,
+      username TEXT,
+      role TEXT,
+      provider TEXT,
+      handler TEXT,
+      user_message TEXT,
+      reply_preview TEXT,
+      latency_ms INTEGER,
+      error TEXT
+    );
+  `)
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_chat_logs_created_at ON Chat_Logs(created_at)').run()
+  dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_chat_logs_user ON Chat_Logs(user_id)').run()
+} catch (e) {
+  console.warn('Chat_Logs init:', e.message)
+}
 
 const PUBLIC_API_PATHS = new Set([
   '/auth/login',
@@ -826,6 +899,18 @@ dbRW.exec(`
   );
 `);
 
+// Table to store Boda branch permissions for custom role users
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS User_Boda_Branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    branch_name TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, branch_name)
+  );
+`);
+
 // Table to store Logbook branch permissions for users (e.g. branch managers)
 dbRW.exec(`
   CREATE TABLE IF NOT EXISTS User_Logbook_Branches (
@@ -1323,28 +1408,32 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
     const whereConditions = []
     const params = []
 
-    // Enforce Zidisha branch restrictions if configured (similar to Logbook)
+    // Enforce branch restrictions for custom users.
+    // If requesting "Zidisha Boda", use allowedBodaBranches. Otherwise, use allowedZidishaBranches.
     const authRole = String(req.authUser?.role || '').toLowerCase()
-    const allowedZidisha = getAllowedZidishaBranches(req)
-    if (authRole === 'custom' && allowedZidisha.length === 0) {
-      // Custom users with Zidisha pages must have explicit branches configured (validated on user save)
-      return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+    const productNorm = product != null ? String(product).trim().toLowerCase() : ''
+    const productsNorm = Array.isArray(products) ? products.map((p) => String(p || '').trim().toLowerCase()).filter(Boolean) : null
+    const requestingBoda =
+      productNorm === 'zidisha boda' ||
+      (productsNorm && productsNorm.includes('zidisha boda'))
+
+    const allowed = requestingBoda ? getAllowedBodaBranches(req) : getAllowedZidishaBranches(req)
+    const deniedMsg = requestingBoda ? 'No Boda branch access configured for this user' : 'No Zidisha branch access configured for this user'
+    if (authRole === 'custom' && allowed.length === 0) {
+      return res.status(403).json({ error: deniedMsg })
     }
 
-    if (allowedZidisha.length > 0) {
-      const allowedNorm = new Set(
-        allowedZidisha.map((b) => String(b || '').trim()).filter(Boolean)
-      )
+    if (allowed.length > 0) {
+      const allowedNorm = new Set(allowed.map((b) => String(b || '').trim()).filter(Boolean))
       if (branch) {
         const bNorm = String(branch || '').trim()
         if (!allowedNorm.has(bNorm)) {
           return res.status(403).json({ error: 'Branch not allowed for this user' })
         }
       } else {
-        // Use COLLATE NOCASE for case-insensitive matching (can use index)
-        const placeholders = allowedZidisha.map(() => '?').join(', ')
+        const placeholders = allowed.map(() => '?').join(', ')
         whereConditions.push(`"Branch Name" COLLATE NOCASE IN (${placeholders})`)
-        params.push(...allowedZidisha.map((b) => String(b || '').trim()))
+        params.push(...allowed.map((b) => String(b || '').trim()))
       }
     }
 
@@ -1663,6 +1752,34 @@ app.get('/api/zidisha/branches', requireAuth, (req, res) => {
   }
 })
 
+// Boda branches endpoint (distinct branches for Zidisha Boda product)
+app.get('/api/boda/branches', requireAuth, (req, res) => {
+  try {
+    const sql = `
+      SELECT DISTINCT TRIM("Branch Name") AS branch
+      FROM zidisha_data
+      WHERE TRIM("Branch Name") IS NOT NULL
+        AND TRIM("Branch Name") != ''
+        AND LOWER(TRIM("Product Name")) = LOWER(?)
+      ORDER BY branch COLLATE NOCASE
+    `
+    let branches = db.prepare(sql).all('Zidisha Boda').map((r) => r.branch).filter(Boolean)
+
+    // Enforce Boda branch restrictions if configured (all roles)
+    const allowedBoda = getAllowedBodaBranches(req)
+    if (allowedBoda.length > 0) {
+      const allowedNorm = new Set(
+        allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+      )
+      branches = branches.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
+    }
+
+    res.json(branches)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Boda repayments endpoint - get repayment sums by Client Id, Loan Id, and month/year
 app.get('/api/boda/repayments', (req, res) => {
   try {
@@ -1886,7 +2003,29 @@ app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
       }
     })
 
-    res.json(normalized)
+    const requestedBranch = req.query && req.query.branch != null ? String(req.query.branch).trim() : ''
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm =
+      allowedBoda.length > 0
+        ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+        : null
+
+    let filtered = normalized
+    if (allowedNorm) {
+      filtered = filtered.filter((r) => {
+        const b = String(r.branchName || r['Branch Name'] || r.branch_name || '').trim().toLowerCase()
+        return b && allowedNorm.has(b)
+      })
+    }
+    if (requestedBranch && requestedBranch.toLowerCase() !== 'all') {
+      const reqNorm = requestedBranch.toLowerCase()
+      filtered = filtered.filter((r) => {
+        const b = String(r.branchName || r['Branch Name'] || r.branch_name || '').trim().toLowerCase()
+        return b === reqNorm
+      })
+    }
+
+    res.json(filtered)
   } catch (e) {
     console.error('[Boda Daily Loans API] Error:', e)
     res.status(500).json({ error: e.message })
@@ -2568,6 +2707,17 @@ const mapUserRow = (user) => {
     // Fail silently if table not ready
   }
 
+  // Boda branch permissions (all roles)
+  try {
+    const bodaBranches = dbRW
+      .prepare('SELECT branch_name FROM User_Boda_Branches WHERE user_id = ? ORDER BY branch_name COLLATE NOCASE')
+      .all(user.id)
+      .map(row => row.branch_name)
+    base.allowedBodaBranches = bodaBranches
+  } catch (e) {
+    // Fail silently if table not ready
+  }
+
   // Logbook branch permissions (all roles)
   try {
     const logbookBranches = dbRW
@@ -2632,6 +2782,49 @@ function getAllowedZidishaBranches(req) {
     result.push(val)
   }
   return result
+}
+
+// Helper: normalize allowed Boda branches from the authenticated user
+function getAllowedBodaBranches(req) {
+  const raw = Array.isArray(req.authUser?.allowedBodaBranches)
+    ? req.authUser.allowedBodaBranches
+    : []
+  const seen = new Set()
+  const result = []
+  for (const name of raw) {
+    const val = String(name || '').trim()
+    if (!val || seen.has(val)) continue
+    seen.add(val)
+    result.push(val)
+  }
+  return result
+}
+
+function sanitizeChatFtsQuery(raw) {
+  const s = String(raw || '')
+    .trim()
+    .slice(0, 200)
+  const tokens = s.split(/\s+/).filter(Boolean).slice(0, 10)
+  if (tokens.length === 0) return '""'
+  return tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' AND ')
+}
+
+/** Logbook branches visible to the current user (same rules as list endpoints). */
+function listLogbookBranchesForChat(req, countryOpt) {
+  const authRole = String(req.authUser?.role || '').toLowerCase()
+  const allowed = authRole === 'custom' ? getAllowedLogbookBranches(req) : null
+  const country = countryOpt != null ? String(countryOpt).trim() : ''
+  let rows = dbRW
+    .prepare('SELECT code, name, active, country FROM Logbook_Branches ORDER BY name COLLATE NOCASE')
+    .all()
+  if (country) {
+    rows = rows.filter((r) => String(r.country ?? '').trim() === country)
+  }
+  if (allowed && allowed.length > 0) {
+    const allowedSet = new Set(allowed.map((c) => String(c || '').trim()))
+    rows = rows.filter((r) => allowedSet.has(String(r.code ?? '').trim()))
+  }
+  return rows
 }
 
 const mapLoanOfficerRow = (row) => ({
@@ -2876,6 +3069,691 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ user: req.authUser })
 })
 
+app.post('/api/chat', requireAuth, async (req, res) => {
+  const provider = String(process.env.CHAT_PROVIDER || '').trim().toLowerCase()
+  const groqKey = process.env.GROQ_API_KEY
+  const geminiKey = process.env.GEMINI_API_KEY
+  const chosen =
+    provider === 'groq' || provider === 'gemini'
+      ? provider
+      : groqKey
+        ? 'groq'
+        : geminiKey
+          ? 'gemini'
+          : ''
+
+  if (!chosen) {
+    return res.status(503).json({
+      error: 'Chat is not configured (set GROQ_API_KEY or GEMINI_API_KEY).'
+    })
+  }
+  const startedAt = Date.now()
+  let lastUserText = ''
+  const logChat = ({ handler, replyPreview, error }) => {
+    try {
+      dbRW
+        .prepare(
+          `INSERT INTO Chat_Logs (user_id, username, role, provider, handler, user_message, reply_preview, latency_ms, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          req.authUser?.id ?? null,
+          req.authUser?.username ?? null,
+          req.authUser?.role ?? null,
+          chosen,
+          handler || null,
+          lastUserText.slice(0, 2000),
+          String(replyPreview || '').slice(0, 500),
+          Date.now() - startedAt,
+          error ? String(error).slice(0, 2000) : null
+        )
+    } catch {
+      // ignore logging failures
+    }
+  }
+  try {
+    const { messages } = req.body || {}
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages array required' })
+    }
+    const last = messages[messages.length - 1]
+    if (String(last.role) !== 'user' || !String(last.content ?? '').trim()) {
+      return res.status(400).json({ error: 'Last message must be user with non-empty content' })
+    }
+    const userText = String(last.content || '').trim()
+    lastUserText = userText
+    const history = messages.slice(0, -1).map((m) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: String(m.content ?? '')
+    }))
+
+    const runTool = async (name, args) => {
+      const a = args && typeof args === 'object' ? args : {}
+      switch (name) {
+        case 'get_user_scope':
+          return {
+            role: req.authUser.role,
+            username: req.authUser.username,
+            fullName: req.authUser.fullName,
+            allowedPages: req.authUser.allowedPages ?? [],
+            allowedLogbookBranches: req.authUser.allowedLogbookBranches ?? [],
+            allowedZidishaBranches: req.authUser.allowedZidishaBranches ?? []
+          }
+        case 'search_knowledge': {
+          const q = sanitizeChatFtsQuery(a.query)
+          const rows = dbRW
+            .prepare(
+              `SELECT title, body, topic FROM chat_knowledge_fts WHERE chat_knowledge_fts MATCH ? LIMIT 20`
+            )
+            .all(q)
+          return { results: rows }
+        }
+        case 'list_logbook_branches': {
+          const country = a.country != null ? String(a.country).trim() : ''
+          const branches = listLogbookBranchesForChat(req, country || undefined)
+          return { branches }
+        }
+        case 'get_global_par_snapshot': {
+          const rows = dbRW
+            .prepare(
+              'SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC LIMIT 30'
+            )
+            .all()
+          return { rows }
+        }
+        case 'get_oversea_sync_runs': {
+          const lim = Math.min(25, Math.max(1, Number(a.limit) || 10))
+          const runs = dbRW
+            .prepare(
+              `SELECT id, job_name, started_at, ended_at, status, vehicles_seen, records_inserted, records_updated, error_message
+               FROM oversea_sync_runs ORDER BY id DESC LIMIT ?`
+            )
+            .all(lim)
+          return { runs }
+        }
+        default:
+          return { error: `Unknown tool: ${name}` }
+      }
+    }
+
+    // Lightweight intent shortcuts for common dashboard queries.
+    // This avoids model/tool-call flakiness and ensures scoped, correct answers.
+    {
+      const t = userText.toLowerCase()
+      const recentUserText = Array.isArray(messages)
+        ? messages
+            .slice(Math.max(0, messages.length - 6))
+            .filter((m) => String(m?.role || '').toLowerCase() === 'user')
+            .map((m) => String(m?.content ?? '').toLowerCase())
+            .join(' ')
+        : ''
+
+      const wantsZidishaBranches =
+        t.includes('zidisha') && /\bbranch(es)?\b/.test(t) && (/\bhow many\b/.test(t) || /\blist\b/.test(t) || /\bshow\b/.test(t))
+      const followupListThemForZidisha =
+        (/\blist\b/.test(t) || /\blist them\b/.test(t) || /\bshow them\b/.test(t) || t === 'list them') &&
+        recentUserText.includes('zidisha') &&
+        /\bbranch(es)?\b/.test(recentUserText)
+      if (wantsZidishaBranches || followupListThemForZidisha) {
+        // Prefer db-backed, permissioned list (same as /api/zidisha/branches).
+        const zidishaProducts = [
+          'Zidisha Kifaru',
+          'Zidisha Nyati',
+          'Zidisha Simba',
+          'Zidisha Tembo',
+          'Zidisha Express',
+        ]
+        const placeholders = zidishaProducts.map(() => '?').join(', ')
+        const sql = `
+          SELECT DISTINCT TRIM("Branch Name") AS branch
+          FROM zidisha_data
+          WHERE TRIM("Branch Name") IS NOT NULL
+            AND TRIM("Branch Name") != ''
+            AND LOWER(TRIM("Product Name")) IN (${placeholders})
+          ORDER BY branch COLLATE NOCASE
+        `
+        let branches = db
+          .prepare(sql)
+          .all(...zidishaProducts.map((p) => p.toLowerCase()))
+          .map((r) => r.branch)
+          .filter(Boolean)
+
+        const allowedZidisha = getAllowedZidishaBranches(req)
+        if (allowedZidisha.length > 0) {
+          const allowedNorm = new Set(
+            allowedZidisha.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+          )
+          branches = branches.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
+        }
+
+        if (/\bhow many\b/.test(t)) {
+          return res.json({ reply: `You have ${branches.length} Zidisha branches in scope.` })
+        }
+        if (branches.length === 0) {
+          return res.json({ reply: 'No Zidisha branches are available for your account scope.' })
+        }
+        return res.json({
+          reply: `Zidisha branches (${branches.length}):\n` + branches.map((b, i) => `${i + 1}. ${b}`).join('\n')
+        })
+      }
+
+      const wantsActiveZidishaBranches =
+        (t.includes('zidisha') && /\bactive\b/.test(t) && /\bbranch(es)?\b/.test(t)) ||
+        ((/\bactive\b/.test(t) && /\bzidisha\b/.test(recentUserText) && /\bbranch(es)?\b/.test(recentUserText)) &&
+          (/\bwhich\b/.test(t) || /\blist\b/.test(t) || /\bshow\b/.test(t)))
+      const zidishaContext = t.includes('zidisha') || (recentUserText.includes('zidisha') && /\bbranch(es)?\b/.test(recentUserText))
+      const wantsZidishaDisbursedThisMonth =
+        zidishaContext && /\bdisburs/.test(t) && (/\bthis month\b/.test(t) || /\bthis month\b/.test(recentUserText))
+      const wantsZidishaDisbursedByBranch =
+        zidishaContext &&
+        /\bdisburs/.test(t) &&
+        (/\beach\b/.test(t) || /\bper\b/.test(t) || /\bby\b/.test(t)) &&
+        /\bbranch(es)?\b/.test(t) ||
+        (zidishaContext && /\bdisburs/.test(t) && /\beach\b/.test(t))
+      const wantsZidishaCollectionRate =
+        zidishaContext && (/\bcollection rate\b/.test(t) || (/\bcollection\b/.test(t) && /\brate\b/.test(t)))
+
+      if (wantsActiveZidishaBranches || wantsZidishaDisbursedThisMonth || wantsZidishaDisbursedByBranch || wantsZidishaCollectionRate) {
+        const zidishaProducts = [
+          'Zidisha Kifaru',
+          'Zidisha Nyati',
+          'Zidisha Simba',
+          'Zidisha Tembo',
+          'Zidisha Express',
+        ]
+        const allowedZidisha = getAllowedZidishaBranches(req)
+        const allowedNorm = allowedZidisha.length
+          ? new Set(allowedZidisha.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+          : null
+
+        const recentAnyText = Array.isArray(messages)
+          ? messages
+              .slice(Math.max(0, messages.length - 10))
+              .map((m) => String(m?.content ?? ''))
+              .join(' ')
+          : ''
+        const ym = recentAnyText.match(/\b(20\d{2})-(\d{2})\b/)
+        const now = new Date()
+        const year = ym ? Number(ym[1]) : now.getFullYear()
+        const month = ym ? Number(ym[2]) : now.getMonth() + 1
+        const monthStr = String(month).padStart(2, '0')
+        const yearStr = String(year)
+
+        const inProductsClause = zidishaProducts.map(() => '?').join(', ')
+        const baseParams = zidishaProducts.map((p) => p.toLowerCase())
+
+        const disbursedMonthWhere = `(
+          ("Disbursed On Date" LIKE ?) OR
+          ("Disbursed On Date" LIKE ?) OR
+          (substr("Disbursed On Date", 7, 4) = ? AND substr("Disbursed On Date", 4, 2) = ?)
+        )`
+        const maturedMonthWhere = `(
+          ("Expected Matured On Date" LIKE ?) OR
+          ("Expected Matured On Date" LIKE ?) OR
+          (substr("Expected Matured On Date", 7, 4) = ? AND substr("Expected Matured On Date", 4, 2) = ?)
+        )`
+        const disbDateParams = [`${yearStr}-${monthStr}-%`, `%/${monthStr}/${yearStr}%`, yearStr, monthStr]
+        const matDateParams = [`${yearStr}-${monthStr}-%`, `%/${monthStr}/${yearStr}%`, yearStr, monthStr]
+
+        if (wantsActiveZidishaBranches) {
+          // Define "active" Zidisha branches as those that have disbursement activity in the current month.
+          const sql = `
+            SELECT DISTINCT TRIM("Branch Name") AS branch
+            FROM zidisha_data
+            WHERE TRIM("Branch Name") IS NOT NULL
+              AND TRIM("Branch Name") != ''
+              AND LOWER(TRIM("Product Name")) IN (${inProductsClause})
+              AND ${disbursedMonthWhere}
+            ORDER BY branch COLLATE NOCASE
+          `
+          let branches = db.prepare(sql).all(...baseParams, ...disbDateParams).map((r) => r.branch).filter(Boolean)
+          if (allowedNorm) {
+            branches = branches.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
+          }
+          if (!branches.length) {
+            return res.json({ reply: `No active Zidisha branches found for ${yearStr}-${monthStr} in your scope.` })
+          }
+          return res.json({
+            reply:
+              `Active Zidisha branches (${branches.length}) for ${yearStr}-${monthStr}:\n` +
+              branches.map((b, i) => `${i + 1}. ${b}`).join('\n')
+          })
+        }
+
+        if (wantsZidishaDisbursedThisMonth || wantsZidishaDisbursedByBranch) {
+          // If the current context is "active Zidisha branches", restrict the breakdown to those.
+          let activeSet = null
+          if (/\bactive zidisha branches\b/i.test(recentAnyText)) {
+            const activeSql = `
+              SELECT DISTINCT TRIM("Branch Name") AS branch
+              FROM zidisha_data
+              WHERE TRIM("Branch Name") IS NOT NULL
+                AND TRIM("Branch Name") != ''
+                AND LOWER(TRIM("Product Name")) IN (${inProductsClause})
+                AND ${disbursedMonthWhere}
+              ORDER BY branch COLLATE NOCASE
+            `
+            let act = db.prepare(activeSql).all(...baseParams, ...disbDateParams).map((r) => r.branch).filter(Boolean)
+            if (allowedNorm) act = act.filter((b) => allowedNorm.has(String(b || '').trim().toLowerCase()))
+            activeSet = new Set(act.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+          }
+
+          const sql = `
+            SELECT TRIM("Branch Name") AS branch,
+                   SUM(CAST("Principal Amount" AS REAL)) AS disbursed
+            FROM zidisha_data
+            WHERE TRIM("Branch Name") IS NOT NULL
+              AND TRIM("Branch Name") != ''
+              AND LOWER(TRIM("Product Name")) IN (${inProductsClause})
+              AND ${disbursedMonthWhere}
+              AND "Principal Amount" IS NOT NULL
+            GROUP BY TRIM("Branch Name")
+          `
+          let rows = db.prepare(sql).all(...baseParams, ...disbDateParams)
+          if (allowedNorm) {
+            rows = rows.filter((r) => allowedNorm.has(String(r.branch || '').trim().toLowerCase()))
+          }
+          if (activeSet) {
+            rows = rows.filter((r) => activeSet.has(String(r.branch || '').trim().toLowerCase()))
+          }
+          rows = rows
+            .map((r) => ({ branch: String(r.branch || '').trim(), disbursed: Number(r.disbursed || 0) }))
+            .filter((r) => r.branch)
+            .sort((a, b) => b.disbursed - a.disbursed)
+          const total = rows.reduce((s, r) => s + (Number(r.disbursed) || 0), 0)
+          if (!rows.length) {
+            return res.json({ reply: `No Zidisha disbursements found for ${yearStr}-${monthStr} in your scope.` })
+          }
+          if (wantsZidishaDisbursedByBranch && !wantsZidishaDisbursedThisMonth) {
+            return res.json({
+              reply:
+                `Zidisha disbursed by branch in ${yearStr}-${monthStr}:\n` +
+                rows.map((r, i) => `${i + 1}. ${r.branch}: ${r.disbursed.toLocaleString()}`).join('\n')
+            })
+          }
+          return res.json({
+            reply:
+              `Zidisha disbursed in ${yearStr}-${monthStr}: ${total.toLocaleString()}\n` +
+              rows.map((r, i) => `${i + 1}. ${r.branch}: ${r.disbursed.toLocaleString()}`).join('\n')
+          })
+        }
+
+        if (wantsZidishaCollectionRate) {
+          // Define "collection rate" for the month as totalCollected / totalExpectedRepayment
+          // for loans whose Expected Matured On Date falls in the month.
+          const sql = `
+            SELECT TRIM("Branch Name") AS branch,
+                   SUM(CAST("Total Repayment Derived" AS REAL)) AS collected,
+                   SUM(CAST("Total Expected Repayment Derived" AS REAL)) AS expected
+            FROM zidisha_data
+            WHERE TRIM("Branch Name") IS NOT NULL
+              AND TRIM("Branch Name") != ''
+              AND LOWER(TRIM("Product Name")) IN (${inProductsClause})
+              AND ${maturedMonthWhere}
+              AND "Total Repayment Derived" IS NOT NULL
+              AND "Total Expected Repayment Derived" IS NOT NULL
+            GROUP BY TRIM("Branch Name")
+          `
+          let rows = db.prepare(sql).all(...baseParams, ...matDateParams)
+          if (allowedNorm) {
+            rows = rows.filter((r) => allowedNorm.has(String(r.branch || '').trim().toLowerCase()))
+          }
+          const cleaned = rows
+            .map((r) => ({
+              branch: String(r.branch || '').trim(),
+              collected: Number(r.collected || 0),
+              expected: Number(r.expected || 0),
+            }))
+            .filter((r) => r.branch && r.expected > 0)
+            .map((r) => ({ ...r, rate: r.collected / r.expected }))
+            .sort((a, b) => b.rate - a.rate)
+          if (!cleaned.length) {
+            return res.json({ reply: `No Zidisha collection-rate inputs found for ${yearStr}-${monthStr} in your scope.` })
+          }
+          const totalCollected = cleaned.reduce((s, r) => s + r.collected, 0)
+          const totalExpected = cleaned.reduce((s, r) => s + r.expected, 0)
+          const overallRate = totalExpected > 0 ? totalCollected / totalExpected : 0
+          return res.json({
+            reply:
+              `Zidisha collection rate for ${yearStr}-${monthStr}: ${(overallRate * 100).toFixed(2)}%\n` +
+              cleaned
+                .map(
+                  (r, i) =>
+                    `${i + 1}. ${r.branch}: ${(r.rate * 100).toFixed(2)}% (collected ${r.collected.toLocaleString()} / expected ${r.expected.toLocaleString()})`
+                )
+                .join('\n')
+          })
+        }
+      }
+
+      const wantsBranches =
+        /\b(branch|branches)\b/.test(t) &&
+        (/\b(list|show|what|which)\b/.test(t) || t === 'branches' || t === 'list the branches')
+      if (wantsBranches) {
+        const { branches } = await runTool('list_logbook_branches', {})
+        const rows = Array.isArray(branches) ? branches : []
+        if (rows.length === 0) {
+          return res.json({ reply: 'No logbook branches are available for your account scope.' })
+        }
+        const active = rows.filter((r) => r && r.active)
+        const format = (r) => {
+          const name = String(r.name ?? r.code ?? '').trim()
+          const code = String(r.code ?? '').trim()
+          const country = String(r.country ?? '').trim()
+          const label = code ? `${name} (${code})` : name
+          return country ? `${label} — ${country}` : label
+        }
+        const list = rows.map(format).filter(Boolean)
+        const activeList = active.map(format).filter(Boolean)
+        return res.json({
+          reply:
+            `Logbook branches (${rows.length}):\n` +
+            list.map((s, i) => `${i + 1}. ${s}`).join('\n') +
+            `\n\nActive (${active.length}):\n` +
+            (activeList.length ? activeList.map((s, i) => `${i + 1}. ${s}`).join('\n') : 'None')
+        })
+      }
+
+      const wantsPortfolio =
+        /\bportfolio\b/.test(t) && (/\btotal\b/.test(t) || /\bsize\b/.test(t) || /\bvalue\b/.test(t))
+      if (wantsPortfolio) {
+        const row = dbRW.prepare('SELECT time, Open_loans FROM PAR ORDER BY time DESC LIMIT 1').get()
+        const time = String(row?.time || '').trim()
+        const openLoans = Number(row?.Open_loans)
+        if (!time || !Number.isFinite(openLoans)) {
+          return res.json({ reply: 'Portfolio total is not available yet (no PAR snapshot found).' })
+        }
+        return res.json({
+          reply:
+            `Latest portfolio (open loans) total: ${openLoans.toLocaleString()}\n` +
+            `Snapshot time: ${time}`
+        })
+      }
+
+      const recentText = Array.isArray(messages)
+        ? messages
+            .slice(Math.max(0, messages.length - 6))
+            .map((m) => String(m?.content ?? '').toLowerCase())
+            .join(' ')
+        : ''
+      const wantsPortfolioByBranch =
+        ((/\bportfolio\b/.test(t) && (/\bper\b/.test(t) || /\beach\b/.test(t) || /\bby\b/.test(t)) && /\bbranch\b/.test(t)) ||
+          (/\bbreak\b/.test(t) && /\bdown\b/.test(t) && /\bbranch(es)?\b/.test(t) && (/\beach\b/.test(t) || /\bper\b/.test(t))) ||
+          (/\bbreak\b/.test(t) && /\bdown\b/.test(t) && /\bbranch(es)?\b/.test(t) && (/\bportfolio\b/.test(recentText) || /\bopen loans\b/.test(recentText) || /\bopen_loans\b/.test(recentText))))
+      if (wantsPortfolioByBranch) {
+        const latestPar = dbRW.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+        const latestTime = String(latestPar?.time || '').trim()
+        if (!latestTime) {
+          return res.json({ reply: 'Portfolio per-branch is not available yet (no PAR snapshot found).' })
+        }
+
+        const branches = listLogbookBranchesForChat(req)
+        const byCode = new Map()
+        for (const b of Array.isArray(branches) ? branches : []) {
+          const code = String(b?.code ?? '').trim()
+          if (!code) continue
+          byCode.set(code, b)
+        }
+
+        const rows = dbRW.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const sums = new Map()
+        for (const r of rows) {
+          const code = String(r.branch_code ?? '').trim()
+          if (!code || !byCode.has(code)) continue // respect scope
+          let loan
+          try {
+            loan = JSON.parse(r.loan_data)
+          } catch {
+            continue
+          }
+          const rawPrincipal =
+            loan.principal_balance_amount ??
+            loan.PrincipalBalanceAmount ??
+            loan['principal_balance_amount'] ??
+            loan['Principal Balance Amount'] ??
+            loan['Principal Balance'] ??
+            0
+          const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+          if (!principal) continue
+          sums.set(code, (sums.get(code) || 0) + principal)
+        }
+
+        const items = Array.from(byCode.entries()).map(([code, b]) => ({
+          code,
+          name: String(b?.name ?? code).trim() || code,
+          country: String(b?.country ?? '').trim(),
+          active: !!b?.active,
+          portfolio: Number(sums.get(code) || 0)
+        }))
+
+        items.sort((a, b) => b.portfolio - a.portfolio)
+
+        const lines = items.map((it, idx) => {
+          const status = it.active ? 'active' : 'inactive'
+          const country = it.country ? ` — ${it.country}` : ''
+          return `${idx + 1}. ${it.name} (${it.code})${country}: ${it.portfolio.toLocaleString()} (${status})`
+        })
+
+        return res.json({
+          reply:
+            `Portfolio (open loans) by branch — snapshot ${latestTime}:\n` +
+            (lines.length ? lines.join('\n') : 'No branch-level portfolio data found for this snapshot.')
+        })
+      }
+
+      // Follow-up: user says "amounts?" after discussing Logbook branches.
+      // Interpret as portfolio/open-loans by branch for the implied country (if present).
+      const wantsLogbookAmountsFollowup =
+        (t === 'amounts?' || t === 'amounts' || /\bamounts\b/.test(t)) &&
+        (recentText.includes('logbook') || recentText.includes('logbook branches')) &&
+        recentText.includes('active')
+      if (wantsLogbookAmountsFollowup) {
+        const countryMatch = recentText.match(/\b(kenya|uganda)\b/i)
+        const country = countryMatch ? String(countryMatch[1] || '').trim() : ''
+        const latestPar = dbRW.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+        const latestTime = String(latestPar?.time || '').trim()
+        if (!latestTime) {
+          return res.json({ reply: 'No portfolio snapshot found yet.' })
+        }
+
+        const branches = listLogbookBranchesForChat(req, country || undefined).filter((b) => b && b.active)
+        const byCode = new Map()
+        for (const b of branches) {
+          const code = String(b?.code ?? '').trim()
+          if (!code) continue
+          byCode.set(code, b)
+        }
+        const rows = dbRW.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const sums = new Map()
+        for (const r of rows) {
+          const code = String(r.branch_code ?? '').trim()
+          if (!code || !byCode.has(code)) continue
+          let loan
+          try {
+            loan = JSON.parse(r.loan_data)
+          } catch {
+            continue
+          }
+          const rawPrincipal =
+            loan.principal_balance_amount ??
+            loan.PrincipalBalanceAmount ??
+            loan['principal_balance_amount'] ??
+            loan['Principal Balance Amount'] ??
+            loan['Principal Balance'] ??
+            0
+          const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+          if (!principal) continue
+          sums.set(code, (sums.get(code) || 0) + principal)
+        }
+        const items = Array.from(byCode.entries())
+          .map(([code, b]) => ({
+            code,
+            name: String(b?.name ?? code).trim() || code,
+            country: String(b?.country ?? '').trim(),
+            portfolio: Number(sums.get(code) || 0),
+          }))
+          .sort((a, b) => b.portfolio - a.portfolio)
+
+        return res.json({
+          reply:
+            `Logbook portfolio (open loans) amounts by active branch${country ? ` in ${country}` : ''} — snapshot ${latestTime}:\n` +
+            items.map((it, i) => `${i + 1}. ${it.name} (${it.code})${it.country ? ` — ${it.country}` : ''}: ${it.portfolio.toLocaleString()}`).join('\n')
+        })
+      }
+
+      // Logbook: disbursements / collections / collection rate (by branch, current or referenced month)
+      const logbookContext = t.includes('logbook') || (recentText.includes('logbook') && /\bbranch(es)?\b/.test(recentText))
+      const wantsLogbookDisbursed =
+        logbookContext && (/\bdisburs/.test(t) || /\bdisbursement(s)?\b/.test(t))
+      const wantsLogbookCollected =
+        logbookContext && (/\bcollect/.test(t) || /\bcollections?\b/.test(t))
+      const wantsLogbookCollectionRate =
+        logbookContext && (/\bcollection rate\b/.test(t) || (/\bcollect/.test(t) && /\brate\b/.test(t)))
+
+      if (wantsLogbookDisbursed || wantsLogbookCollected || wantsLogbookCollectionRate) {
+        const ym = recentText.match(/\b(20\d{2})-(\d{2})\b/) || t.match(/\b(20\d{2})-(\d{2})\b/)
+        const now = new Date()
+        const year = ym ? Number(ym[1]) : now.getFullYear()
+        const month = ym ? Number(ym[2]) : now.getMonth() + 1
+        const monthStr = String(month).padStart(2, '0')
+        const yearStr = String(year)
+
+        const countryMatch = (t + ' ' + recentText).match(/\b(kenya|uganda)\b/i)
+        const country = countryMatch ? String(countryMatch[1] || '').trim() : ''
+
+        const activeBranches = listLogbookBranchesForChat(req, country || undefined).filter((b) => b && b.active)
+        const branchNameByCode = new Map()
+        for (const b of activeBranches) {
+          const code = String(b?.code ?? '').trim()
+          if (!code) continue
+          branchNameByCode.set(code, String(b?.name ?? code).trim() || code)
+        }
+        if (branchNameByCode.size === 0) {
+          return res.json({ reply: `No active Logbook branches found${country ? ` in ${country}` : ''} for your scope.` })
+        }
+
+        const start = `${yearStr}-${monthStr}-01`
+        const nextMonth = month === 12 ? 1 : month + 1
+        const nextYear = month === 12 ? year + 1 : year
+        const end = `${String(nextYear)}-${String(nextMonth).padStart(2, '0')}-01`
+
+        // Dates in these tables are stored as ISO-like strings in practice; we guard with substring matching too.
+        const disbRows = wantsLogbookDisbursed || wantsLogbookCollectionRate
+          ? db.prepare(
+              `SELECT branch, SUM(CAST(amount AS REAL)) AS total
+               FROM Logbook_Disbursement
+               WHERE branch IS NOT NULL AND TRIM(branch) <> ''
+                 AND branch IN (${Array.from(branchNameByCode.keys()).map(() => '?').join(', ')})
+                 AND (
+                   (date >= ? AND date < ?) OR
+                   (substr(date, 1, 7) = ?)
+                 )
+               GROUP BY branch`
+            ).all(...Array.from(branchNameByCode.keys()), start, end, `${yearStr}-${monthStr}`)
+          : []
+
+        const colRows = wantsLogbookCollected || wantsLogbookCollectionRate
+          ? db.prepare(
+              `SELECT branch, SUM(CAST(amount AS REAL)) AS total
+               FROM Logbook_collection
+               WHERE branch IS NOT NULL AND TRIM(branch) <> ''
+                 AND branch IN (${Array.from(branchNameByCode.keys()).map(() => '?').join(', ')})
+                 AND (
+                   (date >= ? AND date < ?) OR
+                   (substr(date, 1, 7) = ?)
+                 )
+               GROUP BY branch`
+            ).all(...Array.from(branchNameByCode.keys()), start, end, `${yearStr}-${monthStr}`)
+          : []
+
+        const disbMap = new Map(disbRows.map((r) => [String(r.branch).trim(), Number(r.total || 0)]))
+        const colMap = new Map(colRows.map((r) => [String(r.branch).trim(), Number(r.total || 0)]))
+
+        const items = Array.from(branchNameByCode.keys()).map((code) => {
+          const disb = Number(disbMap.get(code) || 0)
+          const col = Number(colMap.get(code) || 0)
+          const rate = disb > 0 ? col / disb : null
+          return { code, name: branchNameByCode.get(code), disb, col, rate }
+        })
+
+        if (wantsLogbookDisbursed && !wantsLogbookCollectionRate && !wantsLogbookCollected) {
+          const sorted = [...items].sort((a, b) => b.disb - a.disb)
+          const total = sorted.reduce((s, r) => s + r.disb, 0)
+          return res.json({
+            reply:
+              `Logbook disbursements in ${yearStr}-${monthStr}${country ? ` (${country})` : ''}: ${total.toLocaleString()}\n` +
+              sorted.map((r, i) => `${i + 1}. ${r.name} (${r.code}): ${r.disb.toLocaleString()}`).join('\n')
+          })
+        }
+
+        if (wantsLogbookCollected && !wantsLogbookCollectionRate) {
+          const sorted = [...items].sort((a, b) => b.col - a.col)
+          const total = sorted.reduce((s, r) => s + r.col, 0)
+          return res.json({
+            reply:
+              `Logbook collections in ${yearStr}-${monthStr}${country ? ` (${country})` : ''}: ${total.toLocaleString()}\n` +
+              sorted.map((r, i) => `${i + 1}. ${r.name} (${r.code}): ${r.col.toLocaleString()}`).join('\n')
+          })
+        }
+
+        if (wantsLogbookCollectionRate) {
+          const withRate = items.filter((r) => r.rate != null)
+          const totalDisb = items.reduce((s, r) => s + r.disb, 0)
+          const totalCol = items.reduce((s, r) => s + r.col, 0)
+          const overall = totalDisb > 0 ? totalCol / totalDisb : 0
+          withRate.sort((a, b) => (b.rate || 0) - (a.rate || 0))
+          return res.json({
+            reply:
+              `Logbook collection rate in ${yearStr}-${monthStr}${country ? ` (${country})` : ''}: ${(overall * 100).toFixed(2)}%\n` +
+              withRate
+                .map(
+                  (r, i) =>
+                    `${i + 1}. ${r.name} (${r.code}): ${((r.rate || 0) * 100).toFixed(2)}% (collected ${r.col.toLocaleString()} / disbursed ${r.disb.toLocaleString()})`
+                )
+                .join('\n')
+          })
+        }
+      }
+    }
+
+    const reply =
+      chosen === 'groq'
+        ? await runGroqChat({
+            apiKey: groqKey,
+            model: process.env.GROQ_MODEL,
+            history,
+            userMessage: last.content,
+            runTool
+          })
+        : await runGeminiChat({
+            apiKey: geminiKey,
+            model: process.env.GEMINI_MODEL,
+            history,
+            userMessage: last.content,
+            runTool
+          })
+    logChat({ handler: 'llm.fallback', replyPreview: reply })
+    res.json({ reply })
+  } catch (e) {
+    console.error('POST /api/chat:', e)
+    const msg = e && typeof e === 'object' && 'message' in e ? String(e.message || '') : String(e || '')
+    const isRateLimit = /\b429\b/.test(msg) || /quota exceeded/i.test(msg) || /too many requests/i.test(msg)
+    if (isRateLimit) {
+      const m = msg.match(/retryDelay\"?\s*:\s*\"?(\d+)\s*s/i)
+      const retryAfterSeconds = m ? Number(m[1]) : undefined
+      if (retryAfterSeconds && Number.isFinite(retryAfterSeconds)) {
+        res.setHeader('Retry-After', String(retryAfterSeconds))
+      }
+      return res.status(429).json({
+        error: msg || 'Rate limited by Gemini API (quota exceeded).',
+        retryAfterSeconds
+      })
+    }
+    logChat({ handler: 'error', error: msg })
+    res.status(500).json({ error: msg || 'Chat failed' })
+  }
+})
+
 app.get('/api/users', (req, res) => {
   try {
     const rows = dbRW
@@ -2899,6 +3777,7 @@ app.post('/api/users', (req, res) => {
       active = 1,
       allowedPages = [],
       allowedZidishaBranches = [],
+      allowedBodaBranches = [],
       allowedLogbookBranches = []
     } = req.body || {}
     if (!username) return res.status(400).json({ error: 'Username is required' })
@@ -2953,6 +3832,30 @@ app.post('/api/users', (req, res) => {
 
       if (branchesArr.length > 0) {
         const insertBranch = dbRW.prepare('INSERT INTO User_Zidisha_Branches (user_id, branch_name) VALUES (?, ?)')
+        for (const b of branchesArr) {
+          const branchName = String(b || '').trim()
+          if (!branchName) continue
+          try {
+            insertBranch.run(userId, branchName)
+          } catch (e) {
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+    }
+
+    // If custom or manager role, save Boda branch permissions (required if any Boda page/module is assigned)
+    if (roleStr === 'custom' || roleStr === 'manager') {
+      const pagesArr = Array.isArray(allowedPages) ? allowedPages : []
+      const hasBodaPages = pagesArr.some((p) => String(p || '').startsWith('/boda/'))
+      const branchesArr = Array.isArray(allowedBodaBranches) ? allowedBodaBranches : []
+
+      if (hasBodaPages && branchesArr.length === 0) {
+        return res.status(400).json({ error: 'At least one Boda branch must be selected for Boda module access' })
+      }
+
+      if (branchesArr.length > 0) {
+        const insertBranch = dbRW.prepare('INSERT INTO User_Boda_Branches (user_id, branch_name) VALUES (?, ?)')
         for (const b of branchesArr) {
           const branchName = String(b || '').trim()
           if (!branchName) continue
@@ -3031,7 +3934,7 @@ app.put('/api/users/:id', (req, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches, allowedLogbookBranches } = req.body || {}
+    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches, allowedBodaBranches, allowedLogbookBranches } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -3060,6 +3963,7 @@ app.put('/api/users/:id', (req, res) => {
       !fields.length &&
       typeof allowedPages === 'undefined' &&
       typeof allowedZidishaBranches === 'undefined' &&
+      typeof allowedBodaBranches === 'undefined' &&
       typeof allowedLogbookBranches === 'undefined'
     ) {
       return res.status(400).json({ error: 'No updates provided' })
@@ -3125,6 +4029,38 @@ app.put('/api/users/:id', (req, res) => {
     } else if (roleStr !== 'custom' && roleStr !== 'manager' && roleStr !== 'zidisha') {
       // If role changed away from custom/manager/zidisha, remove Zidisha branch permissions
       dbRW.prepare('DELETE FROM User_Zidisha_Branches WHERE user_id = ?').run(id)
+    }
+
+    // Handle Boda branch permissions for custom and manager roles
+    if ((roleStr === 'custom' || roleStr === 'manager') && typeof allowedBodaBranches !== 'undefined') {
+      // Delete existing branches
+      dbRW.prepare('DELETE FROM User_Boda_Branches WHERE user_id = ?').run(id)
+
+      const branchesArr = Array.isArray(allowedBodaBranches) ? allowedBodaBranches : []
+      if (branchesArr.length > 0) {
+        const insertBranch = dbRW.prepare('INSERT INTO User_Boda_Branches (user_id, branch_name) VALUES (?, ?)')
+        for (const b of branchesArr) {
+          const branchName = String(b || '').trim()
+          if (!branchName) continue
+          try {
+            insertBranch.run(id, branchName)
+          } catch (e) {
+            if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw e
+          }
+        }
+      }
+
+      // Validate: if user has Boda pages/modules, they must have at least one Boda branch
+      const pagesNow = typeof allowedPages !== 'undefined'
+        ? (Array.isArray(allowedPages) ? allowedPages : [])
+        : dbRW.prepare('SELECT page_path FROM User_Pages WHERE user_id = ?').all(id).map(r => r.page_path)
+      const hasBodaPages = pagesNow.some((p) => String(p || '').startsWith('/boda/'))
+      if (hasBodaPages && branchesArr.length === 0) {
+        return res.status(400).json({ error: 'At least one Boda branch must be selected for Boda module access' })
+      }
+    } else if (roleStr !== 'custom' && roleStr !== 'manager' && roleStr !== 'boda') {
+      // If role changed away from custom/manager/boda, remove Boda branch permissions
+      dbRW.prepare('DELETE FROM User_Boda_Branches WHERE user_id = ?').run(id)
     }
 
     // Handle Logbook branch permissions (any role; empty list clears)

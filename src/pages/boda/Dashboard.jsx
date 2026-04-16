@@ -3,11 +3,13 @@ import { BarChart3, DollarSign, TrendingUp, AlertTriangle, Wallet, Loader2 } fro
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { useBodaBranch } from '../../context/BodaBranchContext.jsx'
 
 function BodaDashboard() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useBodaBranch()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -32,15 +34,25 @@ function BodaDashboard() {
     return () => controller.abort()
   }, [])
 
+  const filteredRows = useMemo(() => {
+    if (!Array.isArray(rows) || rows.length === 0) return []
+    if (!selectedBranch || String(selectedBranch).toLowerCase() === 'all') return rows
+    const want = String(selectedBranch).trim().toLowerCase()
+    return rows.filter((r) => {
+      const b = String((r['Branch Name'] || r.branch_name || '')).trim().toLowerCase()
+      return b && b === want
+    })
+  }, [rows, selectedBranch])
+
   const totalLoaned = useMemo(() => {
-    return rows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
-  }, [rows])
+    return filteredRows.reduce((sum, r) => sum + (Number(r['Principal Amount']) || 0), 0)
+  }, [filteredRows])
 
   // PAR per branch: sum(Principal Outstanding) with overdue > 0 / sum(Principal Outstanding) per branch
   const branchPar = useMemo(() => {
     const branchMap = new Map()
 
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const branch = (r['Branch Name'] || r.branch_name || 'Unknown').trim() || 'Unknown'
       const outstanding = Number(
         r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0,
@@ -68,12 +80,12 @@ function BodaDashboard() {
         par: v.outstandingAll > 0 ? (v.outstandingAtRisk / v.outstandingAll) * 100 : 0,
       }))
       .sort((a, b) => b.par - a.par)
-  }, [rows])
+  }, [filteredRows])
 
   // Calculate portfolio size (sum of all Principal Outstanding Derived)
   const portfolioSize = useMemo(() => {
-    return rows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
-  }, [rows])
+    return filteredRows.reduce((sum, r) => sum + (Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)), 0)
+  }, [filteredRows])
 
   // Calculate PAR (Portfolio at Risk):
   // sum(Principal Outstanding Derived) for clients with Principal Overdue Derived > 0
@@ -82,7 +94,7 @@ function BodaDashboard() {
     let totalOutstandingAll = 0
     let totalOutstandingAtRisk = 0
 
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const outstanding = Number(r['Principal Outstanding Derived'] || r.principal_outstanding_derived || 0)
       const overdue = Number(r['Principal Overdue Derived'] || r.principal_overdue_derived || 0)
 
@@ -99,14 +111,14 @@ function BodaDashboard() {
       return `${parRate.toFixed(1)}%`
     }
     return '—'
-  }, [rows])
+  }, [filteredRows])
 
   const stats = useMemo(() => [
     { title: 'Total loaned', value: formatKES(totalLoaned), change: '', icon: DollarSign, color: 'text-green-600' },
-    { title: 'Active Loans', value: rows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
+    { title: 'Active Loans', value: filteredRows.length.toLocaleString(), change: '', icon: BarChart3, color: 'text-blue-600' },
     { title: 'Portfolio size', value: formatKES(portfolioSize), change: '', icon: Wallet, color: 'text-indigo-600' },
     { title: 'PAR', value: par, change: '', icon: AlertTriangle, color: 'text-orange-600' }
-  ], [totalLoaned, rows.length, portfolioSize, par])
+  ], [totalLoaned, filteredRows.length, portfolioSize, par])
 
   return (
     <div className="space-y-6">
@@ -114,6 +126,23 @@ function BodaDashboard() {
         <h1 className="text-3xl font-bold text-gray-900">Boda Dashboard</h1>
         <p className="text-gray-600 mt-2">Overview of Boda business unit performance</p>
       </div>
+
+      {branchOptions.length > 1 && (
+        <div className="flex items-center gap-3">
+          <label className="text-sm font-semibold text-gray-700">Branch</label>
+          <select
+            value={selectedBranch}
+            onChange={(e) => setSelectedBranch(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
+          >
+            {branchOptions.map((b) => (
+              <option key={b} value={b}>
+                {b === 'All' ? 'All branches' : cleanBranchLabel(b)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {error && (
         <div className="h-24 flex items-center justify-center text-red-600">{error}</div>

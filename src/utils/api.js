@@ -41,6 +41,7 @@ export const API_URLS = {
     repaymentsDaily: `${API_BASE}/api/boda/repayments/daily`,
     repaymentsByDate: `${API_BASE}/api/boda/repayments/by-date`,
     dailyLoans: `${API_BASE}/api/boda/daily-loans`,
+    branches: `${API_BASE}/api/boda/branches`,
   },
   events: `${API_BASE}/api/events`,
   ingest: `${API_BASE}/api/ingest`,
@@ -117,6 +118,7 @@ export const API_URLS = {
     status: `${API_BASE}/api/system/status`,
     maintenance: `${API_BASE}/api/system/maintenance`,
   },
+  chat: `${API_BASE}/api/chat`,
   kajea: {
     stats: `${API_BASE}/api/kajea/stats`,
     clients: `${API_BASE}/api/kajea/clients`,

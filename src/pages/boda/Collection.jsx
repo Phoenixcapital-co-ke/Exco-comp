@@ -4,6 +4,7 @@ import { formatKES } from '../../utils/format.js'
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, ComposedChart } from 'recharts'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { API_URLS } from '../../utils/api.js'
+import { useBodaBranch } from '../../context/BodaBranchContext.jsx'
 
 function BodaCollection() {
   const now = new Date()
@@ -26,6 +27,7 @@ function BodaCollection() {
   const [clientSearchFilter, setClientSearchFilter] = useState('')
   const [expandedDailyBranches, setExpandedDailyBranches] = useState(new Set())
   const [repaymentsTodayMap, setRepaymentsTodayMap] = useState({})
+  const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useBodaBranch()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -174,6 +176,9 @@ function BodaCollection() {
           month: String(selectedMonth),
           year: String(selectedYear),
         })
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
         const res = await fetch(`${API_URLS.boda.dailyLoans}?${params.toString()}`, {
           credentials: 'include',
         })
@@ -195,7 +200,7 @@ function BodaCollection() {
     if (selectedMonth && selectedYear) {
       loadDailyLoans()
     }
-  }, [selectedMonth, selectedYear])
+  }, [selectedMonth, selectedYear, selectedBranch])
 
   const filtered = useMemo(() => {
     const inMonth = (iso) => {
@@ -834,6 +839,22 @@ function BodaCollection() {
           <p className="text-gray-600 mt-2">Monitor Boda loan collections and payment status</p>
         </div>
         <div className="flex items-end space-x-3">
+          {branchOptions.length > 1 && (
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Branch</label>
+              <select
+                className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+              >
+                {branchOptions.map((b) => (
+                  <option key={b} value={b}>
+                    {b === 'All' ? 'All branches' : cleanBranchLabel(b)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className="block text-xs text-gray-600 mb-1">Month</label>
             <select className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={selectedMonth} onChange={e => setSelectedMonth(Number(e.target.value))}>

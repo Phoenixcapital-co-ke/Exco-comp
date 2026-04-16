@@ -28,6 +28,7 @@ import BodaDisbursement from './pages/boda/Disbursement.jsx'
 import BodaCollection from './pages/boda/Collection.jsx'
 import BodaPAR from './pages/boda/PAR.jsx'
 import BodaProductivity from './pages/boda/Productivity.jsx'
+import { BodaBranchProvider } from './context/BodaBranchContext.jsx'
 
 import KajeaClients from './pages/kajea/Clients.jsx'
 import OSParkingReport from './pages/kajea/OSParkingReport.jsx'
@@ -52,6 +53,7 @@ import SignIn from './pages/auth/SignIn.jsx'
 import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
 import ForgotPassword from './pages/auth/ForgotPassword.jsx'
 import ConfirmAccount from './pages/auth/ConfirmAccount.jsx'
+import Assistant from './pages/assistant/Assistant.jsx'
 import RequireAuth from './components/RequireAuth.jsx'
 
 const LOGBOOK_ROLES = ['superuser', 'admin', 'manager', 'logbook', 'user']
@@ -68,6 +70,8 @@ function Routes() {
       <Route path="/done" element={<SuperuserSignIn />} />
       <Route path="/auth/forgot-password" element={<ForgotPassword />} />
       <Route path="/auth/confirm" element={<ConfirmAccount />} />
+
+      <Route path="/assistant" element={<RequireAuth><Assistant /></RequireAuth>} />
 
       {/* Default route */}
       <Route path="/" element={<RequireAuth allowedRoles={LOGBOOK_ROLES}><LogbookDashboard country="Kenya" /></RequireAuth>} />
@@ -192,10 +196,10 @@ function Routes() {
       <Route path="/advans/productivity" element={<RequireAuth allowedRoles={ADVANS_ROLES}><AdvansProductivity /></RequireAuth>} />
       
       {/* Boda routes */}
-      <Route path="/boda/dashboard" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaDashboard /></RequireAuth>} />
-      <Route path="/boda/disbursement" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaDisbursement /></RequireAuth>} />
-      <Route path="/boda/collection" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaCollection /></RequireAuth>} />
-      <Route path="/boda/productivity" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaProductivity /></RequireAuth>} />
+      <Route path="/boda/dashboard" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaDashboard /></BodaBranchProvider></RequireAuth>} />
+      <Route path="/boda/disbursement" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaDisbursement /></BodaBranchProvider></RequireAuth>} />
+      <Route path="/boda/collection" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaCollection /></BodaBranchProvider></RequireAuth>} />
+      <Route path="/boda/productivity" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaProductivity /></BodaBranchProvider></RequireAuth>} />
       
       {/* Kajea routes */}
       <Route path="/kajea/clients" element={<RequireAuth><KajeaClients /></RequireAuth>} />

@@ -14,6 +14,7 @@ const defaultDraft = {
   active: false,
   allowedPages: [],
   allowedZidishaBranches: [],
+  allowedBodaBranches: [],
   allowedLogbookBranches: []
 }
 
@@ -27,6 +28,7 @@ function UsersPage() {
   const [showForm, setShowForm] = useState(false)
   const [availablePages, setAvailablePages] = useState([])
   const [availableZidishaBranches, setAvailableZidishaBranches] = useState([])
+  const [availableBodaBranches, setAvailableBodaBranches] = useState([])
   const [availableLogbookBranches, setAvailableLogbookBranches] = useState([])
   const { user: currentUser } = useAuth()
 
@@ -55,6 +57,7 @@ function UsersPage() {
     loadUsers()
     loadAvailablePages()
     loadAvailableZidishaBranches()
+    loadAvailableBodaBranches()
     loadAvailableLogbookBranches()
   }, [])
 
@@ -79,6 +82,18 @@ function UsersPage() {
       }
     } catch (e) {
       console.error('Failed to load Zidisha branches:', e)
+    }
+  }
+
+  const loadAvailableBodaBranches = async () => {
+    try {
+      const res = await fetch(API_URLS.boda.branches, { credentials: 'include' })
+      if (res.ok) {
+        const data = await res.json()
+        setAvailableBodaBranches(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Failed to load Boda branches:', e)
     }
   }
 
@@ -110,6 +125,7 @@ function UsersPage() {
       active: !!user.active,
       allowedPages: Array.isArray(user.allowedPages) ? user.allowedPages : [],
       allowedZidishaBranches: Array.isArray(user.allowedZidishaBranches) ? user.allowedZidishaBranches : [],
+      allowedBodaBranches: Array.isArray(user.allowedBodaBranches) ? user.allowedBodaBranches : [],
       allowedLogbookBranches: Array.isArray(user.allowedLogbookBranches) ? user.allowedLogbookBranches : [],
     })
     setShowForm(true)
@@ -192,6 +208,13 @@ function UsersPage() {
         return
       }
     }
+    if (draft.role === 'boda') {
+      const branchesArr = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
+      if (branchesArr.length === 0) {
+        setError('At least one Boda branch must be selected for Boda role users')
+        return
+      }
+    }
     if (draft.role === 'manager') {
       const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
       const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
@@ -199,6 +222,14 @@ function UsersPage() {
         const branchesArr = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
         if (branchesArr.length === 0) {
           setError('At least one Zidisha branch must be selected when Zidisha modules are selected')
+          return
+        }
+      }
+      const hasBodaPages = pagesArr.some((p) => String(p || '').startsWith('/boda/'))
+      if (hasBodaPages) {
+        const branchesArr = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
+        if (branchesArr.length === 0) {
+          setError('At least one Boda branch must be selected when Boda modules are selected')
           return
         }
       }
@@ -210,6 +241,14 @@ function UsersPage() {
         const branchesArr = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
         if (branchesArr.length === 0) {
           setError('At least one Zidisha branch must be selected for Zidisha page access')
+          return
+        }
+      }
+      const hasBodaPages = pagesArr.some((p) => String(p || '').startsWith('/boda/'))
+      if (hasBodaPages) {
+        const branchesArr = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
+        if (branchesArr.length === 0) {
+          setError('At least one Boda branch must be selected for Boda page access')
           return
         }
       }
@@ -234,17 +273,26 @@ function UsersPage() {
         payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
         const pagesArr = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
         const hasZidishaPages = pagesArr.some((p) => String(p || '').startsWith('/zidisha/'))
+        const hasBodaPages = pagesArr.some((p) => String(p || '').startsWith('/boda/'))
         if (hasZidishaPages) {
           payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+        }
+        if (hasBodaPages) {
+          payload.allowedBodaBranches = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
         }
       }
       if (draft.role === 'custom') {
         payload.allowedPages = Array.isArray(draft.allowedPages) ? draft.allowedPages : []
         payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+        payload.allowedBodaBranches = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
       }
       // Zidisha branch access for zidisha role
       if (draft.role === 'zidisha') {
         payload.allowedZidishaBranches = Array.isArray(draft.allowedZidishaBranches) ? draft.allowedZidishaBranches : []
+      }
+      // Boda branch access for boda role
+      if (draft.role === 'boda') {
+        payload.allowedBodaBranches = Array.isArray(draft.allowedBodaBranches) ? draft.allowedBodaBranches : []
       }
       // Logbook branch access can apply to any role (branch managers, admins, etc.)
       payload.allowedLogbookBranches = Array.isArray(draft.allowedLogbookBranches)
@@ -305,6 +353,8 @@ function UsersPage() {
   const showLogbookBranchSection = ['logbook', 'manager', 'admin', 'custom'].includes(normalizedRole)
   const showZidishaBranchSection = normalizedRole === 'zidisha' || 
     ((normalizedRole === 'custom' || normalizedRole === 'manager') && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/zidisha/')))
+  const showBodaBranchSection = normalizedRole === 'boda' ||
+    ((normalizedRole === 'custom' || normalizedRole === 'manager') && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/boda/')))
 
   return (
     <div className="space-y-6">
@@ -435,6 +485,7 @@ function UsersPage() {
                         role: newRole,
                         allowedPages: (newRole === 'custom' || newRole === 'manager') ? (prev.allowedPages || []) : [],
                         allowedZidishaBranches: (newRole === 'custom' || newRole === 'zidisha' || newRole === 'manager') ? (prev.allowedZidishaBranches || []) : [],
+                        allowedBodaBranches: (newRole === 'custom' || newRole === 'boda' || newRole === 'manager') ? (prev.allowedBodaBranches || []) : [],
                       }))
                     }}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
@@ -610,6 +661,68 @@ function UsersPage() {
                   {normalizedRole === 'custom' && (!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
                     <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
                   )}
+                </div>
+              )}
+
+              {showBodaBranchSection && (
+                <div className="border-t border-gray-200 pt-5">
+                  <label className="block text-sm font-semibold text-gray-700 mb-3">
+                    Boda Branch Access <span className="text-red-500">*</span>
+                  </label>
+                  <p className="text-xs text-gray-500 mb-4">
+                    {normalizedRole === 'boda'
+                      ? 'Select which Boda branches this user can see on Boda pages.'
+                      : 'Select which Boda branches this user can see'}
+                  </p>
+                  <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                    {availableBodaBranches.length === 0 ? (
+                      <p className="text-sm text-gray-500">Loading branches...</p>
+                    ) : (
+                      availableBodaBranches.map((branch) => {
+                        const isChecked =
+                          Array.isArray(draft.allowedBodaBranches) &&
+                          draft.allowedBodaBranches.includes(branch)
+                        return (
+                          <label
+                            key={branch}
+                            className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const current = Array.isArray(draft.allowedBodaBranches)
+                                  ? draft.allowedBodaBranches
+                                  : []
+                                if (e.target.checked) {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    allowedBodaBranches: [...current, branch],
+                                  }))
+                                } else {
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    allowedBodaBranches: current.filter((b) => b !== branch),
+                                  }))
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span className="text-sm text-gray-700">{branch}</span>
+                          </label>
+                        )
+                      })
+                    )}
+                  </div>
+                  {normalizedRole === 'boda' && (!Array.isArray(draft.allowedBodaBranches) || draft.allowedBodaBranches.length === 0) && (
+                    <p className="text-xs text-red-600 mt-2">Select at least one branch for Boda role users</p>
+                  )}
+                  {(normalizedRole === 'custom' || normalizedRole === 'manager') &&
+                    Array.isArray(draft.allowedPages) &&
+                    draft.allowedPages.some((p) => String(p || '').startsWith('/boda/')) &&
+                    (!Array.isArray(draft.allowedBodaBranches) || draft.allowedBodaBranches.length === 0) && (
+                      <p className="text-xs text-red-600 mt-2">Select at least one branch for Boda access</p>
+                    )}
                 </div>
               )}
 
