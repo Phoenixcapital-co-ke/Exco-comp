@@ -765,6 +765,22 @@ function mapResult(r) {
 const ZIDISHA_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/10/download'
 const ZIDISHA_TABLE = 'zidisha_data'
 
+// === Boda schedule setup (Musoni export id 30) ===
+const BODA_SCHEDULE_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/30/download'
+const BODA_SCHEDULE_TABLE = 'boda_Schedule'
+const BODA_SCHEDULE_COLUMNS = [
+  'Branch Name',
+  'Client Id',
+  'Client Name',
+  'Due Date',
+  'Loan Id',
+  'Period',
+  'Total Expected',
+  // Needed for Boda Collection Daily Break-down (computed from schedule export)
+  // If export doesn't provide it, it will be stored as 0.
+  'Total Outstanding',
+]
+
 // Zidisha Daily Expected vs Repayed (Musoni export id 22)
 const ZIDISHA_DAILY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/22/download'
 const ZIDISHA_DAILY_TABLE = 'Zidisha_Daily'
@@ -835,6 +851,38 @@ function initBodaRepaymentsTable(db) {
       const type = (col === 'Total Repaid' || col === 'Transaction Amount') ? 'REAL' : 'TEXT'
       db.exec(`ALTER TABLE ${BODA_REPAY_TABLE} ADD COLUMN "${col}" ${type};`)
     }
+  }
+}
+
+function initBodaScheduleTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${BODA_SCHEDULE_TABLE} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "Branch Name" TEXT,
+      "Client Id" TEXT,
+      "Client Name" TEXT,
+      "Due Date" TEXT,
+      "Loan Id" TEXT,
+      "Period" TEXT,
+      "Total Expected" REAL,
+      "Total Outstanding" REAL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `)
+  const cols = db.prepare(`PRAGMA table_info(${BODA_SCHEDULE_TABLE});`).all().map(c => c.name)
+  for (const col of BODA_SCHEDULE_COLUMNS) {
+    if (!cols.includes(col)) {
+      const type = (col === 'Total Expected' || col === 'Total Outstanding') ? 'REAL' : 'TEXT'
+      db.exec(`ALTER TABLE ${BODA_SCHEDULE_TABLE} ADD COLUMN "${col}" ${type};`)
+    }
+  }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_branch ON ${BODA_SCHEDULE_TABLE}("Branch Name")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_due_date ON ${BODA_SCHEDULE_TABLE}("Due Date")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_loan_id ON ${BODA_SCHEDULE_TABLE}("Loan Id")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_client_id ON ${BODA_SCHEDULE_TABLE}("Client Id")`)
+  } catch (e) {
+    console.warn('Error creating indexes for boda_Schedule:', e.message)
   }
 }
 function initZidishaTable(db) {
@@ -1108,6 +1156,66 @@ async function fetchBodaRepaymentsCsv() {
     return obj
   })
 }
+
+async function fetchBodaScheduleCsv() {
+  const res = await fetch(BODA_SCHEDULE_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
+  if (!res.ok) throw new Error(`Boda schedule API fetch failed: ${res.status}`)
+  const csv = await res.text()
+  if (PAPAPARSE) {
+    const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
+    return data
+  }
+  // Fallback parser (same as Zidisha) – handles quoted fields and newlines
+  const rows = []
+  let field = ''
+  let row = []
+  let insideQuotes = false
+  let i = 0
+  while (i < csv.length) {
+    const ch = csv[i]
+    if (ch === '"') {
+      if (insideQuotes && csv[i + 1] === '"') {
+        field += '"'
+        i += 2
+        continue
+      }
+      insideQuotes = !insideQuotes
+      i += 1
+      continue
+    }
+    if (!insideQuotes && ch === ';') {
+      row.push(field)
+      field = ''
+      i += 1
+      continue
+    }
+    if (!insideQuotes && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && csv[i + 1] === '\n') i += 1
+      row.push(field)
+      field = ''
+      if (row.length && row.some(cell => cell !== '' || rows.length === 0)) rows.push(row)
+      row = []
+      i += 1
+      continue
+    }
+    field += ch
+    i += 1
+  }
+  if (field.length || row.length) {
+    row.push(field)
+    rows.push(row)
+  }
+  if (!rows.length) return []
+  const headers = rows[0].map(h => h.trim())
+  if (headers.length < 2) throw new Error('Could not parse boda_Schedule CSV headers')
+  return rows.slice(1).filter(r => r.length).map((vals) => {
+    const obj = {}
+    headers.forEach((h, idx) => {
+      obj[h] = vals[idx] ?? ''
+    })
+    return obj
+  })
+}
 function insertZidisha(db, row) {
   const cols = ZIDISHA_COLUMNS
   const toParam = (name) => ('@' + name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
@@ -1126,6 +1234,24 @@ function insertZidisha(db, row) {
     }
   }
   try { stmt.run(cleanRow) } catch (e) { /* skip invalid row */ }
+}
+
+function insertBodaSchedule(db, row) {
+  const cols = BODA_SCHEDULE_COLUMNS
+  const toParam = (name) => ('@' + name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
+  const placeholders = cols.map(c => toParam(c)).join(',')
+  const sql = `INSERT INTO ${BODA_SCHEDULE_TABLE} (${cols.map(c=>`"${c}"`).join(',')}) VALUES (${placeholders})`
+  const stmt = db.prepare(sql)
+  const cleanRow = {}
+  for (const c of cols) {
+    const key = c.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_')
+    if (c === 'Total Expected' || c === 'Total Outstanding') {
+      cleanRow[key] = toNumber(row[c])
+    } else {
+      cleanRow[key] = row[c] == null ? '' : String(row[c])
+    }
+  }
+  stmt.run(cleanRow)
 }
 
 function insertBodaRepayment(db, row) {
@@ -1359,6 +1485,23 @@ function insertZidishaDaily(db, row, columns) {
       console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
     } else {
       console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
+    }
+
+    // === Boda schedule ingestion (Musoni export id 30) ===
+    const SKIP_BODA_SCHEDULE = String(process.env.SKIP_BODA_SCHEDULE || '').trim() === '1'
+    if (!SKIP_BODA_SCHEDULE) {
+      const dbBS = initDb()
+      initBodaScheduleTable(dbBS)
+      dbBS.exec(`DELETE FROM ${BODA_SCHEDULE_TABLE}`)
+      const scheduleRows = await fetchBodaScheduleCsv()
+      const txBS = dbBS.transaction((rows) => {
+        for (const r of rows) insertBodaSchedule(dbBS, r)
+      })
+      txBS(scheduleRows)
+      const scheduleCount = dbBS.prepare(`SELECT COUNT(*) as c FROM ${BODA_SCHEDULE_TABLE}`).get().c
+      console.log(`Saved ${scheduleRows.length} rows into ${BODA_SCHEDULE_TABLE}. Table now has ${scheduleCount} rows.`)
+    } else {
+      console.log('Skipping boda_Schedule ingestion due to SKIP_BODA_SCHEDULE=1')
     }
 
     // === Zidisha Daily Expected vs Repayed ingestion (Musoni export id 22) ===

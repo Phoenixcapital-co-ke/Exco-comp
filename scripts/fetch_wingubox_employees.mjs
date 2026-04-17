@@ -8,6 +8,9 @@
 
 import Database from 'better-sqlite3'
 import axios from 'axios'
+import dotenv from 'dotenv'
+
+dotenv.config()
 
 const BASE_URL = 'https://api.wingubox.com/v1/hrm'
 
@@ -129,6 +132,21 @@ function createDb() {
     );
   `)
 
+  // In-place migrations: add new columns when the table already exists.
+  try {
+    const tableInfo = db.prepare("PRAGMA table_info(wingubox_employees)").all()
+    const hasSeen = tableInfo.some(col => col.name === 'seen_in_last_sync')
+    const hasLastSeen = tableInfo.some(col => col.name === 'last_seen_at')
+    if (!hasSeen) {
+      db.exec(`ALTER TABLE wingubox_employees ADD COLUMN seen_in_last_sync INTEGER DEFAULT 0`)
+    }
+    if (!hasLastSeen) {
+      db.exec(`ALTER TABLE wingubox_employees ADD COLUMN last_seen_at TEXT`)
+    }
+  } catch (e) {
+    // ignore migration failures
+  }
+
   // Create index on employee_id for faster lookups
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_wingubox_employees_employee_id ON wingubox_employees(employee_id)')
@@ -214,7 +232,7 @@ function insertOrUpdateEmployee(db, employeeData) {
         id_no, pin, telephone, official_email, personal_email,
         address_1, address_2, city, state_province_county, country, postal_code, zip_code,
         seen_in_last_sync, last_seen_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(employee_id) DO UPDATE SET
         employee_number = excluded.employee_number,
         active = excluded.active,
@@ -280,8 +298,7 @@ function insertOrUpdateEmployee(db, employeeData) {
       stateProvinceCounty,
       country,
       postalCode,
-      zipCode,
-      1
+      zipCode
     )
     return true
   } catch (e) {

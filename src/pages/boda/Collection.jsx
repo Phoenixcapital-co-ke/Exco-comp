@@ -27,6 +27,26 @@ function BodaCollection() {
   const [clientSearchFilter, setClientSearchFilter] = useState('')
   const [expandedDailyBranches, setExpandedDailyBranches] = useState(new Set())
   const [repaymentsTodayMap, setRepaymentsTodayMap] = useState({})
+  const [scheduleBranchRows, setScheduleBranchRows] = useState([])
+  const [scheduleDueDays, setScheduleDueDays] = useState([])
+  const [loadingScheduleSummary, setLoadingScheduleSummary] = useState(true)
+  const [scheduleMonthSummary, setScheduleMonthSummary] = useState({
+    totalExpected: 0,
+    totalOutstanding: 0,
+    netCollected: 0,
+    ratePercent: 0,
+    totalLoans: 0,
+    mtdExpected: 0,
+    mtdOutstanding: 0,
+    mtdNetCollected: 0,
+    mtdRatePercent: 0,
+    mtdTotalLoans: 0,
+  })
+  const [loadingScheduleMonthSummary, setLoadingScheduleMonthSummary] = useState(true)
+  const [mtdByBranchRows, setMtdByBranchRows] = useState([])
+  const [loadingMtdByBranch, setLoadingMtdByBranch] = useState(true)
+  const [scheduleDailyRows, setScheduleDailyRows] = useState([])
+  const [loadingScheduleDaily, setLoadingScheduleDaily] = useState(true)
   const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useBodaBranch()
 
   useEffect(() => {
@@ -166,6 +186,181 @@ function BodaCollection() {
       loadDailyRepayments()
     }
   }, [selectedMonth, selectedYear])
+
+  // Fetch branch summary for Daily Break-down (from boda_Schedule)
+  useEffect(() => {
+    const loadScheduleBranchSummary = async () => {
+      setLoadingScheduleSummary(true)
+      try {
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+        })
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        if (selectedDueDay) {
+          params.set('dueDay', String(selectedDueDay))
+        }
+        const res = await fetch(`${API_URLS.boda.scheduleBranchSummary}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          setScheduleBranchRows([])
+          setScheduleDueDays([])
+          setLoadingScheduleSummary(false)
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        setScheduleBranchRows(Array.isArray(data.rows) ? data.rows : [])
+        setScheduleDueDays(Array.isArray(data.dueDays) ? data.dueDays : [])
+      } catch {
+        setScheduleBranchRows([])
+        setScheduleDueDays([])
+      } finally {
+        setLoadingScheduleSummary(false)
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadScheduleBranchSummary()
+    }
+  }, [selectedMonth, selectedYear, selectedBranch, selectedDueDay])
+
+  // Fetch month-level summary for cards (from boda_Schedule)
+  useEffect(() => {
+    const loadScheduleSummary = async () => {
+      setLoadingScheduleMonthSummary(true)
+      try {
+        const today = new Date()
+        const isCurrentMonth = selectedYear === today.getFullYear() && selectedMonth === (today.getMonth() + 1)
+        const cutoffDay = isCurrentMonth ? today.getDate() : new Date(selectedYear, selectedMonth, 0).getDate()
+
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+          cutoffDay: String(cutoffDay),
+        })
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        const res = await fetch(`${API_URLS.boda.scheduleSummary}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          setScheduleMonthSummary({
+            totalExpected: 0,
+            totalOutstanding: 0,
+            netCollected: 0,
+            ratePercent: 0,
+            totalLoans: 0,
+          })
+          setLoadingScheduleMonthSummary(false)
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        setScheduleMonthSummary({
+          totalExpected: Number(data.totalExpected || 0),
+          totalOutstanding: Number(data.totalOutstanding || 0),
+          netCollected: Number(data.netCollected || 0),
+          ratePercent: Number(data.ratePercent || 0),
+          totalLoans: Number(data.totalLoans || 0),
+          mtdExpected: Number(data.mtdExpected || 0),
+          mtdOutstanding: Number(data.mtdOutstanding || 0),
+          mtdNetCollected: Number(data.mtdNetCollected || 0),
+          mtdRatePercent: Number(data.mtdRatePercent || 0),
+          mtdTotalLoans: Number(data.mtdTotalLoans || 0),
+        })
+      } catch {
+        setScheduleMonthSummary({
+          totalExpected: 0,
+          totalOutstanding: 0,
+          netCollected: 0,
+          ratePercent: 0,
+          totalLoans: 0,
+          mtdExpected: 0,
+          mtdOutstanding: 0,
+          mtdNetCollected: 0,
+          mtdRatePercent: 0,
+          mtdTotalLoans: 0,
+        })
+      } finally {
+        setLoadingScheduleMonthSummary(false)
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadScheduleSummary()
+    }
+  }, [selectedMonth, selectedYear, selectedBranch])
+
+  // Fetch Daily Expected vs Collected (from boda_Schedule)
+  useEffect(() => {
+    const loadScheduleDaily = async () => {
+      setLoadingScheduleDaily(true)
+      try {
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+        })
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        const res = await fetch(`${API_URLS.boda.scheduleDaily}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          setScheduleDailyRows([])
+          setLoadingScheduleDaily(false)
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        setScheduleDailyRows(Array.isArray(data.rows) ? data.rows : [])
+      } catch {
+        setScheduleDailyRows([])
+      } finally {
+        setLoadingScheduleDaily(false)
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadScheduleDaily()
+    }
+  }, [selectedMonth, selectedYear, selectedBranch])
+
+  // Fetch MTD Collection by Branch (from boda_Schedule)
+  useEffect(() => {
+    const loadMtdByBranch = async () => {
+      setLoadingMtdByBranch(true)
+      try {
+        const today = new Date()
+        const isCurrentMonth = selectedYear === today.getFullYear() && selectedMonth === (today.getMonth() + 1)
+        const cutoffDay = isCurrentMonth ? today.getDate() : new Date(selectedYear, selectedMonth, 0).getDate()
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+          cutoffDay: String(cutoffDay),
+        })
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        const res = await fetch(`${API_URLS.boda.scheduleMtdByBranch}?${params.toString()}`, {
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          setMtdByBranchRows([])
+          setLoadingMtdByBranch(false)
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        setMtdByBranchRows(Array.isArray(data.rows) ? data.rows : [])
+      } catch {
+        setMtdByBranchRows([])
+      } finally {
+        setLoadingMtdByBranch(false)
+      }
+    }
+    if (selectedMonth && selectedYear) {
+      loadMtdByBranch()
+    }
+  }, [selectedMonth, selectedYear, selectedBranch])
 
   // Fetch daily loans (from Zidisha_Daily) for the selected month/year
   useEffect(() => {
@@ -345,68 +540,10 @@ function BodaCollection() {
     )
   }, [clientsPaidToday, clientSearchFilter])
 
-  // Daily Expected vs Collected (Current Month) - based on active days and daily installments
+  // Daily Expected vs Collected - from boda_Schedule (expected/outstanding by Due Date)
   const dailyExpectedVsCollected = useMemo(() => {
-    const daysIn = new Date(selectedYear, selectedMonth, 0).getDate()
-    const monthStart = new Date(selectedYear, selectedMonth - 1, 1)
-    const monthEnd = new Date(selectedYear, selectedMonth, 0)
-    const expByDay = Array(daysIn + 1).fill(0)
-    
-    // Calculate expected amounts based on active days and daily installments
-    for (const client of clientPerformanceData) {
-      if (!client.dailyInstallment || client.dailyInstallment <= 0) continue
-      
-      // Determine which days in the month this client's loan is active
-      const row = rows.find(r => {
-        const clientId = (r['Client Id'] || r.client_id || '').trim()
-        const loanId = (r['Loan ID'] || r.loan_id || '').trim()
-        return clientId === client.clientId && loanId === client.loanId
-      })
-      
-      if (!row) continue
-      
-      const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
-      const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
-      
-      if (!disbursedDate || !maturedDate) continue
-      
-      const d1 = new Date(disbursedDate)
-      const d2 = new Date(maturedDate)
-      if (isNaN(d1.getTime()) || isNaN(d2.getTime())) continue
-      
-      // Calculate overlap with selected month
-      const overlapStart = d1 > monthStart ? d1 : monthStart
-      const overlapEnd = d2 < monthEnd ? d2 : monthEnd
-      
-      if (overlapEnd < overlapStart) continue
-      
-      // For each day in the overlap, add the daily installment
-      const startDay = Math.max(1, overlapStart.getDate())
-      const endDay = Math.min(daysIn, overlapEnd.getDate())
-      
-      for (let day = startDay; day <= endDay; day++) {
-        expByDay[day] += client.dailyInstallment
-      }
-    }
-    
-    // Get collected amounts from daily repayments API
-    const arr = []
-    let totalExpected = 0
-    let totalCollected = 0
-    for (let i = 1; i <= daysIn; i++) {
-      const expected = expByDay[i]
-      const collected = dailyRepayments[i] || 0
-      totalExpected += expected
-      totalCollected += collected
-      arr.push({ 
-        day: String(i), 
-        expected, 
-        collected,
-        rate: expected > 0 ? (collected / expected) * 100 : 0
-      })
-    }
-    return arr
-  }, [clientPerformanceData, rows, selectedMonth, selectedYear, dailyRepayments])
+    return Array.isArray(scheduleDailyRows) ? scheduleDailyRows : []
+  }, [scheduleDailyRows])
 
   // Helper function to clean branch name
   const cleanBranchName = (name = '') => {
@@ -426,16 +563,8 @@ function BodaCollection() {
   }, [rows, cleanBranchName])
 
   const availableDueDays = useMemo(() => {
-    const set = new Set()
-    for (const r of dailyLoans) {
-      const due = r.dueDate || r['Due Date']
-      if (!due) continue
-      const d = new Date(due)
-      if (isNaN(d.getTime())) continue
-      set.add(d.getDate())
-    }
-    return Array.from(set).sort((a, b) => a - b)
-  }, [dailyLoans])
+    return Array.isArray(scheduleDueDays) ? scheduleDueDays : []
+  }, [scheduleDueDays])
 
   // Keep selectedDueDay valid when month/year changes
   useEffect(() => {
@@ -460,70 +589,10 @@ function BodaCollection() {
     }
   }, [availableDueDays, selectedDueDay, selectedMonth, selectedYear, now])
 
-  // Branch Summary Table (with Due Date filter) - includes clients per branch for expandable rows
+  // Branch Summary Table (with Due Date filter) - now from boda_Schedule
   const branchSummary = useMemo(() => {
-    const branchMap = new Map()
-    
-    // Base rows come from Zidisha_Daily via API
-    let filteredRows = dailyLoans
-
-    // Further filter by selected day-of-month if provided
-    if (selectedDueDay) {
-      const dayNum = Number(selectedDueDay)
-      filteredRows = filteredRows.filter((r) => {
-        const dueDate = r.dueDate || r['Due Date']
-        if (!dueDate) return false
-        const d = new Date(dueDate)
-        if (isNaN(d.getTime())) return false
-        return d.getDate() === dayNum
-      })
-    }
-    
-    for (const r of filteredRows) {
-      const branchName = cleanBranchName(r.branchName || r['Branch Name'] || 'Unknown')
-      const expected = Number(r.totalExpected || r['Total Expected Repayment Derived'] || 0)
-      const outstanding = Number(r.totalOutstanding || r['Total Outstanding Derived'] || 0)
-      const amountPaid = Math.max(0, expected - outstanding)
-      const ratePercent = expected > 0 ? (amountPaid / expected) * 100 : 0
-      const clientName = r.clientName || r['Client Name'] || r.client_name || 'Unknown'
-      const clientId = r.clientId || r['Client Id'] || r.client_id || ''
-      
-      if (!branchMap.has(branchName)) {
-        branchMap.set(branchName, {
-          branch: branchName,
-          totalExpected: 0,
-          totalOutstanding: 0,
-          clients: [],
-        })
-      }
-      
-      const entry = branchMap.get(branchName)
-      entry.totalExpected += expected
-      entry.totalOutstanding += outstanding
-      entry.clients.push({
-        clientName,
-        clientId,
-        expected,
-        outstanding,
-        amountPaid,
-        ratePercent,
-      })
-    }
-    
-    // Calculate rate % = (Total Expected - Total Outstanding) / Total Expected and sort
-    const result = Array.from(branchMap.values()).map(entry => {
-      const ratePercent =
-        entry.totalExpected > 0
-          ? ((entry.totalExpected - entry.totalOutstanding) / entry.totalExpected) * 100
-          : 0
-      return {
-        ...entry,
-        ratePercent,
-      }
-    }).sort((a, b) => b.totalOutstanding - a.totalOutstanding)
-    
-    return result
-  }, [dailyLoans, selectedDueDay])
+    return Array.isArray(scheduleBranchRows) ? scheduleBranchRows : []
+  }, [scheduleBranchRows])
 
   // Branch Breakdown Table
   const branchBreakdown = useMemo(() => {
@@ -590,33 +659,6 @@ function BodaCollection() {
     
     return result.sort((a, b) => b.totalExpected - a.totalExpected)
   }, [rows, clientPerformanceData])
-
-  // Branches with active loans count and % of accounts that had a payment today
-  const branchActiveLoansAndPaymentToday = useMemo(() => {
-    const branchMap = new Map()
-    for (const r of rows) {
-      const branchName = cleanBranchName(r['Branch Name'] || r.branch_name || 'Unknown')
-      const clientId = (r['Client Id'] || r.client_id || '').trim()
-      const loanId = (r['Loan ID'] || r.loan_id || '').trim()
-      const repaymentKey = `${clientId}|${loanId}`
-      const paidToday = (repaymentsTodayMap[repaymentKey] || 0) > 0
-
-      if (!branchMap.has(branchName)) {
-        branchMap.set(branchName, { activeLoans: 0, paidTodayCount: 0 })
-      }
-      const entry = branchMap.get(branchName)
-      entry.activeLoans += 1
-      if (paidToday) entry.paidTodayCount += 1
-    }
-    return Array.from(branchMap.entries())
-      .map(([branch, v]) => ({
-        branch,
-        activeLoans: v.activeLoans,
-        paidTodayCount: v.paidTodayCount,
-        percentPaidToday: v.activeLoans > 0 ? (v.paidTodayCount / v.activeLoans) * 100 : 0,
-      }))
-      .sort((a, b) => b.activeLoans - a.activeLoans)
-  }, [rows, repaymentsTodayMap])
 
   // Principal collection per branch (for selected month) based on Zidisha Boda rows
   const principalByBranch = useMemo(() => {
@@ -880,11 +922,11 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">EOM Total Collected</p>
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
               <p className="text-3xl font-bold text-gray-900">
-                {formatKES(netCollectedDailyMonth)}
+                {formatKES(scheduleMonthSummary.netCollected)}
               </p>
               )}
             </div>
@@ -898,15 +940,15 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">EOM Collection Rate</p>
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
-              <p className="text-3xl font-bold text-gray-900">{collectionRatePct.display}</p>
+              <p className="text-3xl font-bold text-gray-900">{`${Number(scheduleMonthSummary.ratePercent || 0).toFixed(1)}%`}</p>
               )}
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-32 mt-2"></div>
               ) : (
-              <p className="text-xs text-gray-500 mt-2">Efficiency: {collectionEfficiency.toFixed(1)}%</p>
+              <p className="text-xs text-gray-500 mt-2">Efficiency: {Number(scheduleMonthSummary.ratePercent || 0).toFixed(1)}%</p>
               )}
             </div>
             <div className="p-4 rounded-xl bg-blue-500 text-white">
@@ -919,21 +961,19 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">Outstanding</p>
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
                 <p className="text-3xl font-bold text-gray-900">
-                  {formatKES(totalOutstandingDailyMonth)}
+                  {formatKES(scheduleMonthSummary.totalOutstanding)}
                 </p>
               )}
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-28 mt-2"></div>
               ) : (
               <p className="text-xs text-gray-500 mt-2">
-                  {totalExpectedDailyMonth > 0
-                    ? `${((totalOutstandingDailyMonth / totalExpectedDailyMonth) * 100).toFixed(
-                        1,
-                      )}% of target`
+                  {scheduleMonthSummary.totalExpected > 0
+                    ? `${((scheduleMonthSummary.totalOutstanding / scheduleMonthSummary.totalExpected) * 100).toFixed(1)}% of target`
                     : '0.0% of target'}
               </p>
               )}
@@ -948,14 +988,14 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600 mb-1">MTD Collected amount</p>
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-9 bg-gray-200 rounded animate-pulse mb-2"></div>
               ) : (
                 <p className="text-3xl font-bold text-gray-900">
-                  {formatKES(netCollectedMTD)}
+                  {formatKES(scheduleMonthSummary.mtdNetCollected)}
                 </p>
               )}
-              {loadingRepayments ? (
+              {loadingScheduleMonthSummary ? (
                 <div className="h-4 bg-gray-200 rounded animate-pulse w-40 mt-2"></div>
               ) : (
               <p className="text-xs text-gray-500 mt-2">
@@ -980,7 +1020,11 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">MTD Collection Rate</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{mtdCollectionRatePct}</p>
+              {loadingScheduleMonthSummary ? (
+                <div className="h-7 bg-gray-200 rounded animate-pulse w-24 mt-2"></div>
+              ) : (
+                <p className="text-2xl font-bold text-gray-900 mt-1">{`${Number(scheduleMonthSummary.mtdRatePercent || 0).toFixed(1)}%`}</p>
+              )}
             </div>
             <div className="p-3 rounded-lg bg-indigo-50 text-indigo-600">
               <Zap size={24} />
@@ -993,7 +1037,11 @@ function BodaCollection() {
               <p className="text-sm font-medium text-gray-600">
                 {new Date(selectedYear, selectedMonth - 1).toLocaleString('en-US', { month: 'long' })} Total Expected Collection
               </p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(totalExpectedDailyMonth)}</p>
+              {loadingScheduleMonthSummary ? (
+                <div className="h-7 bg-gray-200 rounded animate-pulse w-40 mt-2"></div>
+              ) : (
+                <p className="text-2xl font-bold text-gray-900 mt-1">{formatKES(scheduleMonthSummary.totalExpected)}</p>
+              )}
             </div>
             <div className="p-3 rounded-lg bg-yellow-50 text-yellow-600">
               <Calendar size={24} />
@@ -1004,7 +1052,11 @@ function BodaCollection() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Loans</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{clientPerformanceData.filter(c => c.activeDays > 0).length.toLocaleString()}</p>
+              {loadingScheduleMonthSummary ? (
+                <div className="h-7 bg-gray-200 rounded animate-pulse w-24 mt-2"></div>
+              ) : (
+                <p className="text-2xl font-bold text-gray-900 mt-1">{Number(scheduleMonthSummary.totalLoans || 0).toLocaleString()}</p>
+              )}
             </div>
             <div className="p-3 rounded-lg bg-gray-50 text-gray-600">
               <Users size={24} />
@@ -1019,135 +1071,52 @@ function BodaCollection() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-900">MTD Collection by Branch</h3>
           </div>
-          {(() => {
-            const today = new Date()
-            const isCurrentMonth =
-              selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
-            const cutoffDay = isCurrentMonth
-              ? today.getDate()
-              : new Date(selectedYear, selectedMonth, 0).getDate()
-            const allowedBranches = new Set((bodaBranches || []).map((b) => cleanBranchName(b).toLowerCase()))
-
-            const agg = new Map()
-            // Use the same source as the summary cards: Zidisha_Daily (dailyLoans).
-            // Expected/Outstanding come from daily rows; Collected = Expected - Outstanding.
-            for (const r of dailyLoans) {
-              const due = r.dueDate || r['Due Date']
-              if (!due) continue
-              const d = new Date(due)
-              if (isNaN(d.getTime())) continue
-              if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
-              if (d.getDate() > cutoffDay) continue
-
-              const rawBranch = r.branchName || r['Branch Name'] || r.branch_name || 'Unknown'
-              const b = cleanBranchName(rawBranch)
-              const bKey = b.toLowerCase()
-              if (!b || bKey === 'unknown') continue
-              if (allowedBranches.size > 0 && !allowedBranches.has(bKey)) continue
-
-              const expAmt =
-                Number(
-                  r.totalExpected ??
-                    r['Total Expected Repayment Derived'] ??
-                    r['Total Expected Repayment'] ??
-                    0,
-                ) || 0
-              const outstandingAmt =
-                Number(
-                  r.totalOutstanding ??
-                    r['Total Outstanding Derived'] ??
-                    r['Total Outstanding'] ??
-                    0,
-                ) || 0
-              const repAmt = Math.max(0, expAmt - outstandingAmt)
-              if (!agg.has(b)) agg.set(b, { expected: 0, collected: 0 })
-              const cur = agg.get(b)
-              cur.expected += expAmt
-              cur.collected += repAmt
-            }
-
-            const items = Array.from(agg.entries())
-              .map(([branch, v]) => {
-                const rate = v.expected > 0 ? (v.collected / v.expected) * 100 : 0
-                const to97 = v.expected > 0 ? Math.max(0, 0.97 * v.expected - v.collected) : 0
-                return { branch, ...v, rate, to97 }
-              })
-              .sort((a, b) => {
-                if (b.rate === a.rate) return b.collected - a.collected
-                return b.rate - a.rate
-              })
-
-            return (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
-                      <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
-                      <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
-                      <th className="px-3 py-2 text-right font-medium text-gray-600">To 97%</th>
-                      <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-100">
-                    {items.map((r) => (
+          {loadingMtdByBranch ? (
+            <div className="h-24 bg-gray-50 rounded-lg flex items-center justify-center">
+              <div className="text-center">
+                <div className="inline-block h-7 w-7 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                <p className="text-gray-500 text-sm">Loading…</p>
+              </div>
+            </div>
+          ) : (Array.isArray(mtdByBranchRows) && mtdByBranchRows.length > 0) ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                    <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
+                    <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
+                    <th className="px-3 py-2 text-right font-medium text-gray-600">To 97%</th>
+                    <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {mtdByBranchRows.map((r) => {
+                    const expected = Number(r.expected || 0)
+                    const outstanding = Number(r.outstanding || 0)
+                    const collected = Number(r.collected || 0)
+                    const rate = Number(r.ratePercent || 0)
+                    const to97 = expected > 0 ? Math.max(0, 0.97 * expected - collected) : 0
+                    return (
                       <tr key={r.branch} className="hover:bg-gray-50">
                         <td className="px-3 py-2 text-gray-900">{r.branch}</td>
-                        <td className="px-3 py-2 text-right">{formatKES(r.expected)}</td>
-                        <td className="px-3 py-2 text-right">{formatKES(r.collected)}</td>
-                        <td className="px-3 py-2 text-right">{r.expected > 0 ? formatKES(r.to97) : '-'}</td>
-                        <td className="px-3 py-2 text-right">{r.rate.toFixed(1)}%</td>
+                        <td className="px-3 py-2 text-right">{formatKES(expected)}</td>
+                        <td className="px-3 py-2 text-right">{formatKES(collected)}</td>
+                        <td className="px-3 py-2 text-right">{expected > 0 ? formatKES(to97) : '-'}</td>
+                        <td className="px-3 py-2 text-right">{rate.toFixed(1)}%</td>
                       </tr>
-                    ))}
-                    {!items.length && (
-                      <tr>
-                        <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
-                          No data for selected period.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )
-          })()}
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="h-24 bg-gray-50 rounded-lg flex items-center justify-center">
+              <p className="text-gray-500 text-sm">No data for selected period.</p>
+            </div>
+          )}
         </div>
       )}
-
-      {/* Branches: Active Loans & % Paid Today */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Branches – Active Loans & Payments Today</h3>
-        {branchActiveLoansAndPaymentToday.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch Name</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Active Loans</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Paid Today</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% Accounts Paid Today</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {branchActiveLoansAndPaymentToday.map((row) => (
-                  <tr key={row.branch} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-gray-900 font-medium">{row.branch}</td>
-                    <td className="px-4 py-3 text-right text-gray-900">{row.activeLoans.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right text-gray-900">{row.paidTodayCount.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right">
-                      <span className={row.percentPaidToday >= 50 ? 'text-green-600' : row.percentPaidToday >= 25 ? 'text-yellow-600' : 'text-gray-600'}>
-                        {row.percentPaidToday.toFixed(1)}%
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="text-gray-500 text-sm">No branch data available.</p>
-        )}
-      </div>
 
       {/* Daily Break-down + Daily Expected vs Collected */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1180,7 +1149,14 @@ function BodaCollection() {
               )}
             </div>
           </div>
-          {branchSummary.length > 0 ? (
+          {loadingScheduleSummary ? (
+            <div className="h-32 bg-gray-50 rounded-lg flex items-center justify-center">
+              <div className="text-center">
+                <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                <p className="text-gray-500">Loading schedule data...</p>
+              </div>
+            </div>
+          ) : branchSummary.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -1262,7 +1238,7 @@ function BodaCollection() {
                                     <tr>
                                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-600 uppercase">Client</th>
                                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Total Expected</th>
-                                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Amount paid</th>
+                                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">Total Outstanding</th>
                                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-600 uppercase">%</th>
                                     </tr>
                                   </thead>
@@ -1271,7 +1247,7 @@ function BodaCollection() {
                                       <tr key={`${c.clientId}-${i}`} className="hover:bg-gray-50">
                                         <td className="px-4 py-2 font-medium text-gray-900">{c.clientName || 'Unknown'}</td>
                                         <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.expected)}</td>
-                                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.amountPaid)}</td>
+                                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(c.outstanding)}</td>
                                         <td className="px-4 py-2 text-right">
                                           <span className={c.ratePercent >= 50 ? 'text-green-600' : c.ratePercent >= 30 ? 'text-yellow-600' : 'text-gray-600'}>
                                             {c.ratePercent.toFixed(1)}%
@@ -1305,7 +1281,7 @@ function BodaCollection() {
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
             Daily Expected vs Collected ({new Date(2000, selectedMonth-1, 1).toLocaleString('en-US', { month: 'long' })} {selectedYear})
           </h3>
-          {loadingDailyRepayments ? (
+          {loadingScheduleDaily ? (
             <div className="h-64 bg-gray-50 rounded-lg flex items-center justify-center">
               <div className="text-center">
                 <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>

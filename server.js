@@ -1933,6 +1933,342 @@ app.get('/api/boda/repayments/daily', (req, res) => {
   }
 })
 
+// Boda schedule (export id 30) - branch summary for Daily Break-down table
+// Table: boda_Schedule. Columns: Branch Name, Client Id, Client Name, Due Date, Loan Id, Period, Total Expected, Total Outstanding
+app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const dueDay = req.query.dueDay != null && String(req.query.dueDay).trim() !== '' ? Number(req.query.dueDay) : null
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (dueDay != null && (!Number.isFinite(dueDay) || dueDay < 1 || dueDay > 31)) {
+      return res.status(400).json({ error: 'dueDay must be 1-31' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const baseRows = db.prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         TRIM("Client Id") AS clientId,
+         TRIM("Client Name") AS clientName,
+         TRIM("Loan Id") AS loanId,
+         TRIM("Due Date") AS dueDate,
+         TRIM("Period") AS period,
+         COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
+         COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
+       FROM boda_Schedule
+       WHERE "Due Date" >= ? AND "Due Date" < ?`
+    ).all(monthStart, monthEnd)
+
+    // Distinct due-day options for the month (used by UI dropdown)
+    const dueDaysSet = new Set()
+
+    // Filter + aggregate in JS for flexibility with due-day + branch scoping
+    const byBranch = new Map()
+    for (const r of baseRows) {
+      const b = String(r.branch || '').trim() || 'Unknown'
+      const bKey = b.toLowerCase()
+
+      if (allowedNorm && !allowedNorm.has(bKey)) continue
+      if (branch && branch.toLowerCase() !== 'all' && bKey !== branch.toLowerCase()) continue
+
+      const d = String(r.dueDate || '').trim()
+      const dt = d ? new Date(d) : null
+      if (!dt || isNaN(dt.getTime())) continue
+      const day = dt.getDate()
+      dueDaysSet.add(day)
+      if (dueDay != null && day !== dueDay) continue
+
+      if (!byBranch.has(b)) {
+        byBranch.set(b, { branch: b, totalExpected: 0, totalOutstanding: 0, clients: [] })
+      }
+      const entry = byBranch.get(b)
+      entry.totalExpected += Number(r.totalExpected || 0)
+      entry.totalOutstanding += Number(r.totalOutstanding || 0)
+      entry.clients.push({
+        clientId: r.clientId || '',
+        clientName: r.clientName || '',
+        loanId: r.loanId || '',
+        dueDate: r.dueDate || '',
+        period: r.period || '',
+        expected: Number(r.totalExpected || 0),
+        outstanding: Number(r.totalOutstanding || 0),
+      })
+    }
+
+    const rows = Array.from(byBranch.values()).map((x) => {
+      const expected = x.totalExpected || 0
+      const outstanding = x.totalOutstanding || 0
+      const ratePercent = expected > 0 ? ((expected - outstanding) / expected) * 100 : 0
+      // Client-level rate (optional; matches branch logic)
+      const clients = Array.isArray(x.clients)
+        ? x.clients.map((c) => ({
+            ...c,
+            ratePercent: c.expected > 0 ? ((c.expected - c.outstanding) / c.expected) * 100 : 0,
+          }))
+        : []
+      return { ...x, ratePercent, clients }
+    }).sort((a, b) => String(a.branch).localeCompare(String(b.branch)))
+
+    const dueDays = Array.from(dueDaysSet).sort((a, b) => a - b)
+    res.json({ rows, dueDays })
+  } catch (e) {
+    console.error('[Boda Schedule Branch Summary API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Boda schedule month summary - values for top cards
+app.get('/api/boda/schedule/summary', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+    const cutoffDayRaw = req.query.cutoffDay != null && String(req.query.cutoffDay).trim() !== '' ? Number(req.query.cutoffDay) : null
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (cutoffDayRaw != null && (!Number.isFinite(cutoffDayRaw) || cutoffDayRaw < 1 || cutoffDayRaw > 31)) {
+      return res.status(400).json({ error: 'cutoffDay must be 1-31' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const rows = db.prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         TRIM("Loan Id") AS loanId,
+         TRIM("Due Date") AS dueDate,
+         COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
+         COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
+       FROM boda_Schedule
+       WHERE "Due Date" >= ? AND "Due Date" < ?`
+    ).all(monthStart, monthEnd)
+
+    let totalExpected = 0
+    let totalOutstanding = 0
+    let mtdExpected = 0
+    let mtdOutstanding = 0
+    const loans = new Set()
+    const mtdLoans = new Set()
+    for (const r of rows) {
+      const b = String(r.branch || '').trim()
+      const bKey = b.toLowerCase()
+      if (allowedNorm && !allowedNorm.has(bKey)) continue
+      if (branch && branch.toLowerCase() !== 'all' && bKey !== branch.toLowerCase()) continue
+      totalExpected += Number(r.totalExpected || 0)
+      totalOutstanding += Number(r.totalOutstanding || 0)
+      const loanId = String(r.loanId || '').trim()
+      if (loanId) loans.add(loanId)
+
+      if (cutoffDayRaw != null) {
+        const d = String(r.dueDate || '').trim()
+        const dt = d ? new Date(d) : null
+        if (dt && !isNaN(dt.getTime()) && dt.getDate() <= cutoffDayRaw) {
+          mtdExpected += Number(r.totalExpected || 0)
+          mtdOutstanding += Number(r.totalOutstanding || 0)
+          if (loanId) mtdLoans.add(loanId)
+        }
+      }
+    }
+    const netCollected = Math.max(0, totalExpected - totalOutstanding)
+    const ratePercent = totalExpected > 0 ? (netCollected / totalExpected) * 100 : 0
+    const mtdNetCollected = Math.max(0, mtdExpected - mtdOutstanding)
+    const mtdRatePercent = mtdExpected > 0 ? (mtdNetCollected / mtdExpected) * 100 : 0
+
+    res.json({
+      totalExpected,
+      totalOutstanding,
+      netCollected,
+      ratePercent,
+      totalLoans: loans.size,
+      mtdExpected,
+      mtdOutstanding,
+      mtdNetCollected,
+      mtdRatePercent,
+      mtdTotalLoans: mtdLoans.size,
+    })
+  } catch (e) {
+    console.error('[Boda Schedule Summary API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Boda schedule MTD by branch - for "MTD Collection by Branch" table
+app.get('/api/boda/schedule/mtd-by-branch', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const cutoffDayRaw = req.query.cutoffDay != null && String(req.query.cutoffDay).trim() !== '' ? Number(req.query.cutoffDay) : null
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (cutoffDayRaw == null || !Number.isFinite(cutoffDayRaw) || cutoffDayRaw < 1 || cutoffDayRaw > 31) {
+      return res.status(400).json({ error: 'cutoffDay (1-31) is required' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const rows = db.prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         TRIM("Due Date") AS dueDate,
+         COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
+         COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
+       FROM boda_Schedule
+       WHERE "Due Date" >= ? AND "Due Date" < ?`
+    ).all(monthStart, monthEnd)
+
+    const agg = new Map()
+    for (const r of rows) {
+      const b = String(r.branch || '').trim() || 'Unknown'
+      const bKey = b.toLowerCase()
+      if (allowedNorm && !allowedNorm.has(bKey)) continue
+      if (branch && branch.toLowerCase() !== 'all' && bKey !== branch.toLowerCase()) continue
+
+      const d = String(r.dueDate || '').trim()
+      const dt = d ? new Date(d) : null
+      if (!dt || isNaN(dt.getTime())) continue
+      if (dt.getDate() > cutoffDayRaw) continue
+
+      const expected = Number(r.totalExpected || 0)
+      const outstanding = Number(r.totalOutstanding || 0)
+      if (!agg.has(b)) agg.set(b, { branch: b, expected: 0, outstanding: 0 })
+      const cur = agg.get(b)
+      cur.expected += expected
+      cur.outstanding += outstanding
+    }
+
+    const result = Array.from(agg.values())
+      .map((x) => {
+        const collected = Math.max(0, x.expected - x.outstanding)
+        const ratePercent = x.expected > 0 ? (collected / x.expected) * 100 : 0
+        return { ...x, collected, ratePercent }
+      })
+      .sort((a, b) => b.collected - a.collected)
+
+    res.json({ rows: result })
+  } catch (e) {
+    console.error('[Boda Schedule MTD By Branch API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Boda schedule daily expected vs collected (by Due Date day-of-month)
+app.get('/api/boda/schedule/daily', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+    const daysIn = new Date(year, month, 0).getDate()
+
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const rows = db.prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         TRIM("Due Date") AS dueDate,
+         COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
+         COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
+       FROM boda_Schedule
+       WHERE "Due Date" >= ? AND "Due Date" < ?`
+    ).all(monthStart, monthEnd)
+
+    const expectedByDay = Array(daysIn + 1).fill(0)
+    const collectedByDay = Array(daysIn + 1).fill(0)
+    for (const r of rows) {
+      const b = String(r.branch || '').trim() || 'Unknown'
+      const bKey = b.toLowerCase()
+      if (allowedNorm && !allowedNorm.has(bKey)) continue
+      if (branch && branch.toLowerCase() !== 'all' && bKey !== branch.toLowerCase()) continue
+
+      const d = String(r.dueDate || '').trim()
+      const dt = d ? new Date(d) : null
+      if (!dt || isNaN(dt.getTime())) continue
+      const day = dt.getDate()
+      if (day < 1 || day > daysIn) continue
+
+      const expected = Number(r.totalExpected || 0)
+      const outstanding = Number(r.totalOutstanding || 0)
+      const collected = Math.max(0, expected - outstanding)
+      expectedByDay[day] += expected
+      collectedByDay[day] += collected
+    }
+
+    const out = []
+    for (let day = 1; day <= daysIn; day++) {
+      const expected = expectedByDay[day] || 0
+      const collected = collectedByDay[day] || 0
+      const rate = expected > 0 ? (collected / expected) * 100 : 0
+      out.push({ day: String(day), expected, collected, rate })
+    }
+    res.json({ rows: out })
+  } catch (e) {
+    console.error('[Boda Schedule Daily API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Boda daily loans endpoint - based on Zidisha_Daily table (Zidisha Boda only)
 app.get('/api/boda/daily-loans', requireAuth, (req, res) => {
   try {
@@ -2074,7 +2410,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
       return res.status(400).json({ error: 'Invalid year' });
     }
-
+    
     const effectiveBranches = getEffectiveLogbookBranches(req)
     const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
     if (countryParam && effectiveBranches.length === 0) {
@@ -2221,8 +2557,8 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     // Convert to array and sort by total repayment amount (descending)
     let rows = Array.from(borrowerMap.values())
       .map(row => ({
-        ...row,
-        name: borrowerNameMap.get(String(row.borrower_access_id)) || null
+      ...row,
+      name: borrowerNameMap.get(String(row.borrower_access_id)) || null
       }))
       .sort((a, b) => (b.total_repayment_amount || 0) - (a.total_repayment_amount || 0));
 
@@ -2337,7 +2673,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
             }
 
             if (principal !== 0) {
-              portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
+            portfolioMap.set(key, (Number(portfolioMap.get(key)) || 0) + principal)
             }
           }
         }
@@ -2345,7 +2681,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         rows = rows.map((r) => {
           const idKey = String(r.borrower_access_id || '').trim()
           return {
-            ...r,
+          ...r,
             portfolio: portfolioMap.get(idKey) ?? 0,
             accounts: accountCountMap.get(idKey) ?? 0,
             customers: customerSetMap.get(idKey)?.size ?? 0,
@@ -2674,15 +3010,15 @@ app.get('/api/logbook/branches', (req, res) => {
 
 const mapUserRow = (user) => {
   const base = {
-    id: user.id,
-    username: user.username,
-    fullName: user.full_name,
-    email: user.email,
-    role: user.role,
-    active: !!user.active,
-    emailVerified: !!user.email_verified,
-    createdAt: user.created_at,
-    updatedAt: user.updated_at
+  id: user.id,
+  username: user.username,
+  fullName: user.full_name,
+  email: user.email,
+  role: user.role,
+  active: !!user.active,
+  emailVerified: !!user.email_verified,
+  createdAt: user.created_at,
+  updatedAt: user.updated_at
   }
   // For custom and manager role users, include their allowed pages/modules
   const userRole = String(user.role || '').toLowerCase()
@@ -4082,7 +4418,7 @@ app.put('/api/users/:id', (req, res) => {
         }
       }
     }
-
+    
     res.json({ ok: true })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -4885,7 +5221,7 @@ app.get('/api/par', (req, res) => {
 
     // Default behavior (no country filter): return stored global totals.
     if (!countryParam) {
-      const rows = dbRW.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC').all()
+    const rows = dbRW.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC').all()
       return res.json(rows)
     }
 
@@ -5248,7 +5584,7 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     // Only cache if no branch/country filter (to avoid cache complexity)
     if (!branch && !countryParam && parBorrowerAccessCache.time !== latestPar.time) {
-      parBorrowerAccessCache = { time: latestPar.time, data: officerData }
+    parBorrowerAccessCache = { time: latestPar.time, data: officerData }
     }
 
     const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
