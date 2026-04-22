@@ -51,6 +51,7 @@ export const API_URLS = {
   ingest: `${API_BASE}/api/ingest`,
   reports: {
     generate: `${API_BASE}/api/reports/generate`,
+    bodaTopupQualifiers: `${API_BASE}/api/reports/boda-topup-qualifiers`,
   },
   par: {
     history: `${API_BASE}/api/par`,

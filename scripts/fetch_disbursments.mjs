@@ -772,10 +772,13 @@ const BODA_SCHEDULE_COLUMNS = [
   'Branch Name',
   'Client Id',
   'Client Name',
+  'Phone Number',
   'Due Date',
   'Loan Id',
   'Period',
   'Total Expected',
+  'Principal Amount',
+  'Principal Outstanding',
   // Needed for Boda Collection Daily Break-down (computed from schedule export)
   // If export doesn't provide it, it will be stored as 0.
   'Total Outstanding',
@@ -814,6 +817,7 @@ const ZIDISHA_COLUMNS = [
   'Branch Name',
   'Client Id',
   'Client Name',
+  'Phone Number',
   'Date Of Birth',
   'Disbursed On Date',
   'Expected Matured On Date',
@@ -861,10 +865,13 @@ function initBodaScheduleTable(db) {
       "Branch Name" TEXT,
       "Client Id" TEXT,
       "Client Name" TEXT,
+      "Phone Number" TEXT,
       "Due Date" TEXT,
       "Loan Id" TEXT,
       "Period" TEXT,
       "Total Expected" REAL,
+      "Principal Amount" REAL,
+      "Principal Outstanding" REAL,
       "Total Outstanding" REAL,
       created_at TEXT DEFAULT (datetime('now'))
     );
@@ -872,7 +879,7 @@ function initBodaScheduleTable(db) {
   const cols = db.prepare(`PRAGMA table_info(${BODA_SCHEDULE_TABLE});`).all().map(c => c.name)
   for (const col of BODA_SCHEDULE_COLUMNS) {
     if (!cols.includes(col)) {
-      const type = (col === 'Total Expected' || col === 'Total Outstanding') ? 'REAL' : 'TEXT'
+      const type = (col === 'Total Expected' || col === 'Total Outstanding' || col === 'Principal Amount' || col === 'Principal Outstanding') ? 'REAL' : 'TEXT'
       db.exec(`ALTER TABLE ${BODA_SCHEDULE_TABLE} ADD COLUMN "${col}" ${type};`)
     }
   }
@@ -892,6 +899,7 @@ function initZidishaTable(db) {
       "Branch Name" TEXT,
       "Client Id" TEXT,
       "Client Name" TEXT,
+      "Phone Number" TEXT,
       "Date Of Birth" TEXT,
       "Disbursed On Date" TEXT,
       "Expected Matured On Date" TEXT,
@@ -931,6 +939,9 @@ function initZidishaTable(db) {
   }
   if (!cols.includes('Gender')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Gender" TEXT;`)
+  }
+  if (!cols.includes('Phone Number')) {
+    db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Phone Number" TEXT;`)
   }
   if (!cols.includes('Principal Outstanding Derived')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Outstanding Derived" REAL;`)
@@ -1245,7 +1256,7 @@ function insertBodaSchedule(db, row) {
   const cleanRow = {}
   for (const c of cols) {
     const key = c.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_')
-    if (c === 'Total Expected' || c === 'Total Outstanding') {
+    if (c === 'Total Expected' || c === 'Total Outstanding' || c === 'Principal Amount' || c === 'Principal Outstanding') {
       cleanRow[key] = toNumber(row[c])
     } else {
       cleanRow[key] = row[c] == null ? '' : String(row[c])

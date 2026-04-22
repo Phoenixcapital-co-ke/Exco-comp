@@ -4,6 +4,7 @@ import { useLastRefresh } from '../../hooks/useLastRefresh.js'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { formatKES } from '../../utils/format.js'
+import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookWeeklyReportTemplate.js'
 
 function DataOverview() {
   const [logs, setLogs] = useState([
@@ -43,6 +44,24 @@ function DataOverview() {
   const [bodaReportError, setBodaReportError] = useState(null)
   const [showBodaReport, setShowBodaReport] = useState(false)
   const [showBodaDownloadMenu, setShowBodaDownloadMenu] = useState(false)
+  
+  // Logbook Weekly Performance Report State
+  const [logbookWeeklyAsAt, setLogbookWeeklyAsAt] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  })
+  const [logbookWeeklyReportHtml, setLogbookWeeklyReportHtml] = useState('')
+  const [logbookWeeklyLoading, setLogbookWeeklyLoading] = useState(false)
+  const [logbookWeeklyError, setLogbookWeeklyError] = useState(null)
+  const [showLogbookWeeklyReport, setShowLogbookWeeklyReport] = useState(false)
+  const [showLogbookWeeklyDownloadMenu, setShowLogbookWeeklyDownloadMenu] = useState(false)
+
+  // Boda Top Up Qualifiers Report State
+  const [bodaTopupRows, setBodaTopupRows] = useState([])
+  const [bodaTopupLoading, setBodaTopupLoading] = useState(false)
+  const [bodaTopupError, setBodaTopupError] = useState(null)
+  const [showBodaTopupReport, setShowBodaTopupReport] = useState(false)
+  const [showBodaTopupDownloadMenu, setShowBodaTopupDownloadMenu] = useState(false)
   const [fromMonth, setFromMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -250,6 +269,514 @@ function DataOverview() {
       setBodaReportError(e.message)
     } finally {
       setBodaReportLoading(false)
+    }
+  }
+
+  const parseDMY = (str) => {
+    const m = String(str || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+    if (!m) return null
+    const dd = Number(m[1])
+    const mm = Number(m[2])
+    const yyyy = Number(m[3])
+    const d = new Date(yyyy, mm - 1, dd)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+
+  const toEndOfDayIso = (date) => {
+    const d = new Date(date)
+    d.setHours(23, 59, 59, 999)
+    return d.toISOString()
+  }
+
+  const addDays = (date, days) => {
+    const d = new Date(date)
+    d.setDate(d.getDate() + days)
+    return d
+  }
+
+  const defaultRecommendationsHtml = useMemo(() => {
+    // This is intentionally kept as raw HTML to preserve the exact template design.
+    return `
+  <!-- CRITICAL -->
+  <div style="background:#FFF0EE;padding:3px 7px;border-bottom:0.5px solid var(--border);font-size:7pt;font-weight:600;color:var(--red);letter-spacing:1px;text-transform:uppercase">Critical Priority — Immediate Action This Week</div>
+
+  <div class="rec-item">
+    <div class="rec-num">01</div>
+    <div class="rec-text"><strong>Implement daily PAR aging buckets report</strong> (1–30, 31–60, 61–90, 90+ days). Current single PAR% masks severity distribution and prevents targeted recovery.</div>
+    <div class="rec-cat">Reporting</div>
+    <div><span class="badge badge-crit">Critical</span></div>
+    <div class="rec-owner">Head of Collections</div>
+    <div class="rec-due">Immediate</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">02</div>
+    <div class="rec-text"><strong>Branch emergency audit</strong> — investigate any branch where PAR doubled week-over-week, indicating accounts migrating into arrears. Identify accounts, escalate and initiate recovery.</div>
+    <div class="rec-cat">Collections</div>
+    <div><span class="badge badge-crit">Critical</span></div>
+    <div class="rec-owner">Branch Mgr</div>
+    <div class="rec-due">This week</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">03</div>
+    <div class="rec-text"><strong>Assign dedicated recovery officers</strong> to top delinquent accounts for branches with the highest PAR balance. Current aging delinquency is not being resolved fast enough.</div>
+    <div class="rec-cat">Collections</div>
+    <div><span class="badge badge-crit">Critical</span></div>
+    <div class="rec-owner">Head of Collections</div>
+    <div class="rec-due">This week</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">04</div>
+    <div class="rec-text"><strong>Sales emergency response</strong> — for branches far below target, review agent roster, pipeline, and market strategy. This is a structural failure, not a single bad week.</div>
+    <div class="rec-cat">Sales</div>
+    <div><span class="badge badge-crit">Critical</span></div>
+    <div class="rec-owner">Head of Sales</div>
+    <div class="rec-due">This week</div>
+  </div>
+
+  <!-- HIGH -->
+  <div style="background:#FEF3EC;padding:3px 7px;border-bottom:0.5px solid var(--border);font-size:7pt;font-weight:600;color:var(--orange);letter-spacing:1px;text-transform:uppercase">High Priority — Complete Within 2 Weeks</div>
+
+  <div class="rec-item">
+    <div class="rec-num">05</div>
+    <div class="rec-text"><strong>Pause new disbursements</strong> for any new market/branch until collection rate stabilises. Conduct first-cycle monitoring review.</div>
+    <div class="rec-cat">Risk</div>
+    <div><span class="badge badge-high">High</span></div>
+    <div class="rec-owner">Country Mgr</div>
+    <div class="rec-due">This week</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">06</div>
+    <div class="rec-text"><strong>Daily client follow-up register</strong> — implement mandatory demand letters within 3 days of missed payment; remove reliance on client promises-to-pay.</div>
+    <div class="rec-cat">Collections</div>
+    <div><span class="badge badge-high">High</span></div>
+    <div class="rec-owner">Branch Mgr</div>
+    <div class="rec-due">Next 2 weeks</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">07</div>
+    <div class="rec-text"><strong>Standardise demand letter protocol</strong> company-wide: issue within 3 days of missed payment (not on promise-to-pay). Enforce with branch oversight.</div>
+    <div class="rec-cat">Collections</div>
+    <div><span class="badge badge-high">High</span></div>
+    <div class="rec-owner">Head of Collections</div>
+    <div class="rec-due">Next 2 weeks</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">08</div>
+    <div class="rec-text"><strong>Add loan officer-level performance breakdown</strong> to weekly report. Branch aggregates mask individual accountability.</div>
+    <div class="rec-cat">Reporting</div>
+    <div><span class="badge badge-high">High</span></div>
+    <div class="rec-owner">MIS / Reporting</div>
+    <div class="rec-due">Next 2 weeks</div>
+  </div>
+
+  <!-- MEDIUM -->
+  <div style="background:#F5F5F5;padding:3px 7px;border-bottom:0.5px solid var(--border);font-size:7pt;font-weight:600;color:#555;letter-spacing:1px;text-transform:uppercase">Medium Priority — Complete Within 30 Days</div>
+
+  <div class="rec-item">
+    <div class="rec-num">09</div>
+    <div class="rec-text"><strong>Document and share best practices</strong> from top branches on collection discipline and PAR management.</div>
+    <div class="rec-cat">Knowledge Mgmt</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">Branch Managers</div>
+    <div class="rec-due">Next month</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">10</div>
+    <div class="rec-text"><strong>Introduce PAR aging buckets & provision coverage tracking</strong> in weekly reporting.</div>
+    <div class="rec-cat">Reporting</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">Finance / MIS</div>
+    <div class="rec-due">Next month</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">11</div>
+    <div class="rec-text"><strong>Launch top-up loan campaigns</strong> for clients with clean repayment history to grow quality book.</div>
+    <div class="rec-cat">Sales</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">Branch Mgr</div>
+    <div class="rec-due">Next month</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">12</div>
+    <div class="rec-text"><strong>Weekly pipeline review</strong> — investigate whether portfolio decline is from low disbursement or collections pressure.</div>
+    <div class="rec-cat">Operations</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">Regional Mgr</div>
+    <div class="rec-due">Next month</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">13</div>
+    <div class="rec-text"><strong>Add YTD cumulative columns</strong> to weekly report alongside week-over-week.</div>
+    <div class="rec-cat">Reporting</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">MIS / Reporting</div>
+    <div class="rec-due">Next month</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">14</div>
+    <div class="rec-text"><strong>Segment portfolio</strong> into Growth / Stable / Shrinking buckets and assign recovery vs sales priorities.</div>
+    <div class="rec-cat">Strategy</div>
+    <div><span class="badge badge-med">Medium</span></div>
+    <div class="rec-owner">CEO / Credit Comm.</div>
+    <div class="rec-due">Next month</div>
+  </div>
+
+  <!-- LOW -->
+  <div style="background:#F5F5F5;padding:3px 7px;border-bottom:0.5px solid var(--border);font-size:7pt;font-weight:600;color:#777;letter-spacing:1px;text-transform:uppercase">Low Priority — Next Quarter</div>
+
+  <div class="rec-item">
+    <div class="rec-num">15</div>
+    <div class="rec-text"><strong>Add client-level metrics</strong>: active clients, new clients, churned clients per branch per week.</div>
+    <div class="rec-cat">Reporting</div>
+    <div><span class="badge badge-low">Low</span></div>
+    <div class="rec-owner">MIS / Reporting</div>
+    <div class="rec-due">Next quarter</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">16</div>
+    <div class="rec-text"><strong>Develop FX translation policy</strong> for cross-border portfolio reporting; disclose KES/UGX rate used each week.</div>
+    <div class="rec-cat">Finance</div>
+    <div><span class="badge badge-low">Low</span></div>
+    <div class="rec-owner">CFO</div>
+    <div class="rec-due">Next quarter</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">17</div>
+    <div class="rec-text"><strong>Evaluate cost of funds vs. portfolio yield</strong> to compute Net Interest Margin per branch.</div>
+    <div class="rec-cat">Finance</div>
+    <div><span class="badge badge-low">Low</span></div>
+    <div class="rec-owner">CFO</div>
+    <div class="rec-due">Next quarter</div>
+  </div>
+  <div class="rec-item">
+    <div class="rec-num">18</div>
+    <div class="rec-text"><strong>Implement write-off and provisioning policy</strong>; track provision coverage ratio weekly.</div>
+    <div class="rec-cat">Credit Risk</div>
+    <div><span class="badge badge-low">Low</span></div>
+    <div class="rec-owner">Head of Credit</div>
+    <div class="rec-due">Next quarter</div>
+  </div>
+    `
+  }, [])
+
+  const generateLogbookWeeklyReport = async () => {
+    try {
+      setLogbookWeeklyLoading(true)
+      setLogbookWeeklyError(null)
+      setLogbookWeeklyReportHtml('')
+
+      const asAt = new Date(`${logbookWeeklyAsAt}T00:00:00`)
+      if (Number.isNaN(asAt.getTime())) throw new Error('Invalid "As at" date')
+      const prevAsAt = addDays(asAt, -7)
+
+      const month = asAt.getMonth() + 1
+      const year = asAt.getFullYear()
+      const monthStart = new Date(year, month - 1, 1)
+
+      const [branchesRes, disbRes, colRes, targetsRes, parHistoryRes] = await Promise.all([
+        fetch(API_URLS.logbook.branches, { credentials: 'include' }),
+        fetch(API_URLS.logbook.disbursements, { credentials: 'include' }),
+        fetch(API_URLS.logbook.collections, { credentials: 'include' }),
+        fetch(API_URLS.targets.logbook.list, { credentials: 'include' }),
+        fetch(API_URLS.par.history, { credentials: 'include' }),
+      ])
+
+      if (!branchesRes.ok) throw new Error('Failed to load Logbook branches')
+      if (!disbRes.ok) throw new Error('Failed to load Logbook disbursements')
+      if (!colRes.ok) throw new Error('Failed to load Logbook collections')
+      if (!targetsRes.ok) throw new Error('Failed to load Logbook targets')
+      if (!parHistoryRes.ok) throw new Error('Failed to load PAR history')
+
+      const logbookBranches = await branchesRes.json()
+      const disbRows = await disbRes.json()
+      const colRows = await colRes.json()
+      const targetsAll = await targetsRes.json()
+      const parHistory = await parHistoryRes.json()
+
+      const codeToName = new Map()
+      const nameToCode = new Map()
+      for (const b of Array.isArray(logbookBranches) ? logbookBranches : []) {
+        const code = String(b.code || '').trim()
+        const name = String(b.name || '').trim()
+        if (code) {
+          codeToName.set(code.toLowerCase(), name || code)
+          if (name) nameToCode.set(name.toLowerCase(), code)
+        }
+      }
+      const toBranchCode = (v) => {
+        const s = String(v || '').trim()
+        if (!s) return ''
+        const asCode = s.toLowerCase()
+        if (codeToName.has(asCode)) return s
+        const viaName = nameToCode.get(asCode)
+        return viaName ? viaName : s
+      }
+      const toBranchName = (codeOrName) => {
+        const s = String(codeOrName || '').trim()
+        if (!s) return ''
+        const asCode = s.toLowerCase()
+        if (codeToName.has(asCode)) return codeToName.get(asCode)
+        return s
+      }
+
+      const targets = (Array.isArray(targetsAll) ? targetsAll : [])
+        .filter((t) => Number(t.month) === month && Number(t.year) === year && Number(t.active ?? 1) === 1)
+
+      const targetsByBranch = new Map()
+      for (const t of targets) {
+        const raw = String(t.branch || '').trim()
+        const code = toBranchCode(raw)
+        if (!code) continue
+        targetsByBranch.set(code.toLowerCase(), {
+          disbursementTarget: Number(t.disbursement_target) || 0,
+          collectionTarget: Number(t.collection_target) || 0,
+        })
+      }
+
+      const inRange = (d, start, end) => d && d >= start && d <= end
+
+      const sumByBranch = (rows, dateField, amountField, start, end) => {
+        const by = new Map()
+        for (const r of rows || []) {
+          const branch = String(r.branch || r.Branch || r['Branch'] || '').trim()
+          if (!branch) continue
+          const dt = parseDMY(r[dateField] || r[dateField?.toLowerCase?.()] || r[dateField] || r[dateField])
+          const date = dt || parseDMY(r[dateField])
+          if (!date) continue
+          if (!inRange(date, start, end)) continue
+          const amt = Number(r[amountField] ?? r[amountField?.toLowerCase?.()] ?? r[amountField]) || 0
+          by.set(branch, (by.get(branch) || 0) + amt)
+        }
+        return by
+      }
+
+      const disbMtdByBranch = new Map()
+      for (const r of disbRows || []) {
+        const branchCode = toBranchCode(r.branch)
+        if (!branchCode) continue
+        const d = parseDMY(r.disbursed_date)
+        if (!d) continue
+        if (!inRange(d, monthStart, asAt)) continue
+        const amt = Number(r.disbursed) || 0
+        disbMtdByBranch.set(branchCode, (disbMtdByBranch.get(branchCode) || 0) + amt)
+      }
+
+      const disbPrevMtdByBranch = new Map()
+      for (const r of disbRows || []) {
+        const branchCode = toBranchCode(r.branch)
+        if (!branchCode) continue
+        const d = parseDMY(r.disbursed_date)
+        if (!d) continue
+        if (!inRange(d, monthStart, prevAsAt)) continue
+        const amt = Number(r.disbursed) || 0
+        disbPrevMtdByBranch.set(branchCode, (disbPrevMtdByBranch.get(branchCode) || 0) + amt)
+      }
+
+      const colMtdByBranch = new Map()
+      for (const r of colRows || []) {
+        const branchCode = toBranchCode(r.branch)
+        if (!branchCode) continue
+        const d = parseDMY(r.repayment_collected_date)
+        if (!d) continue
+        if (!inRange(d, monthStart, asAt)) continue
+        const amt = Number(r.repayment_amount) || 0
+        colMtdByBranch.set(branchCode, (colMtdByBranch.get(branchCode) || 0) + amt)
+      }
+
+      const colPrevMtdByBranch = new Map()
+      for (const r of colRows || []) {
+        const branchCode = toBranchCode(r.branch)
+        if (!branchCode) continue
+        const d = parseDMY(r.repayment_collected_date)
+        if (!d) continue
+        if (!inRange(d, monthStart, prevAsAt)) continue
+        const amt = Number(r.repayment_amount) || 0
+        colPrevMtdByBranch.set(branchCode, (colPrevMtdByBranch.get(branchCode) || 0) + amt)
+      }
+
+      const historyRows = Array.isArray(parHistory) ? parHistory : []
+      const pickSnapshotTime = (endDate) => {
+        const endIso = toEndOfDayIso(endDate)
+        const candidates = historyRows
+          .map((r) => String(r.time || '').trim())
+          .filter(Boolean)
+          .filter((t) => t <= endIso)
+          .sort((a, b) => b.localeCompare(a))
+        return candidates[0] || (historyRows[0]?.time ? String(historyRows[0].time) : '')
+      }
+
+      const currParTime = pickSnapshotTime(asAt)
+      const prevParTime = pickSnapshotTime(prevAsAt)
+
+      const [currParBranchesRes, prevParBranchesRes] = await Promise.all([
+        fetch(`${API_URLS.par.branches}?time=${encodeURIComponent(currParTime)}`, { credentials: 'include' }),
+        fetch(`${API_URLS.par.branches}?time=${encodeURIComponent(prevParTime)}`, { credentials: 'include' }),
+      ])
+      if (!currParBranchesRes.ok) throw new Error('Failed to load PAR by branch (current)')
+      if (!prevParBranchesRes.ok) throw new Error('Failed to load PAR by branch (previous)')
+      const currParBranches = await currParBranchesRes.json()
+      const prevParBranches = await prevParBranchesRes.json()
+
+      const currParByCode = new Map()
+      const prevParByCode = new Map()
+      for (const r of currParBranches || []) currParByCode.set(String(r.code || '').trim().toLowerCase(), r)
+      for (const r of prevParBranches || []) prevParByCode.set(String(r.code || '').trim().toLowerCase(), r)
+
+      const allBranchCodes = new Set([
+        ...Array.from(disbMtdByBranch.keys()),
+        ...Array.from(colMtdByBranch.keys()),
+        ...Array.from(currParByCode.values()).map((r) => String(r.code || '').trim()).filter(Boolean),
+        ...Array.from(targetsByBranch.keys()),
+      ].map((x) => toBranchCode(x)).filter(Boolean))
+
+      const branchOverviewRows = Array.from(allBranchCodes)
+        .map((branchCodeRaw) => {
+          const branchCode = toBranchCode(branchCodeRaw)
+          if (!branchCode) return null
+          const branchName = toBranchName(branchCode)
+          const t = targetsByBranch.get(branchCode.toLowerCase()) || { disbursementTarget: 0, collectionTarget: 0 }
+          const salesMtd = Number(disbMtdByBranch.get(branchCode) || 0)
+          const collectionsMtd = Number(colMtdByBranch.get(branchCode) || 0)
+          const salesTargetAchPct = t.disbursementTarget > 0 ? (salesMtd / t.disbursementTarget) * 100 : 0
+          const collectionsTargetAchPct = t.collectionTarget > 0 ? (collectionsMtd / t.collectionTarget) * 100 : 0
+
+          const parRow = currParByCode.get(branchCode.toLowerCase())
+          const portfolio = Number(parRow?.openLoans || 0)
+          const parBalance = Number(parRow?.pastMissed || 0)
+          const parRate = Number(parRow?.parRate || 0)
+
+          const scoreSales = Math.max(0, Math.min(25, (salesTargetAchPct / 100) * 25))
+          const scoreCollections = Math.max(0, Math.min(25, (collectionsTargetAchPct / 100) * 25))
+          const scorePar = Math.max(0, Math.min(25, (1 - Math.min(1, parRate / 12)) * 25))
+          const scorePortfolio = 25 // neutral for now (no target)
+          const compositeScore = scoreSales + scoreCollections + scorePar + scorePortfolio
+
+          let tag = ''
+          if (parRate > 25) tag = 'CRIT'
+          else if (parRate > 12) tag = 'WATCH'
+          else if (salesTargetAchPct >= 70 && collectionsTargetAchPct >= 70) tag = 'BEST'
+
+          return {
+            branchCode,
+            branch: branchName,
+            salesMtd,
+            salesTargetAchPct,
+            collectionsMtd,
+            collectionsTargetAchPct,
+            portfolio,
+            parRate,
+            parBalance,
+            compositeScore,
+            tag,
+          }
+        })
+        .filter(Boolean)
+        .sort((a, b) => (b.parRate || 0) - (a.parRate || 0))
+
+      const salesMtdTotal = branchOverviewRows.reduce((s, r) => s + (Number(r.salesMtd) || 0), 0)
+      const collectionsMtdTotal = branchOverviewRows.reduce((s, r) => s + (Number(r.collectionsMtd) || 0), 0)
+      const salesTargetTotal = targets.reduce((s, t) => s + (Number(t.disbursement_target) || 0), 0)
+      const collectionsTargetTotal = targets.reduce((s, t) => s + (Number(t.collection_target) || 0), 0)
+      const salesTargetAchPct = salesTargetTotal > 0 ? (salesMtdTotal / salesTargetTotal) * 100 : 0
+      const collectionsTargetAchPct = collectionsTargetTotal > 0 ? (collectionsMtdTotal / collectionsTargetTotal) * 100 : 0
+
+      const portfolioTotal = branchOverviewRows.reduce((s, r) => s + (Number(r.portfolio) || 0), 0)
+      const parBalanceTotal = branchOverviewRows.reduce((s, r) => s + (Number(r.parBalance) || 0), 0)
+      const avgParRate = portfolioTotal > 0 ? (parBalanceTotal / portfolioTotal) * 100 : 0
+
+      const prevSalesMtdTotal = Array.from(disbPrevMtdByBranch.values()).reduce((s, v) => s + (Number(v) || 0), 0)
+      const prevCollectionsMtdTotal = Array.from(colPrevMtdByBranch.values()).reduce((s, v) => s + (Number(v) || 0), 0)
+
+      const prevPortfolioRows = Array.isArray(prevParBranches) ? prevParBranches : []
+      const portfolioPrevTotal = prevPortfolioRows.reduce((s, r) => s + (Number(r.openLoans) || 0), 0)
+      const parPrevTotal = prevPortfolioRows.reduce((s, r) => s + (Number(r.pastMissed) || 0), 0)
+      const prevAvgParRate = portfolioPrevTotal > 0 ? (parPrevTotal / portfolioPrevTotal) * 100 : 0
+
+      const branchesCount = branchOverviewRows.length
+      const branchesInBreach = branchOverviewRows.filter((r) => (Number(r.parRate) || 0) > 12).length
+      const statusText = branchesInBreach > 0 ? 'Action Required' : 'On Track'
+      const statusColor = branchesInBreach > 0 ? 'var(--red)' : 'var(--green)'
+
+      const parWoWRows = branchOverviewRows
+        .map((r) => {
+          const prevRow = prevParByCode.get(String(r.branchCode).toLowerCase())
+          const prevParRate = Number(prevRow?.parRate || 0)
+          const currParRate = Number(r.parRate || 0)
+          const balance = Number(r.parBalance || 0)
+          const critical = currParRate >= 25
+          const badge = critical
+            ? '<span class="badge badge-crit">Critical</span>'
+            : currParRate > 12
+              ? '<span class="badge badge-red">Breach</span>'
+              : '<span class="badge badge-green">Within</span>'
+          return {
+            branch: r.branch,
+            prevParRate,
+            currParRate,
+            parBalance: balance,
+            statusBadgeHtml: badge,
+          }
+        })
+        .sort((a, b) => (b.currParRate || 0) - (a.currParRate || 0))
+
+      const portfolioMovementRows = branchOverviewRows
+        .map((r) => {
+          const prevRow = prevParByCode.get(String(r.branchCode).toLowerCase())
+          const prev = Number(prevRow?.openLoans || 0)
+          const current = Number(r.portfolio || 0)
+          const sharePct = portfolioTotal > 0 ? (current / portfolioTotal) * 100 : 0
+          return { branch: r.branch, prev, current, sharePct }
+        })
+        .sort((a, b) => (b.current || 0) - (a.current || 0))
+
+      const scorecardRows = branchOverviewRows
+        .map((r) => ({ branch: r.branch, score: r.compositeScore }))
+        .sort((a, b) => (b.score || 0) - (a.score || 0))
+
+      const html = renderLogbookWeeklyPerformanceReportHTML({
+        asAt: asAt.toISOString(),
+        branchesCount,
+        branchesLabel: `${branchesCount} (scoped)`,
+        statusText,
+        statusColor,
+        parThreshold: 12,
+        branchesInBreach,
+        kpis: {
+          salesMtd: salesMtdTotal,
+          collectionsMtd: collectionsMtdTotal,
+          portfolio: portfolioTotal,
+          avgParRate,
+          parBalance: parBalanceTotal,
+        },
+        prevKpis: {
+          salesMtd: prevSalesMtdTotal,
+          collectionsMtd: prevCollectionsMtdTotal,
+          portfolio: portfolioPrevTotal,
+          avgParRate: prevAvgParRate,
+        },
+        totals: {
+          salesMtdTotal,
+          collectionsMtdTotal,
+          salesTargetTotal,
+          collectionsTargetTotal,
+          salesTargetAchPct,
+          collectionsTargetAchPct,
+          portfolioTotal,
+          portfolioPrevTotal,
+        },
+        branchOverviewRows,
+        parWoWRows,
+        portfolioMovementRows,
+        scorecardRows,
+        recommendationsHtml: defaultRecommendationsHtml,
+        recommendationCounts: { critical: 4, high: 4, mediumLow: 10 },
+      })
+
+      setLogbookWeeklyReportHtml(html)
+    } catch (e) {
+      setLogbookWeeklyError(e.message || 'Failed to generate report')
+    } finally {
+      setLogbookWeeklyLoading(false)
     }
   }
 
@@ -496,6 +1023,210 @@ function DataOverview() {
     downloadHTMLGeneric(zidishaBranchwiseReport, 'Zidisha Branchwise', zidishaBranchwiseFromMonth, zidishaBranchwiseToMonth, 'Branch', 'branch')
   const downloadZidishaBranchwisePDF = () =>
     downloadPDFGeneric(zidishaBranchwiseReport, 'Zidisha Branchwise', zidishaBranchwiseFromMonth, zidishaBranchwiseToMonth, 'Branch', 'branch')
+
+  const downloadLogbookWeeklyHTML = () => {
+    const safeName = 'logbook-product-weekly-performance-report'
+    const blob = new Blob([logbookWeeklyReportHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeName}-${logbookWeeklyAsAt}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const generateBodaTopupQualifiers = async () => {
+    try {
+      setBodaTopupLoading(true)
+      setBodaTopupError(null)
+      setBodaTopupRows([])
+
+      const res = await fetch(`${API_URLS.reports.bodaTopupQualifiers}?minPercentPaid=70`, { credentials: 'include' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error || 'Failed to load report')
+      }
+      const body = await res.json()
+      setBodaTopupRows(Array.isArray(body?.data) ? body.data : [])
+    } catch (e) {
+      setBodaTopupError(e.message)
+    } finally {
+      setBodaTopupLoading(false)
+    }
+  }
+
+  const downloadBodaTopupXLSX = () => {
+    import('xlsx').then((XLSX) => {
+      const safeName = 'boda-top-up-qualifiers'
+      const ws = XLSX.utils.json_to_sheet(
+        (bodaTopupRows || []).map((r) => ({
+          'Client Name': r.clientName,
+          'Principal Amount': r.principalAmount,
+          'Principal Outstanding': r.principalOutstanding,
+          '% Principal Paid': Number(r.percentPrincipalPaid || 0),
+          'Expected Matured On Date': r.expectedMaturedOnDate,
+          'Branch Name': r.branchName,
+          'Client Id': r.clientId,
+        }))
+      )
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Boda Top Up Qualifiers')
+      XLSX.writeFile(wb, `${safeName}.xlsx`)
+    })
+  }
+
+  const downloadBodaTopupHTML = () => {
+    const safeName = 'boda-top-up-qualifiers'
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8" />
+          <title>Boda Top Up Qualifiers</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { margin: 0 0 12px; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #ddd; padding: 8px; }
+            th { background: #f2f2f2; text-align: left; }
+            td.num, th.num { text-align: right; }
+          </style>
+        </head>
+        <body>
+          <h1>Boda Top Up Qualifiers</h1>
+          <table>
+            <thead>
+              <tr>
+                <th>Client Name</th>
+                <th class="num">Principal Amount</th>
+                <th class="num">Principal Outstanding</th>
+                <th class="num">% Principal Paid</th>
+                <th>Expected Matured On Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(bodaTopupRows || []).map((r) => `
+                <tr>
+                  <td>${r.clientName || ''}</td>
+                  <td class="num">${formatKES(r.principalAmount)}</td>
+                  <td class="num">${formatKES(r.principalOutstanding)}</td>
+                  <td class="num">${Number(r.percentPrincipalPaid || 0).toFixed(2)}%</td>
+                  <td>${r.expectedMaturedOnDate || ''}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
+    const blob = new Blob([html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeName}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadBodaTopupPDF = async () => {
+    const printWindow = window.open('', '_blank')
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8" />
+          <title>Boda Top Up Qualifiers</title>
+        </head>
+        <body>
+          <h1>Boda Top Up Qualifiers</h1>
+          <p>Source: zidisha_data (Product = Zidisha Boda)</p>
+          <table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;width:100%">
+            <thead>
+              <tr>
+                <th align="left">Client Name</th>
+                <th align="right">Principal Amount</th>
+                <th align="right">Principal Outstanding</th>
+                <th align="right">% Principal Paid</th>
+                <th align="left">Expected Matured On Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(bodaTopupRows || []).map((r) => `
+                <tr>
+                  <td>${r.clientName || ''}</td>
+                  <td align="right">${formatKES(r.principalAmount)}</td>
+                  <td align="right">${formatKES(r.principalOutstanding)}</td>
+                  <td align="right">${Number(r.percentPrincipalPaid || 0).toFixed(2)}%</td>
+                  <td>${r.expectedMaturedOnDate || ''}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
+    if (printWindow) {
+      printWindow.document.open()
+      printWindow.document.write(html)
+      printWindow.document.close()
+      printWindow.onload = () => setTimeout(() => printWindow.print(), 400)
+      return
+    }
+    // Popup blocked: fall back to HTML download
+    downloadBodaTopupHTML()
+  }
+
+  const downloadLogbookWeeklyPDF = async () => {
+    // Prefer native print-to-PDF for pixel-perfect CSS (html2canvas often renders "skeletal" output).
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.open()
+      printWindow.document.write(logbookWeeklyReportHtml)
+      printWindow.document.close()
+      printWindow.onload = () => setTimeout(() => printWindow.print(), 500)
+      return
+    }
+
+    // Fallback: html2pdf if popups are blocked
+    const html2pdf = (await import('html2pdf.js')).default
+    const safeName = 'logbook-product-weekly-performance-report'
+
+    const iframe = document.createElement('iframe')
+    iframe.style.position = 'fixed'
+    iframe.style.top = '0'
+    iframe.style.left = '0'
+    iframe.style.width = '1400px'
+    iframe.style.height = '900px'
+    iframe.style.border = 'none'
+    iframe.style.zIndex = '9999'
+    document.body.appendChild(iframe)
+
+    iframe.contentDocument.open()
+    iframe.contentDocument.write(logbookWeeklyReportHtml)
+    iframe.contentDocument.close()
+
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+
+    const element = iframe.contentDocument.body
+    const opt = {
+      margin: [0, 0, 0, 0],
+      filename: `${safeName}-${logbookWeeklyAsAt}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 1400,
+        windowHeight: element.scrollHeight,
+      },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'legacy'] },
+    }
+
+    await html2pdf().set(opt).from(element).save()
+    document.body.removeChild(iframe)
+  }
 
   // Generate SVG chart for PDF
   const generateBarChartSVG = (data, width = 800, height = 400, labelKey = 'month') => {
@@ -1360,6 +2091,259 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Logbook Weekly Performance Report Modal */}
+      {showLogbookWeeklyReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowLogbookWeeklyReport(false)
+              setShowLogbookWeeklyDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Logbook Product – Weekly Performance Report</h2>
+              <button
+                onClick={() => {
+                  setShowLogbookWeeklyReport(false)
+                  setShowLogbookWeeklyDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">As at (Date)</label>
+                  <input
+                    type="date"
+                    value={logbookWeeklyAsAt}
+                    onChange={(e) => setLogbookWeeklyAsAt(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={generateLogbookWeeklyReport}
+                    disabled={logbookWeeklyLoading}
+                    className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {logbookWeeklyLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                        Generating report...
+                      </>
+                    ) : (
+                      'Generate Report'
+                    )}
+                  </button>
+
+                  {logbookWeeklyReportHtml && !logbookWeeklyLoading && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowLogbookWeeklyDownloadMenu((v) => !v)}
+                        className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                      >
+                        Download
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showLogbookWeeklyDownloadMenu && (
+                        <div className="absolute mt-2 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                          <button
+                            onClick={() => {
+                              setShowLogbookWeeklyDownloadMenu(false)
+                              downloadLogbookWeeklyHTML()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download HTML
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowLogbookWeeklyDownloadMenu(false)
+                              downloadLogbookWeeklyPDF()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download PDF
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {logbookWeeklyLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
+                  <p className="mt-4 text-sm text-gray-500">Generating report preview...</p>
+                </div>
+              ) : logbookWeeklyError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {logbookWeeklyError}
+                </div>
+              ) : !logbookWeeklyReportHtml ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">Click "Generate Report" to build the weekly report for the selected date.</p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <iframe
+                    title="Logbook Weekly Report Preview"
+                    style={{ width: '100%', height: '75vh', border: 0 }}
+                    srcDoc={logbookWeeklyReportHtml}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Boda Top Up Qualifiers Modal */}
+      {showBodaTopupReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowBodaTopupReport(false)
+              setShowBodaTopupDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Boda Top Up Qualifiers</h2>
+              <button
+                onClick={() => {
+                  setShowBodaTopupReport(false)
+                  setShowBodaTopupDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 flex flex-wrap items-center gap-3">
+                <button
+                  onClick={generateBodaTopupQualifiers}
+                  disabled={bodaTopupLoading}
+                  className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {bodaTopupLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    'Generate Report'
+                  )}
+                </button>
+
+                {bodaTopupRows.length > 0 && !bodaTopupLoading && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowBodaTopupDownloadMenu((v) => !v)}
+                      className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                    >
+                      Download
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {showBodaTopupDownloadMenu && (
+                      <div className="absolute mt-2 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                        <button
+                          onClick={() => {
+                            setShowBodaTopupDownloadMenu(false)
+                            downloadBodaTopupXLSX()
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Download XLSX
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowBodaTopupDownloadMenu(false)
+                            downloadBodaTopupHTML()
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Download HTML
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowBodaTopupDownloadMenu(false)
+                            downloadBodaTopupPDF()
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Download PDF
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {bodaTopupLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
+                  <p className="mt-4 text-sm text-gray-500">Loading data...</p>
+                </div>
+              ) : bodaTopupError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error: {bodaTopupError}
+                </div>
+              ) : bodaTopupRows.length === 0 ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">Click "Generate Report" to load Boda top up qualifiers.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Client Name</th>
+                        <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Principal Amount</th>
+                        <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Principal Outstanding</th>
+                        <th className="px-6 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">% Principal Paid</th>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Expected Matured On Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {bodaTopupRows.map((r, idx) => (
+                        <tr key={`${r.clientId || r.clientName || ''}-${idx}`} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{r.clientName || 'Unknown'}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(r.principalAmount)}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(r.principalOutstanding)}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{Number(r.percentPrincipalPaid || 0).toFixed(2)}%</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{r.expectedMaturedOnDate || ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reports Section - Main Content */}
       <div className="space-y-6">
         <div className="mb-6">
@@ -1425,6 +2409,38 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Zidisha Branchwise</h2>
                 <p className="text-sm text-gray-500">Branch totals for collected, expected repayment, and disbursed</p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Logbook Weekly Performance Report Card */}
+          <button
+            onClick={() => setShowLogbookWeeklyReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Logbook Product – Weekly</h2>
+                <p className="text-sm text-gray-500">Weekly performance report (sales, collections, portfolio & PAR) in the Phoenix template</p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Boda Top Up Qualifiers Report Card */}
+          <button
+            onClick={() => setShowBodaTopupReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Boda Top Up Qualifiers</h2>
+                <p className="text-sm text-gray-500">Clients (Zidisha Boda) with principal paid % and maturity date</p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

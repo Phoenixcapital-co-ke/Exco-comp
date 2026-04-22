@@ -13,6 +13,7 @@ import { existsSync } from 'fs'
 import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
+import axios from 'axios'
 
 dotenv.config()
 
@@ -40,6 +41,53 @@ const events = new EventEmitter()
 const db = new Database('data/app.db', { readonly: true });
 // Separate write-enabled handle for inserts/updates
 const dbRW = new Database('data/app.db');
+
+// --- SMS log table (dedupe) ---
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS TopUp_SMS_Log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    send_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    client_id TEXT,
+    phone TEXT,
+    status TEXT,
+    response TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(send_date, slot, client_id)
+  );
+`)
+
+// Migrate old SMS log schema (client+loan dedupe) → new schema (client-only dedupe)
+try {
+  const cols = dbRW.prepare(`PRAGMA table_info(TopUp_SMS_Log);`).all().map((c) => c.name)
+  if (cols.includes('loan_id')) {
+    dbRW.exec('BEGIN')
+    dbRW.exec(`
+      CREATE TABLE IF NOT EXISTS TopUp_SMS_Log_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        send_date TEXT NOT NULL,
+        slot TEXT NOT NULL,
+        client_id TEXT,
+        phone TEXT,
+        status TEXT,
+        response TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(send_date, slot, client_id)
+      );
+    `)
+    dbRW.exec(`
+      INSERT OR IGNORE INTO TopUp_SMS_Log_v2 (send_date, slot, client_id, phone, status, response, created_at)
+      SELECT send_date, slot, client_id, phone, status, response, created_at
+      FROM TopUp_SMS_Log
+    `)
+    dbRW.exec(`DROP TABLE TopUp_SMS_Log`)
+    dbRW.exec(`ALTER TABLE TopUp_SMS_Log_v2 RENAME TO TopUp_SMS_Log`)
+    dbRW.exec('COMMIT')
+  }
+} catch (e) {
+  try { dbRW.exec('ROLLBACK') } catch {}
+  console.warn('[SMS] TopUp_SMS_Log migration skipped:', e.message)
+}
 
 // --- FX rates (cached) ---
 // NOTE: the /api/fx/rates route is registered after CORS middleware below,
@@ -419,6 +467,222 @@ const FETCH_MAX_RETRIES = 5
 function getNairobiTime() {
   // Just return UTC time - conversion to Nairobi time happens on display
   return new Date().toISOString()
+}
+
+function getNairobiDateKey() {
+  // Date key in Africa/Nairobi timezone (YYYY-MM-DD)
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date())
+    const get = (t) => parts.find((p) => p.type === t)?.value
+    return `${get('year')}-${get('month')}-${get('day')}`
+  } catch {
+    return new Date().toISOString().slice(0, 10)
+  }
+}
+
+function parseDateLoose(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  const iso = s.match(/^(\d{4})[-\/](\d{2})[-\/](\d{2})$/)
+  if (iso) {
+    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const dmy = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (dmy) {
+    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]))
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function normalizeKenyanPhone(phone) {
+  let p = String(phone || '').trim()
+  if (!p) return ''
+  p = p.replace(/\s+/g, '').replace(/^\+/, '')
+  if (p.startsWith('0') && p.length >= 10) {
+    p = `254${p.slice(1)}`
+  }
+  if (p.startsWith('254') && p.length >= 12) return p
+  return p
+}
+
+async function sendTopUpSMS(name, phone) {
+  const url = String(process.env.ONFON_SMS_URL || 'https://api.onfonmedia.co.ke/v1/sms/SendBulkSMS')
+  const apiKey = String(process.env.ONFON_API_KEY || '').trim()
+  const clientId = String(process.env.ONFON_CLIENT_ID || '').trim()
+  const senderId = String(process.env.ONFON_SENDER_ID || '').trim()
+  if (!apiKey || !clientId || !senderId) {
+    throw new Error('Missing ONFON_API_KEY / ONFON_CLIENT_ID / ONFON_SENDER_ID')
+  }
+
+  const fullName = String(name || '').trim()
+  // Use first token only (e.g., "Jacktone Onyango Ochieng" -> "Jacktone")
+  const safeName = (fullName.split(/\s+/).filter(Boolean)[0] || '').trim() || 'Customer'
+  const rawTemplate = String(process.env.TOPUP_SMS_TEMPLATE || '').trim()
+  const messageTemplate =
+    rawTemplate || `Dear ${safeName}, you have qualified for a top-up loan. To access visit your nearest branch or call 0747100100`
+  const message = String(messageTemplate).replace(/\$\{safeName\}/g, safeName)
+
+  const payload = {
+    ApiKey: apiKey,
+    ClientId: clientId,
+    SenderId: senderId,
+    MessageParameters: [{ Number: phone, Text: message }],
+  }
+
+  const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 })
+  return resp.data
+}
+
+function getBodaTopUpMaturityFilterDate() {
+  const today = new Date()
+  try {
+    const key = getNairobiDateKey()
+    const d = parseDateLoose(key)
+    if (d) {
+      d.setHours(0, 0, 0, 0)
+      today.setTime(d.getTime())
+    } else {
+      today.setHours(0, 0, 0, 0)
+    }
+  } catch {
+    today.setHours(0, 0, 0, 0)
+  }
+  return today
+}
+
+/** Aggregate Zidisha Boda rows by client (not-yet-matured loans only). */
+function buildBodaTopUpZidishaByClient(today) {
+  const rows = db
+    .prepare(`
+      SELECT
+        "Client Id" as clientId,
+        "Client Name" as clientName,
+        "Loan ID" as loanId,
+        "Phone Number" as phoneNumber,
+        "Principal Amount" as principalAmount,
+        "Principal Outstanding Derived" as principalOutstanding,
+        "Expected Matured On Date" as expectedMaturedOnDate
+      FROM zidisha_data
+      WHERE "Product Name" COLLATE NOCASE = 'Zidisha Boda'
+    `)
+    .all()
+
+  const byClient = new Map()
+  for (const r of rows) {
+    const clientId = String(r.clientId || '').trim()
+    if (!clientId) continue
+
+    const expected = String(r.expectedMaturedOnDate || '').trim()
+    const expectedDate = parseDateLoose(expected)
+    if (!expectedDate || expectedDate <= today) continue
+
+    const principalAmount = Number(r.principalAmount) || 0
+    const principalOutstanding = Number(r.principalOutstanding) || 0
+
+    const phone = normalizeKenyanPhone(r.phoneNumber)
+    const name = String(r.clientName || '').trim()
+
+    const existing = byClient.get(clientId) || {
+      clientId,
+      name: name || '',
+      phone: phone || '',
+      totalPrincipal: 0,
+      totalOutstanding: 0,
+      latestExpected: expectedDate,
+    }
+
+    existing.totalPrincipal += principalAmount
+    existing.totalOutstanding += principalOutstanding
+    if (!existing.phone && phone) existing.phone = phone
+    if (!existing.name && name) existing.name = name
+    if (expectedDate > existing.latestExpected) existing.latestExpected = expectedDate
+
+    byClient.set(clientId, existing)
+  }
+  return byClient
+}
+
+function bodaTopUpClientPercentPaid(c) {
+  const paid = c.totalPrincipal - c.totalOutstanding
+  const safePaid = paid > 0 ? paid : 0
+  return c.totalPrincipal > 0 ? (safePaid / c.totalPrincipal) * 100 : 0
+}
+
+function getOnfonConfigured() {
+  return !!(
+    String(process.env.ONFON_API_KEY || '').trim() &&
+    String(process.env.ONFON_CLIENT_ID || '').trim() &&
+    String(process.env.ONFON_SENDER_ID || '').trim()
+  )
+}
+
+async function runBodaTopUpSmsJob(slot) {
+  const slotNorm = String(slot || '').trim() || 'unknown'
+  const sendDate = getNairobiDateKey()
+  const today = getBodaTopUpMaturityFilterDate()
+
+  const minPct = Number(process.env.TOPUP_MIN_PERCENT_PAID || 70)
+  const minPctSafe = Number.isFinite(minPct) ? minPct : 70
+
+  const byClient = buildBodaTopUpZidishaByClient(today)
+
+  let attempted = 0
+  let sent = 0
+  let skipped = 0
+  let errors = 0
+
+  for (const c of byClient.values()) {
+    const pctPaid = bodaTopUpClientPercentPaid(c)
+    if (pctPaid < minPctSafe) {
+      skipped += 1
+      continue
+    }
+    if (!c.phone) {
+      skipped += 1
+      continue
+    }
+
+    // Dedupe per day+slot+client
+    const exists = dbRW
+      .prepare('SELECT 1 FROM TopUp_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
+      .get(sendDate, slotNorm, c.clientId)
+    if (exists) {
+      skipped += 1
+      continue
+    }
+
+    attempted += 1
+    try {
+      const resp = await sendTopUpSMS(c.name, c.phone)
+      dbRW
+        .prepare(
+          `INSERT INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(sendDate, slotNorm, c.clientId, c.phone, 'sent', JSON.stringify(resp || {}))
+      sent += 1
+    } catch (e) {
+      errors += 1
+      dbRW
+        .prepare(
+          `INSERT OR IGNORE INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(sendDate, slotNorm, c.clientId, c.phone, 'error', String(e?.message || e))
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  return { sendDate, slot: slotNorm, attempted, sent, skipped, errors, minPct: minPctSafe }
 }
 
 // Helper function to fetch with retry and timeout
@@ -1710,6 +1974,255 @@ app.post('/api/reports/generate', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[Report Generation API] Error:', e)
     res.status(500).json({ error: e.message })
+  }
+})
+
+// Report: Boda top up qualifiers (from zidisha_data where Product Name = Zidisha Boda)
+app.get('/api/reports/boda-topup-qualifiers', requireAuth, (req, res) => {
+  try {
+    const minPercentPaid = req.query && req.query.minPercentPaid != null ? Number(req.query.minPercentPaid) : 70
+    const minPercentPaidSafe = Number.isFinite(minPercentPaid) ? minPercentPaid : 70
+
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    const allowed = getAllowedBodaBranches(req)
+    if (authRole === 'custom' && allowed.length === 0) {
+      return res.status(403).json({ error: 'No Boda branch access configured for this user' })
+    }
+
+    const allowedNorm = allowed.length > 0 ? new Set(allowed.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)) : null
+
+    const rows = db
+      .prepare(`
+        SELECT
+          "Branch Name" as branchName,
+          "Client Id" as clientId,
+          "Client Name" as clientName,
+          "Principal Amount" as principalAmount,
+          "Principal Outstanding Derived" as principalOutstanding,
+          "Expected Matured On Date" as expectedMaturedOnDate
+        FROM zidisha_data
+        WHERE "Product Name" COLLATE NOCASE = 'Zidisha Boda'
+      `)
+      .all()
+
+    const parseDateLoose = (s) => {
+      const v = String(s || '').trim()
+      if (!v) return null
+      // Accept YYYY-MM-DD or YYYY/MM/DD
+      const iso = v.match(/^(\d{4})[-\/](\d{2})[-\/](\d{2})$/)
+      if (iso) {
+        const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
+        return Number.isNaN(d.getTime()) ? null : d
+      }
+      // Accept DD/MM/YYYY
+      const dmy = v.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+      if (dmy) {
+        const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]))
+        return Number.isNaN(d.getTime()) ? null : d
+      }
+      const d = new Date(v)
+      return Number.isNaN(d.getTime()) ? null : d
+    }
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    // Aggregate by Client Id across all not-yet-matured loans
+    const byClient = new Map()
+    for (const r of rows) {
+      const branchName = String(r.branchName || '').trim()
+      if (allowedNorm) {
+        const b = branchName.toLowerCase()
+        if (!b || !allowedNorm.has(b)) continue
+      }
+
+      const expectedMaturedOnDate = String(r.expectedMaturedOnDate || '').trim()
+      const expectedDate = parseDateLoose(expectedMaturedOnDate)
+      // Only include loans whose Expected Matured On Date is AFTER today
+      if (!expectedDate || expectedDate <= today) continue
+
+      const clientId = String(r.clientId || '').trim()
+      if (!clientId) continue
+
+      const principalAmount = Number(r.principalAmount) || 0
+      const principalOutstanding = Number(r.principalOutstanding) || 0
+
+      const existing = byClient.get(clientId) || {
+        clientId,
+        clientName: String(r.clientName || '').trim(),
+        branchName,
+        principalAmountTotal: 0,
+        principalOutstandingTotal: 0,
+        nextExpectedMaturedOnDate: expectedMaturedOnDate,
+        nextExpectedDate: expectedDate,
+      }
+      existing.principalAmountTotal += principalAmount
+      existing.principalOutstandingTotal += principalOutstanding
+      // pick earliest upcoming expected date as "next"
+      if (expectedDate < existing.nextExpectedDate) {
+        existing.nextExpectedDate = expectedDate
+        existing.nextExpectedMaturedOnDate = expectedMaturedOnDate
+      }
+      // keep a representative branch name (first non-empty)
+      if (!existing.branchName && branchName) existing.branchName = branchName
+      if (!existing.clientName && String(r.clientName || '').trim()) existing.clientName = String(r.clientName || '').trim()
+      byClient.set(clientId, existing)
+    }
+
+    const cleaned = []
+    for (const c of byClient.values()) {
+      const paid = c.principalAmountTotal - c.principalOutstandingTotal
+      const safePaid = paid > 0 ? paid : 0
+      const pctPaid = c.principalAmountTotal > 0 ? (safePaid / c.principalAmountTotal) * 100 : 0
+      if (pctPaid < minPercentPaidSafe) continue
+      cleaned.push({
+        branchName: c.branchName,
+        clientId: c.clientId,
+        clientName: c.clientName,
+        principalAmount: c.principalAmountTotal,
+        principalOutstanding: c.principalOutstandingTotal,
+        percentPrincipalPaid: pctPaid,
+        expectedMaturedOnDate: c.nextExpectedMaturedOnDate,
+      })
+    }
+
+    // Sort by Expected Matured On Date ascending (so it appears after the % paid column, but is still meaningful)
+    cleaned.sort((a, b) => String(a.expectedMaturedOnDate).localeCompare(String(b.expectedMaturedOnDate)))
+
+    return res.json({ data: cleaned })
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+// Test Boda top-up SMS (Onfon): dry-run, single qualified client, or forced test number. Admin/superuser only.
+app.post('/api/sms/boda-topup/test', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    const body = req.body || {}
+    const sendDate = getNairobiDateKey()
+    const today = getBodaTopUpMaturityFilterDate()
+    const minPct = body.minPercentPaid != null ? Number(body.minPercentPaid) : Number(process.env.TOPUP_MIN_PERCENT_PAID || 70)
+    const minPctSafe = Number.isFinite(minPct) ? minPct : 70
+    const onfonConfigured = getOnfonConfigured()
+
+    if (body.force === true && body.phone) {
+      const phone = normalizeKenyanPhone(body.phone)
+      if (!phone) return res.status(400).json({ error: 'Invalid phone' })
+      const name = String(body.name || 'Test').trim() || 'Test'
+      if (!onfonConfigured) {
+        return res.status(400).json({ error: 'Missing ONFON_API_KEY / ONFON_CLIENT_ID / ONFON_SENDER_ID', onfonConfigured: false })
+      }
+      try {
+        const response = await sendTopUpSMS(name, phone)
+        return res.json({ ok: true, mode: 'force', phone, response, onfonConfigured })
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: String(e?.message || e), onfonConfigured })
+      }
+    }
+
+    const byClient = buildBodaTopUpZidishaByClient(today)
+
+    const logRowsFor = (clientId) =>
+      dbRW.prepare('SELECT slot, status FROM TopUp_SMS_Log WHERE send_date = ? AND client_id = ?').all(sendDate, clientId)
+
+    if (body.clientId && body.send === true) {
+      const id = String(body.clientId || '').trim()
+      const c = byClient.get(id)
+      if (!c) {
+        return res
+          .status(404)
+          .json({ error: 'Client not found in Boda not-yet-matured aggregates (check zidisha_data and maturity dates)' })
+      }
+      const pctPaid = bodaTopUpClientPercentPaid(c)
+      if (pctPaid < minPctSafe) return res.status(400).json({ error: 'Client below min % paid for top-up', percentPrincipalPaid: pctPaid })
+      if (!c.phone) return res.status(400).json({ error: 'No phone in zidisha_data for this client' })
+      if (!onfonConfigured) {
+        return res.status(400).json({ error: 'Missing ONFON_API_KEY / ONFON_CLIENT_ID / ONFON_SENDER_ID', onfonConfigured: false })
+      }
+
+      const slotTest = 'test'
+      if (!body.bypassDedupe) {
+        const exists = dbRW
+          .prepare('SELECT 1 FROM TopUp_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
+          .get(sendDate, slotTest, c.clientId)
+        if (exists) {
+          return res
+            .status(409)
+            .json({ error: 'Test SMS already logged for this client today (use bypassDedupe: true to resend)' })
+        }
+      }
+      try {
+        const response = await sendTopUpSMS(c.name, c.phone)
+        dbRW
+          .prepare(
+            `INSERT INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(sendDate, slotTest, c.clientId, c.phone, 'sent', JSON.stringify(response || {}))
+        return res.json({
+          ok: true,
+          mode: 'client',
+          clientId: c.clientId,
+          phone: c.phone,
+          response,
+          sendDate,
+          slot: slotTest,
+        })
+      } catch (e) {
+        dbRW
+          .prepare(
+            `INSERT OR IGNORE INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(sendDate, slotTest, c.clientId, c.phone, 'error', String(e?.message || e))
+        return res.status(500).json({ ok: false, error: String(e?.message || e) })
+      }
+    }
+
+    let belowMinPercent = 0
+    let noPhone = 0
+    const qualified = []
+    for (const c of byClient.values()) {
+      const pctPaid = bodaTopUpClientPercentPaid(c)
+      if (pctPaid < minPctSafe) {
+        belowMinPercent += 1
+        continue
+      }
+      if (!c.phone) {
+        noPhone += 1
+        continue
+      }
+      qualified.push({
+        clientId: c.clientId,
+        name: c.name,
+        phone: c.phone,
+        totalPrincipal: c.totalPrincipal,
+        totalOutstanding: c.totalOutstanding,
+        percentPrincipalPaid: pctPaid,
+        smsLogToday: logRowsFor(c.clientId),
+      })
+    }
+    qualified.sort((a, b) => String(a.clientId).localeCompare(String(b.clientId)))
+
+    return res.json({
+      dryRun: true,
+      nairobiDate: sendDate,
+      minPercentPaid: minPctSafe,
+      onfonConfigured,
+      counts: {
+        wouldMessage: qualified.length,
+        belowMinPercent,
+        noPhone,
+        totalAggregatedClients: byClient.size,
+      },
+      qualified,
+    })
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
   }
 })
 
@@ -5358,6 +5871,7 @@ app.get('/api/par/branches', async (req, res) => {
   try {
     const effectiveBranches = getEffectiveLogbookBranches(req)
     const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    const requestedTime = req.query && req.query.time != null ? String(req.query.time).trim() : ''
 
     // Get active branches (optionally restricted by country)
     let activeBranches
@@ -5373,18 +5887,18 @@ app.get('/api/par/branches', async (req, res) => {
       return res.status(400).json({ error: 'No active branches found' })
     }
 
-    // Get the latest timestamp from PAR table
+    // Resolve snapshot time (default: latest)
     const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
     
     if (!latestPar || !latestPar.time) {
       return res.json([]) // No data available yet
     }
 
-    const latestTime = latestPar.time
+    const snapshotTime = requestedTime || latestPar.time
 
     // Return cached if same snapshot time (only when not country-filtered)
     // Country-filtered results depend on Logbook_Branches config and should not reuse global cache.
-    if (!countryParam && parBranchesCache.time === latestPar.time && parBranchesCache.data) {
+    if (!requestedTime && !countryParam && parBranchesCache.time === latestPar.time && parBranchesCache.data) {
       const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
       const data = !effectiveSet
         ? parBranchesCache.data
@@ -5396,8 +5910,8 @@ app.get('/api/par/branches', async (req, res) => {
     }
 
     // Read all loan records from saved tables
-    const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
-    const pastMissedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+    const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(snapshotTime)
+    const pastMissedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(snapshotTime)
 
     // Aggregate by branch_code
     const openLoansMap = new Map()
@@ -5464,7 +5978,9 @@ app.get('/api/par/branches', async (req, res) => {
     // Sort by PAR rate descending
     branchData.sort((a, b) => b.parRate - a.parRate)
     
-    parBranchesCache = { time: latestPar.time, data: branchData }
+    if (!requestedTime && !countryParam) {
+      parBranchesCache = { time: latestPar.time, data: branchData }
+    }
 
     const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
     const data = !effectiveSet
@@ -6791,6 +7307,33 @@ cron.schedule('*/10 * * * *', () => {
     events.emit('data_updated')
   })
   proc.on('error', (err) => console.error('[CRON] Data refresh failed to start:', err.message))
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Daily SMS: Top-up qualifiers (Zidisha Boda) at 07:05 and 13:05 Nairobi time
+cron.schedule('5 7 * * *', async () => {
+  console.log(`[CRON] Running TopUp SMS job (07:05) at ${new Date().toISOString()}`)
+  try {
+    const result = await runBodaTopUpSmsJob('07:05')
+    console.log('[CRON] TopUp SMS job (07:05) result:', result)
+  } catch (e) {
+    console.error('[CRON] TopUp SMS job (07:05) failed:', e.message)
+  }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+cron.schedule('5 13 * * *', async () => {
+  console.log(`[CRON] Running TopUp SMS job (13:05) at ${new Date().toISOString()}`)
+  try {
+    const result = await runBodaTopUpSmsJob('13:05')
+    console.log('[CRON] TopUp SMS job (13:05) result:', result)
+  } catch (e) {
+    console.error('[CRON] TopUp SMS job (13:05) failed:', e.message)
+  }
 }, {
   scheduled: true,
   timezone: 'Africa/Nairobi'
