@@ -2446,6 +2446,704 @@ app.get('/api/boda/repayments/daily', (req, res) => {
   }
 })
 
+// --- Credit scorecard acceleration: precomputed tables + indexes ---
+function ensureCreditIndexes() {
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_repay_loan_date ON boda_repayments("Loan Id", "Submitted On Date");`)
+  } catch {}
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_repay_date ON boda_repayments("Submitted On Date");`)
+  } catch {}
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_loan ON zidisha_data("Loan ID");`)
+  } catch {}
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_client ON zidisha_data("Client Id");`)
+  } catch {}
+}
+
+function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProducts = [] } = {}) {
+  const p = String(product || '').trim().toLowerCase()
+  const loanScoresTable = p === 'boda' ? 'loan_scores_boda' : p === 'zidisha' ? 'loan_scores_zidisha' : 'loan_scores_all'
+  const creditScoresTable = p === 'boda' ? 'credit_scores_boda' : p === 'zidisha' ? 'credit_scores_zidisha' : 'credit_scores'
+
+  const products = Array.isArray(scopeProducts) ? scopeProducts.filter(Boolean) : []
+  const branches = Array.isArray(scopeBranches) ? scopeBranches.filter(Boolean) : []
+
+  const productClause =
+    products.length > 0
+      ? ` AND LOWER(TRIM(z."Product Name")) IN (${products.map(() => '?').join(', ')}) `
+      : ''
+  const branchClause =
+    branches.length > 0
+      ? ` AND LOWER(TRIM(z."Branch Name")) IN (${branches.map(() => '?').join(', ')}) `
+      : ''
+
+  const params = [...products.map((x) => String(x).toLowerCase()), ...branches.map((x) => String(x).toLowerCase())]
+
+  // Stage 1: shared repayment stats per loan (scan repayments once)
+  dbRW.exec(`
+    DROP TABLE IF EXISTS loan_repay_stats;
+    CREATE TABLE loan_repay_stats AS
+    SELECT
+      "Loan Id" AS loan_id,
+      COUNT(DISTINCT date("Submitted On Date")) AS paid_days,
+      COUNT(DISTINCT CASE
+        WHEN date("Submitted On Date") >= date('now','-30 days')
+        THEN date("Submitted On Date")
+      END) AS paid_days_last_30,
+      MAX(date("Submitted On Date")) AS last_payment_date,
+      SUM(CAST("Transaction Amount" AS REAL)) AS total_paid
+    FROM boda_repayments
+    WHERE "Submitted On Date" IS NOT NULL
+      AND CAST("Transaction Amount" AS REAL) > 0
+    GROUP BY "Loan Id";
+
+    CREATE INDEX IF NOT EXISTS idx_lrs_loan ON loan_repay_stats(loan_id);
+  `)
+
+  // Stage 2: per-loan scores for the requested product scope (single join, no recursion)
+  dbRW.exec(`DROP TABLE IF EXISTS ${loanScoresTable};`)
+  const stage2 = `
+    CREATE TABLE ${loanScoresTable} AS
+    WITH base AS (
+      SELECT
+        z."Loan ID" AS loan_id,
+        z."Client Id" AS client_id,
+        z."Client Name" AS client_name,
+        z."Phone Number" AS phone,
+        z."Branch Name" AS branch,
+        z."Loan Officer Name" AS loan_officer,
+        z."Loan Status Id" AS loan_status,
+        CAST(z."Total Outstanding Derived" AS REAL) AS outstanding,
+        CAST(z."Total Expected Repayment Derived" AS REAL) AS total_expected,
+        julianday(z."Disbursed On Date") AS j_start,
+        julianday(z."Expected Matured On Date") AS j_maturity,
+        julianday('now') AS j_now,
+        COALESCE(r.paid_days, 0) AS paid_days,
+        COALESCE(r.paid_days_last_30, 0) AS paid_days_last_30,
+        r.last_payment_date,
+        CASE
+          WHEN z."Loan Status Id" IN ('600','700') OR CAST(z."Total Outstanding Derived" AS REAL) <= 1
+            THEN COALESCE(julianday(r.last_payment_date), julianday('now'))
+          ELSE julianday('now')
+        END AS j_end
+      FROM zidisha_data z
+      LEFT JOIN loan_repay_stats r
+        ON r.loan_id = z."Loan ID"
+      WHERE z."Disbursed On Date" IS NOT NULL
+        AND z."Loan ID" IS NOT NULL
+        ${productClause}
+        ${branchClause}
+    ),
+    derived AS (
+      SELECT
+        b.*,
+        MAX(1, CAST(j_end - j_start AS INTEGER)) AS expected_days,
+        MIN(30, MAX(1, CAST(j_end - j_start AS INTEGER))) AS recent_window,
+        CASE
+          WHEN last_payment_date IS NULL THEN 9999
+          ELSE CAST(j_now - julianday(last_payment_date) AS INTEGER)
+        END AS days_since_last_pay,
+        CASE
+          WHEN (j_maturity - j_start) > 0 THEN total_expected / (j_maturity - j_start)
+          ELSE 0
+        END AS expected_daily
+      FROM base b
+    ),
+    scored AS (
+      SELECT
+        d.*,
+        MAX(0, (expected_days - paid_days) * expected_daily) AS missed_expected_amount,
+        MIN(100.0, 100.0 * paid_days * 1.0 / expected_days) AS consistency_score,
+        MIN(100.0, 100.0 * paid_days_last_30 * 1.0 / recent_window) AS recent_score,
+        CASE
+          WHEN loan_status IN ('600','700') OR outstanding <= 1 THEN 100.0
+          WHEN outstanding <= 0.01 THEN 0.0
+          ELSE MAX(0.0, 100.0 * (1.0 - MAX(0,(expected_days - paid_days) * expected_daily) / outstanding))
+        END AS exposure_score,
+        CASE
+          WHEN loan_status IN ('600','700') OR outstanding <= 1 THEN 100.0
+          WHEN days_since_last_pay <= 7  THEN 100.0
+          WHEN days_since_last_pay <= 14 THEN 80.0
+          WHEN days_since_last_pay <= 30 THEN 50.0
+          ELSE 0.0
+        END AS recency_score
+      FROM derived d
+    )
+    SELECT
+      loan_id, client_id, client_name, phone, branch, loan_officer,
+      loan_status, outstanding, expected_days, paid_days,
+      paid_days_last_30, last_payment_date, days_since_last_pay,
+      ROUND(consistency_score,1) AS consistency_score,
+      ROUND(recent_score,1)      AS recent_score,
+      ROUND(exposure_score,1)    AS exposure_score,
+      ROUND(recency_score,1)     AS recency_score,
+      ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) AS score,
+      CASE
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 85 THEN 'Gold'
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 70 THEN 'Silver'
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 50 THEN 'Bronze'
+        ELSE 'At Risk'
+      END AS band
+    FROM scored;
+  `
+  dbRW.prepare(stage2).run(...params)
+
+  dbRW.exec(`
+    CREATE INDEX IF NOT EXISTS idx_${loanScoresTable}_client ON ${loanScoresTable}(client_id);
+    CREATE INDEX IF NOT EXISTS idx_${loanScoresTable}_loan ON ${loanScoresTable}(loan_id);
+  `)
+
+  // Stage 3: collapse to one row per client
+  dbRW.exec(`DROP TABLE IF EXISTS ${creditScoresTable};`)
+  dbRW.exec(`
+    CREATE TABLE ${creditScoresTable} AS
+    WITH ranked AS (
+      SELECT ls.*,
+        ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY loan_id DESC) AS rn
+      FROM ${loanScoresTable} ls
+    )
+    SELECT
+      client_id, client_name, phone, branch, loan_officer,
+      MAX(CASE WHEN rn=1 THEN loan_id END) AS current_loan_id,
+      MAX(CASE WHEN rn=1 THEN loan_status END) AS current_status,
+      MAX(CASE WHEN rn=1 THEN outstanding END) AS current_outstanding,
+      MAX(CASE WHEN rn=1 THEN score END) AS score,
+      MAX(CASE WHEN rn=1 THEN band END) AS band,
+      MAX(CASE WHEN rn=1 THEN consistency_score END) AS consistency_score,
+      MAX(CASE WHEN rn=1 THEN recent_score END) AS recent_score,
+      MAX(CASE WHEN rn=1 THEN exposure_score END) AS exposure_score,
+      MAX(CASE WHEN rn=1 THEN recency_score END) AS recency_score,
+      MAX(CASE WHEN rn=1 THEN paid_days_last_30 END) AS paid_days_last_30,
+      MAX(CASE WHEN rn=1 THEN last_payment_date END) AS last_payment_date,
+      MAX(CASE WHEN rn=1 THEN days_since_last_pay END) AS days_since_last_pay,
+      COUNT(*) AS total_loans,
+      ROUND(AVG(score),1) AS avg_score,
+      MAX(score) AS best_score,
+      MIN(score) AS worst_score,
+      SUM(paid_days) AS lifetime_paid_days,
+      SUM(expected_days - paid_days) AS lifetime_missed_days
+    FROM ranked
+    GROUP BY client_id, client_name, phone, branch, loan_officer;
+
+    CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_client ON ${creditScoresTable}(client_id);
+    CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_score ON ${creditScoresTable}(score);
+    CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_band ON ${creditScoresTable}(band);
+  `)
+
+  return { product: p, tables: { loanScoresTable, creditScoresTable }, rows: dbRW.prepare(`SELECT COUNT(*) as c FROM ${creditScoresTable}`).get().c }
+}
+
+function tryQueryCreditScoresTable(tableName, limit) {
+  try {
+    const c = dbRW.prepare(`SELECT COUNT(*) as c FROM ${tableName}`).get().c
+    if (!c) return []
+    return dbRW.prepare(`SELECT * FROM ${tableName} ORDER BY score DESC LIMIT ?`).all(limit)
+  } catch {
+    return null
+  }
+}
+
+// Credit scorecard / client performance (Zidisha + Boda repayments)
+// product:
+// - boda   => zidisha_data filtered to Product Name = 'Zidisha Boda' (and boda branch permissions)
+// - zidisha => zidisha_data filtered to Zidisha core products (and zidisha branch permissions)
+app.get('/api/credit/client-performance', requireAuth, (req, res) => {
+  try {
+    const product = String(req.query.product || '').trim().toLowerCase()
+    const limitRaw = req.query.limit != null ? Number(req.query.limit) : 5000
+    const limit = Number.isFinite(limitRaw) ? Math.max(100, Math.min(50000, Math.floor(limitRaw))) : 5000
+
+    // Fast path: serve from precomputed table if present
+    const tableName = product === 'boda' ? 'credit_scores_boda' : product === 'zidisha' ? 'credit_scores_zidisha' : 'credit_scores'
+    const pre = tryQueryCreditScoresTable(tableName, limit)
+    if (Array.isArray(pre)) {
+      const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+      const clients = pre.map((r) => ({
+        clientId: String(r.client_id || ''),
+        clientName: String(r.client_name || ''),
+        phone: String(r.phone || ''),
+        branch: String(r.branch || ''),
+        loanOfficer: String(r.loan_officer || ''),
+        currentLoanId: String(r.current_loan_id || ''),
+        score: safeNum(r.score),
+        band: String(r.band || ''),
+        behaviourScore: null,
+        exposureScore: safeNum(r.exposure_score),
+        missedLast30: safeNum(r.paid_days_last_30) ? 0 : safeNum(r.paid_days_last_30), // legacy field not present; keep shape
+        lastPaymentDate: r.last_payment_date || null,
+        daysSinceLastPay: r.days_since_last_pay == null ? null : safeNum(r.days_since_last_pay),
+        outstandingKes: safeNum(r.current_outstanding),
+        totalLoans: safeNum(r.total_loans),
+        avgScore: safeNum(r.avg_score),
+        bestScore: safeNum(r.best_score),
+        worstScore: safeNum(r.worst_score),
+        lifetimePaidDays: safeNum(r.lifetime_paid_days),
+        lifetimeMissedDays: safeNum(r.lifetime_missed_days),
+      }))
+
+      const kpis = {
+        totalClients: clients.length,
+        avgScore: clients.length ? safeNum((clients.reduce((s, c) => s + safeNum(c.score), 0) / clients.length).toFixed(1)) : 0,
+        totalOutstanding: clients.reduce((s, c) => s + safeNum(c.outstandingKes), 0),
+        atRisk: clients.filter((c) => c.band === 'At Risk').length,
+        gold: clients.filter((c) => c.band === 'Gold').length,
+        silver: clients.filter((c) => c.band === 'Silver').length,
+        bronze: clients.filter((c) => c.band === 'Bronze').length,
+        atRiskOutstanding: clients.filter((c) => c.band === 'At Risk').reduce((s, c) => s + safeNum(c.outstandingKes), 0),
+        branches: new Set(clients.map((c) => String(c.branch || '').trim()).filter(Boolean)).size,
+        officers: new Set(clients.map((c) => String(c.loanOfficer || '').trim()).filter(Boolean)).size,
+      }
+
+      const byBranch = new Map()
+      const byOfficer = new Map()
+      for (const c of clients) {
+        const b = c.branch || 'Unknown'
+        const o = c.loanOfficer || 'Unknown'
+        const bump = (m, key) => {
+          const e = m.get(key) || { key, clients: 0, avgScoreSum: 0, outstanding: 0, gold: 0, silver: 0, bronze: 0, atRisk: 0, missed30: 0 }
+          e.clients += 1
+          e.avgScoreSum += safeNum(c.score)
+          e.outstanding += safeNum(c.outstandingKes)
+          if (c.band === 'Gold') e.gold += 1
+          else if (c.band === 'Silver') e.silver += 1
+          else if (c.band === 'Bronze') e.bronze += 1
+          else e.atRisk += 1
+          m.set(key, e)
+        }
+        bump(byBranch, b)
+        bump(byOfficer, o)
+      }
+
+      const branchesAgg = Array.from(byBranch.values())
+        .map((e) => ({
+          branch: e.key,
+          clients: e.clients,
+          avgScore: e.clients ? Number((e.avgScoreSum / e.clients).toFixed(1)) : 0,
+          outstanding: e.outstanding,
+          gold: e.gold,
+          silver: e.silver,
+          bronze: e.bronze,
+          atRisk: e.atRisk,
+          missed30: e.missed30,
+          atRiskPct: e.clients ? Number(((e.atRisk / e.clients) * 100).toFixed(1)) : 0,
+        }))
+        .sort((a, b) => b.clients - a.clients)
+
+      const officersAgg = Array.from(byOfficer.values())
+        .map((e) => ({
+          officer: e.key,
+          clients: e.clients,
+          avgScore: e.clients ? Number((e.avgScoreSum / e.clients).toFixed(1)) : 0,
+          outstanding: e.outstanding,
+          gold: e.gold,
+          silver: e.silver,
+          bronze: e.bronze,
+          atRisk: e.atRisk,
+          atRiskPct: e.clients ? Number(((e.atRisk / e.clients) * 100).toFixed(1)) : 0,
+        }))
+        .sort((a, b) => b.clients - a.clients)
+
+      const watchlist = clients
+        .filter((c) => c.band === 'At Risk' && safeNum(c.outstandingKes) > 0)
+        .sort((a, b) => safeNum(b.outstandingKes) - safeNum(a.outstandingKes))
+        .slice(0, 50)
+
+      return res.json({
+        product: product || null,
+        limit,
+        kpis,
+        branchesAgg,
+        officersAgg,
+        watchlist,
+        clients,
+        branchNames: Array.from(new Set(clients.map((c) => c.branch).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+        officerNames: Array.from(new Set(clients.map((c) => c.loanOfficer).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+        generatedAt: new Date().toISOString(),
+        source: 'precomputed',
+      })
+    }
+
+    const zidishaCoreProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+
+    let productWhere = ''
+    const params = []
+
+    if (product === 'boda') {
+      productWhere = ` AND TRIM("Product Name") COLLATE NOCASE = 'Zidisha Boda' `
+      const allowed = getAllowedBodaBranches(req)
+      if (allowed.length > 0) {
+        const placeholders = allowed.map(() => '?').join(', ')
+        productWhere += ` AND LOWER(TRIM("Branch Name")) IN (${placeholders}) `
+        params.push(...allowed.map((b) => String(b || '').trim().toLowerCase()))
+      }
+    } else if (product === 'zidisha') {
+      const placeholders = zidishaCoreProducts.map(() => '?').join(', ')
+      productWhere = ` AND LOWER(TRIM("Product Name")) IN (${placeholders}) `
+      params.push(...zidishaCoreProducts.map((p) => String(p).toLowerCase()))
+      const allowed = getAllowedZidishaBranches(req)
+      if (allowed.length > 0) {
+        const branchPH = allowed.map(() => '?').join(', ')
+        productWhere += ` AND LOWER(TRIM("Branch Name")) IN (${branchPH}) `
+        params.push(...allowed.map((b) => String(b || '').trim().toLowerCase()))
+      }
+    } else {
+      // default: include everything
+      const allowedZ = getAllowedZidishaBranches(req)
+      const allowedB = getAllowedBodaBranches(req)
+      const allowedAny = [...allowedZ, ...allowedB].map((b) => String(b || '').trim().toLowerCase()).filter(Boolean)
+      if (allowedAny.length > 0) {
+        const branchPH = allowedAny.map(() => '?').join(', ')
+        productWhere = ` AND LOWER(TRIM("Branch Name")) IN (${branchPH}) `
+        params.push(...allowedAny)
+      }
+    }
+
+    // NOTE: Recursive CTE can be heavy. Limit is applied after aggregation.
+    const sql = `
+WITH loan_window AS (
+  SELECT
+    z."Loan ID"                             AS loan_id,
+    z."Client Id"                           AS client_id,
+    z."Client Name"                         AS client_name,
+    z."Phone Number"                        AS phone,
+    z."Branch Name"                         AS branch,
+    z."Loan Officer Name"                   AS loan_officer,
+    z."Loan Status Id"                      AS loan_status,
+    date(z."Disbursed On Date")             AS start_date,
+    date(z."Expected Matured On Date")      AS expected_maturity,
+    CAST(z."Principal Amount" AS REAL)      AS principal,
+    CAST(z."Total Expected Repayment Derived" AS REAL) AS total_expected,
+    CAST(z."Total Outstanding Derived" AS REAL)        AS outstanding,
+    CAST(julianday(z."Expected Matured On Date") - julianday(z."Disbursed On Date") AS INTEGER) AS tenor_days,
+    CASE
+      WHEN z."Loan Status Id" IN ('600', '700')
+        OR CAST(z."Total Outstanding Derived" AS REAL) <= 1
+      THEN (
+        SELECT date(MAX(r."Submitted On Date"))
+        FROM   boda_repayments r
+        WHERE  r."Loan Id" = z."Loan ID"
+      )
+      ELSE date('now')
+    END                                     AS end_date,
+    CASE
+      WHEN (julianday(z."Expected Matured On Date") - julianday(z."Disbursed On Date")) > 0
+      THEN CAST(z."Total Expected Repayment Derived" AS REAL)
+           / (julianday(z."Expected Matured On Date") - julianday(z."Disbursed On Date"))
+      ELSE 0
+    END AS expected_daily
+  FROM zidisha_data z
+  WHERE z."Disbursed On Date" IS NOT NULL
+    AND z."Loan ID"           IS NOT NULL
+    ${productWhere}
+),
+date_spine AS (
+  SELECT
+    loan_id, client_id, client_name, phone, branch, loan_officer,
+    loan_status, outstanding, expected_daily,
+    start_date, end_date,
+    start_date AS day,
+    0 AS day_n
+  FROM loan_window
+  WHERE end_date IS NOT NULL
+    AND end_date >= start_date
+  UNION ALL
+  SELECT
+    ds.loan_id, ds.client_id, ds.client_name, ds.phone, ds.branch, ds.loan_officer,
+    ds.loan_status, ds.outstanding, ds.expected_daily,
+    ds.start_date, ds.end_date,
+    date(ds.day, '+1 day'),
+    ds.day_n + 1
+  FROM date_spine ds
+  WHERE ds.day < ds.end_date
+    AND ds.day_n < 1000
+),
+paid_days AS (
+  SELECT DISTINCT
+    "Loan Id"                 AS loan_id,
+    date("Submitted On Date") AS pay_day
+  FROM boda_repayments
+  WHERE "Submitted On Date" IS NOT NULL
+    AND CAST("Transaction Amount" AS REAL) > 0
+),
+spine_flagged AS (
+  SELECT
+    ds.*,
+    CASE WHEN pd.pay_day IS NOT NULL THEN 1 ELSE 0 END AS paid
+  FROM date_spine ds
+  LEFT JOIN paid_days pd
+    ON pd.loan_id = ds.loan_id
+   AND pd.pay_day = ds.day
+),
+weighted AS (
+  SELECT
+    *,
+    CAST(julianday('now') - julianday(day) AS INTEGER) AS days_ago,
+    EXP(-0.693147 * (julianday('now') - julianday(day)) / 14.0) AS weight
+  FROM spine_flagged
+),
+loan_agg AS (
+  SELECT
+    loan_id, client_id, client_name, phone, branch, loan_officer,
+    loan_status, outstanding, expected_daily,
+    MIN(day) AS window_start,
+    MAX(day) AS window_end,
+    ROUND(100.0 * SUM(weight * paid) / SUM(weight), 1) AS behaviour_score,
+    SUM(CASE WHEN paid = 0 THEN expected_daily * weight ELSE 0 END) AS exposure_kes_days,
+    SUM(paid) AS paid_days,
+    SUM(1 - paid) AS missed_days,
+    COUNT(*) AS total_days,
+    SUM(CASE WHEN days_ago <= 30 AND paid = 0 THEN 1 ELSE 0 END) AS missed_last_30,
+    MAX(CASE WHEN paid = 1 THEN day END) AS last_payment_date,
+    CAST(julianday('now') - julianday(MAX(CASE WHEN paid = 1 THEN day END)) AS INTEGER) AS days_since_last_pay
+  FROM weighted
+  GROUP BY loan_id, client_id, client_name, phone, branch,
+           loan_officer, loan_status, outstanding, expected_daily
+),
+loan_final AS (
+  SELECT
+    la.*,
+    CASE
+      WHEN la.loan_status IN ('600', '700') OR la.outstanding <= 1 THEN 100.0
+      WHEN la.outstanding <= 0.01 THEN 0.0
+      ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
+    END AS exposure_score,
+    ROUND(
+      0.60 * la.behaviour_score +
+      0.40 * CASE
+               WHEN la.loan_status IN ('600', '700') OR la.outstanding <= 1 THEN 100.0
+               WHEN la.outstanding <= 0.01 THEN 0.0
+               ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
+             END,
+      1
+    ) AS score,
+    CASE
+      WHEN ROUND(0.60 * la.behaviour_score + 0.40 *
+           CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
+                WHEN la.outstanding <= 0.01 THEN 0.0
+                ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
+           END, 1) >= 85 THEN 'Gold'
+      WHEN ROUND(0.60 * la.behaviour_score + 0.40 *
+           CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
+                WHEN la.outstanding <= 0.01 THEN 0.0
+                ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
+           END, 1) >= 70 THEN 'Silver'
+      WHEN ROUND(0.60 * la.behaviour_score + 0.40 *
+           CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
+                WHEN la.outstanding <= 0.01 THEN 0.0
+                ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
+           END, 1) >= 50 THEN 'Bronze'
+      ELSE 'At Risk'
+    END AS band
+  FROM loan_agg la
+),
+ranked AS (
+  SELECT
+    lf.*,
+    ROW_NUMBER() OVER (PARTITION BY lf.client_id ORDER BY lf.window_start DESC, lf.loan_id DESC) AS rn
+  FROM loan_final lf
+),
+client_scores AS (
+  SELECT
+    client_id, client_name, phone, branch, loan_officer,
+    MAX(CASE WHEN rn = 1 THEN loan_id END) AS current_loan_id,
+    MAX(CASE WHEN rn = 1 THEN loan_status END) AS current_status,
+    MAX(CASE WHEN rn = 1 THEN outstanding END) AS current_outstanding,
+    MAX(CASE WHEN rn = 1 THEN score END) AS score,
+    MAX(CASE WHEN rn = 1 THEN band END) AS band,
+    MAX(CASE WHEN rn = 1 THEN behaviour_score END) AS behaviour,
+    MAX(CASE WHEN rn = 1 THEN exposure_score END) AS exposure,
+    MAX(CASE WHEN rn = 1 THEN missed_last_30 END) AS missed_last_30,
+    MAX(CASE WHEN rn = 1 THEN last_payment_date END) AS last_payment_date,
+    MAX(CASE WHEN rn = 1 THEN days_since_last_pay END) AS days_since_last_pay,
+    COUNT(*) AS total_loans,
+    ROUND(AVG(score), 1) AS avg_score,
+    MAX(score) AS best_score,
+    MIN(score) AS worst_score,
+    SUM(paid_days) AS lifetime_paid_days,
+    SUM(missed_days) AS lifetime_missed_days
+  FROM ranked
+  GROUP BY client_id, client_name, phone, branch, loan_officer
+)
+SELECT
+  client_id,
+  client_name,
+  phone,
+  branch,
+  loan_officer,
+  current_loan_id,
+  score,
+  band,
+  ROUND(behaviour, 1) AS behaviour_score,
+  ROUND(exposure, 1) AS exposure_score,
+  missed_last_30,
+  last_payment_date,
+  days_since_last_pay,
+  ROUND(current_outstanding, 0) AS outstanding_kes,
+  total_loans,
+  avg_score,
+  best_score,
+  worst_score,
+  lifetime_paid_days,
+  lifetime_missed_days
+FROM client_scores
+ORDER BY score DESC
+LIMIT ${limit};
+`
+
+    const rows = db.prepare(sql).all(...params)
+
+    const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+    const clients = rows.map((r) => ({
+      clientId: String(r.client_id || ''),
+      clientName: String(r.client_name || ''),
+      phone: String(r.phone || ''),
+      branch: String(r.branch || ''),
+      loanOfficer: String(r.loan_officer || ''),
+      currentLoanId: String(r.current_loan_id || ''),
+      score: safeNum(r.score),
+      band: String(r.band || ''),
+      behaviourScore: safeNum(r.behaviour_score),
+      exposureScore: safeNum(r.exposure_score),
+      missedLast30: safeNum(r.missed_last_30),
+      lastPaymentDate: r.last_payment_date || null,
+      daysSinceLastPay: r.days_since_last_pay == null ? null : safeNum(r.days_since_last_pay),
+      outstandingKes: safeNum(r.outstanding_kes),
+      totalLoans: safeNum(r.total_loans),
+      avgScore: safeNum(r.avg_score),
+      bestScore: safeNum(r.best_score),
+      worstScore: safeNum(r.worst_score),
+      lifetimePaidDays: safeNum(r.lifetime_paid_days),
+      lifetimeMissedDays: safeNum(r.lifetime_missed_days),
+    }))
+
+    const kpis = {
+      totalClients: clients.length,
+      avgScore: clients.length ? safeNum((clients.reduce((s, c) => s + safeNum(c.score), 0) / clients.length).toFixed(1)) : 0,
+      totalOutstanding: clients.reduce((s, c) => s + safeNum(c.outstandingKes), 0),
+      atRisk: clients.filter((c) => c.band === 'At Risk').length,
+      gold: clients.filter((c) => c.band === 'Gold').length,
+      silver: clients.filter((c) => c.band === 'Silver').length,
+      bronze: clients.filter((c) => c.band === 'Bronze').length,
+      atRiskOutstanding: clients.filter((c) => c.band === 'At Risk').reduce((s, c) => s + safeNum(c.outstandingKes), 0),
+      branches: new Set(clients.map((c) => String(c.branch || '').trim()).filter(Boolean)).size,
+      officers: new Set(clients.map((c) => String(c.loanOfficer || '').trim()).filter(Boolean)).size,
+    }
+
+    // Aggregates
+    const byBranch = new Map()
+    const byOfficer = new Map()
+    for (const c of clients) {
+      const b = c.branch || 'Unknown'
+      const o = c.loanOfficer || 'Unknown'
+      const bump = (m, key) => {
+        const e = m.get(key) || { key, clients: 0, avgScoreSum: 0, outstanding: 0, gold: 0, silver: 0, bronze: 0, atRisk: 0, missed30: 0 }
+        e.clients += 1
+        e.avgScoreSum += safeNum(c.score)
+        e.outstanding += safeNum(c.outstandingKes)
+        if (c.band === 'Gold') e.gold += 1
+        else if (c.band === 'Silver') e.silver += 1
+        else if (c.band === 'Bronze') e.bronze += 1
+        else e.atRisk += 1
+        e.missed30 += safeNum(c.missedLast30)
+        m.set(key, e)
+      }
+      bump(byBranch, b)
+      bump(byOfficer, o)
+    }
+    const branchesAgg = Array.from(byBranch.values())
+      .map((e) => ({
+        branch: e.key,
+        clients: e.clients,
+        avgScore: e.clients ? Number((e.avgScoreSum / e.clients).toFixed(1)) : 0,
+        outstanding: e.outstanding,
+        gold: e.gold,
+        silver: e.silver,
+        bronze: e.bronze,
+        atRisk: e.atRisk,
+        missed30: e.missed30,
+        atRiskPct: e.clients ? Number(((e.atRisk / e.clients) * 100).toFixed(1)) : 0,
+      }))
+      .sort((a, b) => b.clients - a.clients)
+
+    const officersAgg = Array.from(byOfficer.values())
+      .map((e) => ({
+        officer: e.key,
+        clients: e.clients,
+        avgScore: e.clients ? Number((e.avgScoreSum / e.clients).toFixed(1)) : 0,
+        outstanding: e.outstanding,
+        gold: e.gold,
+        silver: e.silver,
+        bronze: e.bronze,
+        atRisk: e.atRisk,
+        atRiskPct: e.clients ? Number(((e.atRisk / e.clients) * 100).toFixed(1)) : 0,
+      }))
+      .sort((a, b) => b.clients - a.clients)
+
+    const watchlist = clients
+      .filter((c) => c.band === 'At Risk' && safeNum(c.outstandingKes) > 0)
+      .sort((a, b) => safeNum(b.outstandingKes) - safeNum(a.outstandingKes))
+      .slice(0, 50)
+
+    return res.json({
+      product: product || null,
+      limit,
+      kpis,
+      branchesAgg,
+      officersAgg,
+      watchlist,
+      clients,
+      branchNames: Array.from(new Set(clients.map((c) => c.branch).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      officerNames: Array.from(new Set(clients.map((c) => c.loanOfficer).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      generatedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    console.error('[Credit Client Performance API] Error:', e)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+// Admin/superuser: refresh the precomputed credit score tables
+app.post('/api/credit/refresh', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    ensureCreditIndexes()
+
+    const product = String(req.query.product || req.body?.product || '').trim().toLowerCase() || 'boda'
+    const zidishaCoreProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+
+    if (product === 'boda') {
+      const allowed = getAllowedBodaBranches(req)
+      const result = refreshCreditScoresForProduct('boda', {
+        scopeProducts: ['Zidisha Boda'],
+        scopeBranches: allowed.length > 0 ? allowed : [],
+      })
+      return res.json({ ok: true, ...result })
+    }
+    if (product === 'zidisha') {
+      const allowed = getAllowedZidishaBranches(req)
+      const result = refreshCreditScoresForProduct('zidisha', {
+        scopeProducts: zidishaCoreProducts,
+        scopeBranches: allowed.length > 0 ? allowed : [],
+      })
+      return res.json({ ok: true, ...result })
+    }
+
+    // all
+    const result = refreshCreditScoresForProduct('all', {})
+    return res.json({ ok: true, ...result })
+  } catch (e) {
+    console.error('[Credit Refresh API] Error:', e)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+
 // Boda schedule (export id 30) - branch summary for Daily Break-down table
 // Table: boda_Schedule. Columns: Branch Name, Client Id, Client Name, Due Date, Loan Id, Period, Total Expected, Total Outstanding
 app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
@@ -7311,6 +8009,60 @@ cron.schedule('*/10 * * * *', () => {
   scheduled: true,
   timezone: 'Africa/Nairobi'
 })
+
+function creditScoresEmptyOrMissing(tableName) {
+  try {
+    const row = dbRW.prepare(`SELECT COUNT(*) AS c FROM ${tableName}`).get()
+    return !row || !row.c || Number(row.c) <= 0
+  } catch {
+    return true
+  }
+}
+
+async function refreshCreditScoresJob() {
+  try {
+    ensureCreditIndexes()
+    const zidishaCoreProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+
+    const bodaEmpty = creditScoresEmptyOrMissing('credit_scores_boda')
+    const zidishaEmpty = creditScoresEmptyOrMissing('credit_scores_zidisha')
+
+    if (bodaEmpty) {
+      console.log('[CRON] Credit scores (boda) empty/missing → refreshing now')
+    }
+    if (zidishaEmpty) {
+      console.log('[CRON] Credit scores (zidisha) empty/missing → refreshing now')
+    }
+
+    // Always refresh on schedule; empty tables just get an extra startup refresh (below).
+    const boda = refreshCreditScoresForProduct('boda', { scopeProducts: ['Zidisha Boda'] })
+    const zidisha = refreshCreditScoresForProduct('zidisha', { scopeProducts: zidishaCoreProducts })
+    console.log('[CRON] Credit scores refresh complete:', { boda: boda.rows, zidisha: zidisha.rows })
+  } catch (e) {
+    console.error('[CRON] Credit scores refresh failed:', e.message)
+  }
+}
+
+// Every 6 hours: refresh credit score tables (fast dashboard reads)
+cron.schedule('0 */6 * * *', async () => {
+  console.log(`[CRON] Running scheduled credit scores refresh (6-hourly) at ${new Date().toISOString()}`)
+  await refreshCreditScoresJob()
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Startup: if credit score tables are empty/missing, refresh immediately (one-off)
+setTimeout(() => {
+  try {
+    if (creditScoresEmptyOrMissing('credit_scores_boda') || creditScoresEmptyOrMissing('credit_scores_zidisha')) {
+      console.log('[CRON] Startup credit scores refresh (tables empty/missing)')
+      refreshCreditScoresJob()
+    }
+  } catch (e) {
+    console.warn('[CRON] Startup credit scores refresh skipped:', e.message)
+  }
+}, 15000)
 
 // Daily SMS: Top-up qualifiers (Zidisha Boda) at 07:05 and 13:05 Nairobi time
 cron.schedule('5 7 * * *', async () => {

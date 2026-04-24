@@ -20,7 +20,8 @@ import {
   MapPin,
   Calendar,
   FileText,
-  Search
+  Search,
+  Gauge
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -75,6 +76,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
         { path: '/zidisha/dashboard', label: 'Dashboard', icon: BarChart3 },
         { path: '/zidisha/disbursement', label: 'Disbursement', icon: DollarSign },
         { path: '/zidisha/collection', label: 'Collection', icon: TrendingUp },
+        { path: '/zidisha/client-performance', label: 'Client Performance', icon: Gauge },
         { path: '/zidisha/productivity', label: 'Productivity', icon: Activity },
         { path: '/zidisha/demographics', label: 'Demographics', icon: Users }
       ]
@@ -98,6 +100,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
         { path: '/boda/dashboard', label: 'Dashboard', icon: BarChart3 },
         { path: '/boda/disbursement', label: 'Disbursement', icon: DollarSign },
         { path: '/boda/collection', label: 'Collection', icon: TrendingUp },
+        { path: '/boda/client-performance', label: 'Client Performance', icon: Gauge },
         { path: '/boda/productivity', label: 'Productivity', icon: Activity }
       ]
     },

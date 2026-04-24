@@ -15,6 +15,7 @@ import ZidishaCollection from './pages/zidisha/Collection.jsx'
 import ZidishaPAR from './pages/zidisha/PAR.jsx'
 import ZidishaProductivity from './pages/zidisha/Productivity.jsx'
 import ZidishaDemographics from './pages/zidisha/Demographics.jsx'
+import ZidishaClientPerformance from './pages/zidisha/ClientPerformance.jsx'
 import { ZidishaBranchProvider } from './context/ZidishaBranchContext.jsx'
 
 import AdvansDashboard from './pages/advans/Dashboard.jsx'
@@ -28,6 +29,7 @@ import BodaDisbursement from './pages/boda/Disbursement.jsx'
 import BodaCollection from './pages/boda/Collection.jsx'
 import BodaPAR from './pages/boda/PAR.jsx'
 import BodaProductivity from './pages/boda/Productivity.jsx'
+import BodaClientPerformance from './pages/boda/ClientPerformance.jsx'
 import { BodaBranchProvider } from './context/BodaBranchContext.jsx'
 
 import KajeaClients from './pages/kajea/Clients.jsx'
@@ -183,6 +185,7 @@ function Routes() {
       <Route path="/zidisha/dashboard" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDashboard /></ZidishaBranchProvider></RequireAuth>} />
       <Route path="/zidisha/disbursement" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDisbursement /></ZidishaBranchProvider></RequireAuth>} />
       <Route path="/zidisha/collection" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaCollection /></ZidishaBranchProvider></RequireAuth>} />
+      <Route path="/zidisha/client-performance" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaClientPerformance /></ZidishaBranchProvider></RequireAuth>} />
       <Route path="/zidisha/productivity" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaProductivity /></ZidishaBranchProvider></RequireAuth>} />
       <Route path="/zidisha/demographics" element={<RequireAuth allowedRoles={ZIDISHA_ROLES}><ZidishaBranchProvider><ZidishaDemographics /></ZidishaBranchProvider></RequireAuth>} />
       
@@ -196,6 +199,7 @@ function Routes() {
       <Route path="/boda/dashboard" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaDashboard /></BodaBranchProvider></RequireAuth>} />
       <Route path="/boda/disbursement" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaDisbursement /></BodaBranchProvider></RequireAuth>} />
       <Route path="/boda/collection" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaCollection /></BodaBranchProvider></RequireAuth>} />
+      <Route path="/boda/client-performance" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaClientPerformance /></BodaBranchProvider></RequireAuth>} />
       <Route path="/boda/productivity" element={<RequireAuth allowedRoles={BODA_ROLES}><BodaBranchProvider><BodaProductivity /></BodaBranchProvider></RequireAuth>} />
       
       {/* Kajea routes */}

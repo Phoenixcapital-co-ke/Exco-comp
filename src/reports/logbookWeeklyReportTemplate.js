@@ -172,6 +172,20 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
     }
     .page:last-child { page-break-after: avoid; }
     @page { size: A4 portrait; margin: 0; }
+
+    /* Keep tables readable across page breaks */
+    table { break-inside: auto; page-break-inside: auto; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
+
+    /* PDF engines paginate grid/flex imperfectly; stack the bottom summary blocks */
+    .print-stack { display: block !important; }
+    .print-stack > div { width: 100% !important; margin-bottom: 6mm; break-inside: auto; page-break-inside: auto; }
+
+    /* Keep small units intact, but allow large sections to flow */
+    .scorecard-row { break-inside: avoid; page-break-inside: avoid; }
+    .alert-box { break-inside: avoid; page-break-inside: avoid; }
   }
 
   /* ── HEADER ── */
@@ -419,11 +433,6 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
     </div>
   </header>
 
-  <div class="summary-box">
-    <div class="sum-title">Executive Summary</div>
-    ${escapeHtml(payload?.executiveSummary || 'This report is generated from live system data. Review branch sales, collections, portfolio and PAR performance below.')}
-  </div>
-
   <div class="kpi-grid">
     <div class="kpi-card ${String(payload?.kpiCardClasses?.sales || 'danger')}">
       <div class="kpi-label">Total Sales</div>
@@ -531,7 +540,7 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
               <td class="num">${escapeHtml((Number(r.currParRate) || 0).toFixed(2))}%</td>
               <td class="num" style="color:${escapeHtml(chColor)}">${escapeHtml((ch >= 0 ? '+' : '') + ch.toFixed(2))}</td>
               <td class="num">${escapeHtml(formatKES(r.parBalance || 0))}</td>
-              <td>${escapeHtml(r.statusBadgeHtml || '')}</td>
+              <td>${r.statusBadgeHtml || ''}</td>
             </tr>`
           }).join('')}
         </tbody>
@@ -567,20 +576,7 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
     </div>
   </div>
 
-  <div class="page-footer">
-    <span class="confidential">Confidential</span>
-    <span>Phoenix Capital Limited &nbsp;|&nbsp; Logbook Product – Weekly Report &nbsp;|&nbsp; ${escapeHtml(dmyLong(asAt))}</span>
-    <span>Page 1 of 3</span>
-  </div>
-</div>
-
-
-<!-- ═══════════════════════════════════════════════════════════════
-     PAGE 2 – PAR DETAIL + PORTFOLIO + MISSING DATA
-═══════════════════════════════════════════════════════════════ -->
-<div class="page">
-
-  <div class="two-col">
+  <div class="two-col print-stack" style="margin-top:6mm">
     <div>
       <div class="section-title" style="margin-top:0">Branch Composite Scorecard</div>
       <div class="scorecard-row" style="font-size:7pt;color:var(--text-muted);border-bottom:1.5px solid var(--navy);padding-bottom:3px">
@@ -611,17 +607,10 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
       </div>
     </div>
   </div>
-
-  <div class="page-footer">
-    <span class="confidential">Confidential</span>
-    <span>Phoenix Capital Limited &nbsp;|&nbsp; Logbook Product – Weekly Report &nbsp;|&nbsp; ${escapeHtml(dmyLong(asAt))}</span>
-    <span>Page 2 of 3</span>
-  </div>
 </div>
 
-
 <!-- ═══════════════════════════════════════════════════════════════
-     PAGE 3 – FULL RECOMMENDATIONS ACTION PLAN
+     PAGE 2 – FULL RECOMMENDATIONS ACTION PLAN
 ═══════════════════════════════════════════════════════════════ -->
 <div class="page">
 
@@ -639,7 +628,7 @@ export function renderLogbookWeeklyPerformanceReportHTML(payload) {
   <div class="page-footer">
     <span class="confidential">Confidential</span>
     <span>Phoenix Capital Limited &nbsp;|&nbsp; Logbook Product – Weekly Report &nbsp;|&nbsp; ${escapeHtml(dmyLong(asAt))}</span>
-    <span>Page 3 of 3</span>
+    <span>Page 2 of 2</span>
   </div>
 </div>
 

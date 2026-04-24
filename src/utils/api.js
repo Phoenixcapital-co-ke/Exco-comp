@@ -53,6 +53,9 @@ export const API_URLS = {
     generate: `${API_BASE}/api/reports/generate`,
     bodaTopupQualifiers: `${API_BASE}/api/reports/boda-topup-qualifiers`,
   },
+  credit: {
+    clientPerformance: (product) => `${API_BASE}/api/credit/client-performance?product=${encodeURIComponent(product || '')}`,
+  },
   par: {
     history: `${API_BASE}/api/par`,
     fetchPastMissed: `${API_BASE}/api/par/past-missed`,
