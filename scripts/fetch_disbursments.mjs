@@ -823,6 +823,7 @@ const ZIDISHA_COLUMNS = [
   'Expected Matured On Date',
   'Gender',
   'Loan ID',
+  'Loan Status Id',
   'Loan Officer Name',
   'Matured On Date',
   'Penalties Overdue Derived',
@@ -905,6 +906,7 @@ function initZidishaTable(db) {
       "Expected Matured On Date" TEXT,
       "Gender" TEXT,
       "Loan ID" TEXT,
+      "Loan Status Id" TEXT,
       "Loan Officer Name" TEXT,
       "Matured On Date" TEXT,
       "Penalties Overdue Derived" TEXT,
@@ -942,6 +944,9 @@ function initZidishaTable(db) {
   }
   if (!cols.includes('Phone Number')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Phone Number" TEXT;`)
+  }
+  if (!cols.includes('Loan Status Id')) {
+    db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Loan Status Id" TEXT;`)
   }
   if (!cols.includes('Principal Outstanding Derived')) {
     db.exec(`ALTER TABLE ${ZIDISHA_TABLE} ADD COLUMN "Principal Outstanding Derived" REAL;`)
