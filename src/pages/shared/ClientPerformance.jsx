@@ -164,9 +164,10 @@ export default function ClientPerformance({ product }) {
           Showing <span className="font-medium text-gray-700">{filtered.length}</span> of {clients.length} clients.
         </div>
 
-        <div className="overflow-auto border rounded-lg">
+        <div className="border rounded-lg overflow-hidden">
+          <div className="overflow-auto max-h-[65vh]">
           <table className="min-w-[1100px] w-full text-sm">
-            <thead className="bg-gray-50 text-gray-600">
+            <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
               <tr>
                 <th className="text-left p-2">Client</th>
                 <th className="text-left p-2">Phone</th>
@@ -209,6 +210,7 @@ export default function ClientPerformance({ product }) {
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>
