@@ -2717,12 +2717,21 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
     const minPrincipalPaidRaw = req.query.minPrincipalPaid != null ? Number(req.query.minPrincipalPaid) : 70
     const minPrincipalPaid = Number.isFinite(minPrincipalPaidRaw) ? Math.max(0, Math.min(100, minPrincipalPaidRaw)) : 70
 
+    // Enforce branch scoping (if configured for this user)
+    const allowedBranches =
+      product === 'boda' ? getAllowedBodaBranches(req) : product === 'zidisha' ? getAllowedZidishaBranches(req) : []
+    const allowedNorm =
+      Array.isArray(allowedBranches) && allowedBranches.length > 0
+        ? new Set(allowedBranches.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+        : null
+
     // Fast path: serve from precomputed table if present
     const tableName = product === 'boda' ? 'credit_scores_boda' : product === 'zidisha' ? 'credit_scores_zidisha' : 'credit_scores'
     const pre = tryQueryCreditScoresTable(tableName, limit)
     if (Array.isArray(pre)) {
       const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
-      const clients = pre.map((r) => ({
+      const clients = pre
+        .map((r) => ({
         clientId: String(r.client_id || ''),
         clientName: String(r.client_name || ''),
         phone: String(r.phone || ''),
@@ -2748,7 +2757,13 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
         worstScore: safeNum(r.worst_score),
         lifetimePaidDays: safeNum(r.lifetime_paid_days),
         lifetimeMissedDays: safeNum(r.lifetime_missed_days),
-      })).filter((c) => Number(c.percentPrincipalPaid || 0) >= minPrincipalPaid)
+      }))
+        .filter((c) => Number(c.percentPrincipalPaid || 0) >= minPrincipalPaid)
+        .filter((c) => {
+          if (!allowedNorm) return true
+          const b = String(c.branch || '').trim().toLowerCase()
+          return b && allowedNorm.has(b)
+        })
 
       const kpis = {
         totalClients: clients.length,
