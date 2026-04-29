@@ -627,25 +627,71 @@ function getOnfonConfigured() {
 async function runBodaTopUpSmsJob(slot) {
   const slotNorm = String(slot || '').trim() || 'unknown'
   const sendDate = getNairobiDateKey()
-  const today = getBodaTopUpMaturityFilterDate()
-
   const minPct = Number(process.env.TOPUP_MIN_PERCENT_PAID || 70)
   const minPctSafe = Number.isFinite(minPct) ? minPct : 70
 
-  const byClient = buildBodaTopUpZidishaByClient(today)
+  // New source of truth: Client Performance tables (precomputed)
+  // Recipients: Gold/Silver AND principal paid >= minPctSafe
+  let recipients = []
+  try {
+    recipients = dbRW
+      .prepare(
+        `SELECT
+           TRIM(client_id) AS clientId,
+           TRIM(client_name) AS name,
+           TRIM(phone) AS phone,
+           CAST(current_principal_amount AS REAL) AS principalAmount,
+           CAST(current_outstanding AS REAL) AS principalOutstanding,
+           TRIM(band) AS band
+         FROM credit_scores_boda
+         WHERE band IN ('Gold', 'Silver')`,
+      )
+      .all()
+  } catch (e) {
+    // If tables are missing/empty, try a refresh once and re-read
+    try {
+      console.warn('[SMS] credit_scores_boda missing; attempting refresh:', e.message)
+      ensureCreditIndexes()
+      refreshCreditScoresForProduct('boda', { scopeProducts: ['Zidisha Boda'] })
+      recipients = dbRW
+        .prepare(
+          `SELECT
+             TRIM(client_id) AS clientId,
+             TRIM(client_name) AS name,
+             TRIM(phone) AS phone,
+             CAST(current_principal_amount AS REAL) AS principalAmount,
+             CAST(current_outstanding AS REAL) AS principalOutstanding,
+             TRIM(band) AS band
+           FROM credit_scores_boda
+           WHERE band IN ('Gold', 'Silver')`,
+        )
+        .all()
+    } catch (e2) {
+      throw new Error(`Unable to load credit_scores_boda for SMS: ${e2.message}`)
+    }
+  }
 
   let attempted = 0
   let sent = 0
   let skipped = 0
   let errors = 0
 
-  for (const c of byClient.values()) {
-    const pctPaid = bodaTopUpClientPercentPaid(c)
+  for (const r of recipients) {
+    const clientId = String(r.clientId || '').trim()
+    if (!clientId) continue
+
+    const principalAmount = Number(r.principalAmount) || 0
+    const principalOutstanding = Number(r.principalOutstanding) || 0
+    const paid = principalAmount - principalOutstanding
+    const safePaid = paid > 0 ? paid : 0
+    const pctPaid = principalAmount > 0 ? (safePaid / principalAmount) * 100 : 0
+
     if (pctPaid < minPctSafe) {
       skipped += 1
       continue
     }
-    if (!c.phone) {
+    const phone = normalizeKenyanPhone(r.phone)
+    if (!phone) {
       skipped += 1
       continue
     }
@@ -653,7 +699,7 @@ async function runBodaTopUpSmsJob(slot) {
     // Dedupe per day+slot+client
     const exists = dbRW
       .prepare('SELECT 1 FROM TopUp_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
-      .get(sendDate, slotNorm, c.clientId)
+      .get(sendDate, slotNorm, clientId)
     if (exists) {
       skipped += 1
       continue
@@ -661,13 +707,13 @@ async function runBodaTopUpSmsJob(slot) {
 
     attempted += 1
     try {
-      const resp = await sendTopUpSMS(c.name, c.phone)
+      const resp = await sendTopUpSMS(r.name, phone)
       dbRW
         .prepare(
           `INSERT INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(sendDate, slotNorm, c.clientId, c.phone, 'sent', JSON.stringify(resp || {}))
+        .run(sendDate, slotNorm, clientId, phone, 'sent', JSON.stringify(resp || {}))
       sent += 1
     } catch (e) {
       errors += 1
@@ -676,7 +722,7 @@ async function runBodaTopUpSmsJob(slot) {
           `INSERT OR IGNORE INTO TopUp_SMS_Log (send_date, slot, client_id, phone, status, response)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(sendDate, slotNorm, c.clientId, c.phone, 'error', String(e?.message || e))
+        .run(sendDate, slotNorm, clientId, phone, 'error', String(e?.message || e))
     }
 
     await new Promise((resolve) => setTimeout(resolve, 100))
