@@ -32,15 +32,12 @@ function ZidishaCollection() {
         setDataReady(false)
         // Filter for Zidisha products only using backend filtering
         const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
-        // Use backend filtering for products, exclude Advans branch, and filter by selected month/year
-        // This significantly reduces the amount of data fetched
+        // Use backend filtering for products and exclude Advans branch
         const filteredRows = await fetchAllZidishaRows({ 
           signal: controller.signal,
           products: zidishaProducts,
           branch: selectedBranch !== 'All' ? selectedBranch : undefined,
-          excludeBranch: 'Advans Branch',
-          month: selectedMonth,
-          year: selectedYear
+          excludeBranch: 'Advans Branch'
         })
         setRows(filteredRows)
         setDataReady(true)
@@ -54,7 +51,7 @@ function ZidishaCollection() {
     }
     load()
     return () => controller.abort()
-  }, [selectedBranch, selectedMonth, selectedYear])
+  }, [selectedBranch])
 
   const filtered = useMemo(() => {
     const inMonth = (iso) => {

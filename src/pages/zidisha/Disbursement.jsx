@@ -38,10 +38,7 @@ function ZidishaDisbursement() {
           signal: controller.signal,
           products: zidishaProducts,
           branch: selectedBranch !== 'All' ? selectedBranch : undefined,
-          excludeBranch: 'Advans Branch',
-          // Reduce payload: only fetch selected month/year
-          month: selectedMonth,
-          year: selectedYear,
+          excludeBranch: 'Advans Branch'
         })
         setRows(filtered)
         setLoading(false)
@@ -53,7 +50,7 @@ function ZidishaDisbursement() {
     }
     load()
     return () => controller.abort()
-  }, [selectedBranch, selectedMonth, selectedYear])
+  }, [selectedBranch])
 
   useEffect(() => {
     const loadTargets = async () => {
