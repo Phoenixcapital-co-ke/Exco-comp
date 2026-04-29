@@ -172,6 +172,7 @@ export default function ClientPerformance({ product }) {
             value={String(minPrincipalPaid)}
             onChange={(e) => setMinPrincipalPaid(Number(e.target.value))}
           >
+            <option value={0}>All (any %)</option>
             {[50, 60, 70, 75, 80, 85, 90].map((p) => (
               <option key={p} value={p}>
                 Principal Paid &gt;= {p}%

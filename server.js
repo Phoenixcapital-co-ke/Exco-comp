@@ -641,7 +641,7 @@ async function runBodaTopUpSmsJob(slot) {
            TRIM(client_name) AS name,
            TRIM(phone) AS phone,
            CAST(current_principal_amount AS REAL) AS principalAmount,
-           CAST(current_outstanding AS REAL) AS principalOutstanding,
+           CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
            TRIM(band) AS band
          FROM credit_scores_boda
          WHERE band IN ('Gold', 'Silver')`,
@@ -660,7 +660,7 @@ async function runBodaTopUpSmsJob(slot) {
              TRIM(client_name) AS name,
              TRIM(phone) AS phone,
              CAST(current_principal_amount AS REAL) AS principalAmount,
-             CAST(current_outstanding AS REAL) AS principalOutstanding,
+             CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
              TRIM(band) AS band
            FROM credit_scores_boda
            WHERE band IN ('Gold', 'Silver')`,
@@ -2562,6 +2562,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
         z."Loan Officer Name" AS loan_officer,
         z."Loan Status Id" AS loan_status,
         CAST(z."Principal Amount" AS REAL) AS principal_amount,
+        CAST(z."Principal Outstanding Derived" AS REAL) AS principal_outstanding,
         CAST(z."Total Outstanding Derived" AS REAL) AS outstanding,
         CAST(z."Total Expected Repayment Derived" AS REAL) AS total_expected,
         julianday(z."Disbursed On Date") AS j_start,
@@ -2631,7 +2632,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
     )
     SELECT
       loan_id, client_id, client_name, phone, branch, loan_officer,
-      loan_status, principal_amount, outstanding, expected_days, paid_days,
+      loan_status, principal_amount, principal_outstanding, outstanding, expected_days, paid_days,
       paid_days_last_30, last_payment_date, days_since_last_pay,
       ROUND(consistency_score,1) AS consistency_score,
       ROUND(recent_score,1)      AS recent_score,
@@ -2667,6 +2668,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
       MAX(CASE WHEN rn=1 THEN loan_id END) AS current_loan_id,
       MAX(CASE WHEN rn=1 THEN loan_status END) AS current_status,
       MAX(CASE WHEN rn=1 THEN principal_amount END) AS current_principal_amount,
+      MAX(CASE WHEN rn=1 THEN principal_outstanding END) AS current_principal_outstanding,
       MAX(CASE WHEN rn=1 THEN outstanding END) AS current_outstanding,
       MAX(CASE WHEN rn=1 THEN score END) AS score,
       MAX(CASE WHEN rn=1 THEN band END) AS band,
@@ -2738,7 +2740,7 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
         outstandingKes: safeNum(r.current_outstanding),
         percentPrincipalPaid:
           safeNum(r.current_principal_amount) > 0
-            ? ((safeNum(r.current_principal_amount) - safeNum(r.current_outstanding)) / safeNum(r.current_principal_amount)) * 100
+            ? ((safeNum(r.current_principal_amount) - safeNum(r.current_principal_outstanding)) / safeNum(r.current_principal_amount)) * 100
             : 0,
         totalLoans: safeNum(r.total_loans),
         avgScore: safeNum(r.avg_score),
@@ -2880,6 +2882,7 @@ WITH loan_window AS (
     date(z."Disbursed On Date")             AS start_date,
     date(z."Expected Matured On Date")      AS expected_maturity,
     CAST(z."Principal Amount" AS REAL)      AS principal,
+    CAST(z."Principal Outstanding Derived" AS REAL) AS principal_outstanding,
     CAST(z."Total Expected Repayment Derived" AS REAL) AS total_expected,
     CAST(z."Total Outstanding Derived" AS REAL)        AS outstanding,
     CAST(julianday(z."Expected Matured On Date") - julianday(z."Disbursed On Date") AS INTEGER) AS tenor_days,
@@ -2918,7 +2921,7 @@ WITH loan_window AS (
 date_spine AS (
   SELECT
     loan_id, client_id, client_name, phone, branch, loan_officer,
-    loan_status, outstanding, expected_daily,
+    loan_status, principal, principal_outstanding, outstanding, expected_daily,
     start_date, end_date,
     start_date AS day,
     0 AS day_n
@@ -2928,7 +2931,7 @@ date_spine AS (
   UNION ALL
   SELECT
     ds.loan_id, ds.client_id, ds.client_name, ds.phone, ds.branch, ds.loan_officer,
-    ds.loan_status, ds.outstanding, ds.expected_daily,
+    ds.loan_status, ds.principal, ds.principal_outstanding, ds.outstanding, ds.expected_daily,
     ds.start_date, ds.end_date,
     date(ds.day, '+1 day'),
     ds.day_n + 1
@@ -2963,7 +2966,7 @@ weighted AS (
 loan_agg AS (
   SELECT
     loan_id, client_id, client_name, phone, branch, loan_officer,
-    loan_status, principal, outstanding, expected_daily,
+    loan_status, principal, principal_outstanding, outstanding, expected_daily,
     MIN(day) AS window_start,
     MAX(day) AS window_end,
     ROUND(100.0 * SUM(weight * paid) / SUM(weight), 1) AS behaviour_score,
@@ -2976,7 +2979,7 @@ loan_agg AS (
     CAST(julianday('now') - julianday(MAX(CASE WHEN paid = 1 THEN day END)) AS INTEGER) AS days_since_last_pay
   FROM weighted
   GROUP BY loan_id, client_id, client_name, phone, branch,
-           loan_officer, loan_status, principal, outstanding, expected_daily
+           loan_officer, loan_status, principal, principal_outstanding, outstanding, expected_daily
 ),
 loan_final AS (
   SELECT
@@ -3052,6 +3055,7 @@ SELECT
   loan_officer,
   current_loan_id,
   current_principal_amount AS principal_amount,
+  current_principal_outstanding AS principal_outstanding,
   score,
   band,
   ROUND(behaviour, 1) AS behaviour_score,
@@ -3068,7 +3072,7 @@ SELECT
   lifetime_missed_days
 FROM client_scores
 WHERE COALESCE(current_principal_amount, 0) > 0
-  AND (((COALESCE(current_principal_amount, 0) - COALESCE(current_outstanding, 0)) * 100.0) / current_principal_amount) >= ${minPrincipalPaid}
+  AND (((COALESCE(current_principal_amount, 0) - COALESCE(current_principal_outstanding, 0)) * 100.0) / current_principal_amount) >= ${minPrincipalPaid}
 ORDER BY score DESC
 LIMIT ${limit};
 `
@@ -3094,7 +3098,7 @@ LIMIT ${limit};
       outstandingKes: safeNum(r.outstanding_kes),
       percentPrincipalPaid:
         safeNum(r.principal_amount) > 0
-          ? ((safeNum(r.principal_amount) - safeNum(r.outstanding_kes)) / safeNum(r.principal_amount)) * 100
+          ? ((safeNum(r.principal_amount) - safeNum(r.principal_outstanding)) / safeNum(r.principal_amount)) * 100
           : 0,
       totalLoans: safeNum(r.total_loans),
       avgScore: safeNum(r.avg_score),
@@ -5756,6 +5760,7 @@ app.get('/api/pages', (req, res) => {
       { path: '/zidisha/dashboard', label: 'Zidisha - Dashboard', category: 'Zidisha' },
       { path: '/zidisha/disbursement', label: 'Zidisha - Disbursement', category: 'Zidisha' },
       { path: '/zidisha/collection', label: 'Zidisha - Collection', category: 'Zidisha' },
+      { path: '/zidisha/client-performance', label: 'Zidisha - Client Performance', category: 'Zidisha' },
       { path: '/zidisha/productivity', label: 'Zidisha - Productivity', category: 'Zidisha' },
       { path: '/zidisha/demographics', label: 'Zidisha - Demographics', category: 'Zidisha' },
       // Advans pages
@@ -5767,6 +5772,7 @@ app.get('/api/pages', (req, res) => {
       { path: '/boda/dashboard', label: 'Boda - Dashboard', category: 'Boda' },
       { path: '/boda/disbursement', label: 'Boda - Disbursement', category: 'Boda' },
       { path: '/boda/collection', label: 'Boda - Collection', category: 'Boda' },
+      { path: '/boda/client-performance', label: 'Boda - Client Performance', category: 'Boda' },
       { path: '/boda/productivity', label: 'Boda - Productivity', category: 'Boda' },
       // Other pages
       { path: '/kajea/clients', label: 'Kajea - Clients', category: 'Other' },

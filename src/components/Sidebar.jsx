@@ -35,6 +35,17 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   const [expandedSubSection, setExpandedSubSection] = useState(null)
   const [logbookCountries, setLogbookCountries] = useState([])
 
+  const hasCustomPageAccess = (path, allowedPages) => {
+    const p = String(path || '')
+    if (allowedPages.includes(p)) return true
+    const m = p.match(/^\/logbook\/[^/]+\/([^/]+)$/)
+    if (m) {
+      const legacy = `/logbook/${m[1]}`
+      if (allowedPages.includes(legacy)) return true
+    }
+    return false
+  }
+
   const toggleSection = (section) => {
     setExpandedSection(prev => (prev === section ? null : section))
     // Reset sub-section when collapsing parent
@@ -199,7 +210,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       const filteredItems = section.items.map(item => {
         if (item.type === 'subsection') {
           // Filter subsection items
-          const allowedSubItems = item.items.filter(subItem => allowedPages.includes(subItem.path))
+          const allowedSubItems = item.items.filter((subItem) => hasCustomPageAccess(subItem.path, allowedPages))
           if (allowedSubItems.length === 0) return null
           return {
             ...item,
@@ -207,7 +218,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
           }
         } else {
           // Regular item - check if allowed
-          return allowedPages.includes(item.path) ? item : null
+          return hasCustomPageAccess(item.path, allowedPages) ? item : null
         }
       }).filter(Boolean)
       
