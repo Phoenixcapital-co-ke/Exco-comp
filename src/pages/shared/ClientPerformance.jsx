@@ -4,6 +4,7 @@ import { formatKES } from '../../utils/format.js'
 import { Loader2 } from 'lucide-react'
 
 const BAND_ORDER = ['Gold', 'Silver', 'Bronze', 'At Risk']
+const BELOW_50_BAND = '__below50__'
 
 function bandBadgeClass(band) {
   if (band === 'Gold') return 'bg-yellow-100 text-yellow-800'
@@ -21,6 +22,7 @@ export default function ClientPerformance({ product }) {
   const [band, setBand] = useState('')
   const [branch, setBranch] = useState('')
   const [officer, setOfficer] = useState('')
+  const [minPrincipalPaid, setMinPrincipalPaid] = useState(70)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -28,7 +30,7 @@ export default function ClientPerformance({ product }) {
       try {
         setLoading(true)
         setError(null)
-        const url = API_URLS.credit.clientPerformance(product)
+        const url = `${API_URLS.credit.clientPerformance(product)}&minPrincipalPaid=${encodeURIComponent(minPrincipalPaid)}`
         const resp = await fetch(url, { signal: controller.signal, credentials: 'include' })
         const json = await resp.json()
         if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`)
@@ -42,7 +44,7 @@ export default function ClientPerformance({ product }) {
     }
     load()
     return () => controller.abort()
-  }, [product])
+  }, [product, minPrincipalPaid])
 
   const clients = Array.isArray(data?.clients) ? data.clients : []
   const branchNames = Array.isArray(data?.branchNames) ? data.branchNames : []
@@ -51,7 +53,13 @@ export default function ClientPerformance({ product }) {
   const filtered = useMemo(() => {
     const query = String(q || '').trim().toLowerCase()
     return clients.filter((c) => {
-      if (band && String(c.band) !== band) return false
+      if (band) {
+        if (band === BELOW_50_BAND) {
+          if (!(Number(c.percentPrincipalPaid || 0) < 50)) return false
+        } else if (String(c.band) !== band) {
+          return false
+        }
+      }
       if (branch && String(c.branch) !== branch) return false
       if (officer && String(c.loanOfficer) !== officer) return false
       if (!query) return true
@@ -127,7 +135,7 @@ export default function ClientPerformance({ product }) {
       </div>
 
       <div className="bg-white border rounded-lg p-4 space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <input
             className="border rounded-md px-3 py-2 text-sm"
             placeholder="Search client, phone, branch, officer…"
@@ -136,6 +144,7 @@ export default function ClientPerformance({ product }) {
           />
           <select className="border rounded-md px-3 py-2 text-sm" value={band} onChange={(e) => setBand(e.target.value)}>
             <option value="">All bands</option>
+            <option value={BELOW_50_BAND}>Below 50% (principal paid)</option>
             {BAND_ORDER.map((b) => (
               <option key={b} value={b}>
                 {b}
@@ -158,6 +167,17 @@ export default function ClientPerformance({ product }) {
               </option>
             ))}
           </select>
+          <select
+            className="border rounded-md px-3 py-2 text-sm"
+            value={String(minPrincipalPaid)}
+            onChange={(e) => setMinPrincipalPaid(Number(e.target.value))}
+          >
+            {[50, 60, 70, 75, 80, 85, 90].map((p) => (
+              <option key={p} value={p}>
+                Principal Paid &gt;= {p}%
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="text-xs text-gray-500">
@@ -175,6 +195,7 @@ export default function ClientPerformance({ product }) {
                 <th className="text-left p-2">Officer</th>
                 <th className="text-right p-2">Score</th>
                 <th className="text-left p-2">Band</th>
+                <th className="text-right p-2">Principal Paid %</th>
                 <th className="text-right p-2">Missed 30d</th>
                 <th className="text-right p-2">Days since pay</th>
                 <th className="text-right p-2">Outstanding</th>
@@ -196,6 +217,7 @@ export default function ClientPerformance({ product }) {
                       {c.band}
                     </span>
                   </td>
+                  <td className="p-2 text-right">{Number(c.percentPrincipalPaid || 0).toFixed(1)}%</td>
                   <td className="p-2 text-right">{Number(c.missedLast30 || 0)}</td>
                   <td className="p-2 text-right">{c.daysSinceLastPay == null ? '' : Number(c.daysSinceLastPay)}</td>
                   <td className="p-2 text-right">{formatKES(c.outstandingKes || 0)}</td>
@@ -203,7 +225,7 @@ export default function ClientPerformance({ product }) {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td className="p-3 text-gray-500" colSpan={9}>
+                  <td className="p-3 text-gray-500" colSpan={10}>
                     No clients match the current filters.
                   </td>
                 </tr>

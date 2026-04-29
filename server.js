@@ -2515,6 +2515,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
         z."Branch Name" AS branch,
         z."Loan Officer Name" AS loan_officer,
         z."Loan Status Id" AS loan_status,
+        CAST(z."Principal Amount" AS REAL) AS principal_amount,
         CAST(z."Total Outstanding Derived" AS REAL) AS outstanding,
         CAST(z."Total Expected Repayment Derived" AS REAL) AS total_expected,
         julianday(z."Disbursed On Date") AS j_start,
@@ -2533,6 +2534,17 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
         ON r.loan_id = z."Loan ID"
       WHERE z."Disbursed On Date" IS NOT NULL
         AND z."Loan ID" IS NOT NULL
+        AND (
+          CASE
+            WHEN TRIM(COALESCE(z."Expected Matured On Date", '')) LIKE '__/__/____'
+              THEN date(
+                substr(TRIM(z."Expected Matured On Date"), 7, 4) || '-' ||
+                substr(TRIM(z."Expected Matured On Date"), 4, 2) || '-' ||
+                substr(TRIM(z."Expected Matured On Date"), 1, 2)
+              )
+            ELSE date(TRIM(z."Expected Matured On Date"))
+          END
+        ) > date('now')
         ${productClause}
         ${branchClause}
     ),
@@ -2573,7 +2585,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
     )
     SELECT
       loan_id, client_id, client_name, phone, branch, loan_officer,
-      loan_status, outstanding, expected_days, paid_days,
+      loan_status, principal_amount, outstanding, expected_days, paid_days,
       paid_days_last_30, last_payment_date, days_since_last_pay,
       ROUND(consistency_score,1) AS consistency_score,
       ROUND(recent_score,1)      AS recent_score,
@@ -2581,9 +2593,9 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
       ROUND(recency_score,1)     AS recency_score,
       ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) AS score,
       CASE
-        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 85 THEN 'Gold'
-        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 70 THEN 'Silver'
-        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 50 THEN 'Bronze'
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 70 THEN 'Gold'
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 50 THEN 'Silver'
+        WHEN ROUND(0.40*consistency_score + 0.30*recent_score + 0.20*exposure_score + 0.10*recency_score, 1) >= 40 THEN 'Bronze'
         ELSE 'At Risk'
       END AS band
     FROM scored;
@@ -2608,6 +2620,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
       client_id, client_name, phone, branch, loan_officer,
       MAX(CASE WHEN rn=1 THEN loan_id END) AS current_loan_id,
       MAX(CASE WHEN rn=1 THEN loan_status END) AS current_status,
+      MAX(CASE WHEN rn=1 THEN principal_amount END) AS current_principal_amount,
       MAX(CASE WHEN rn=1 THEN outstanding END) AS current_outstanding,
       MAX(CASE WHEN rn=1 THEN score END) AS score,
       MAX(CASE WHEN rn=1 THEN band END) AS band,
@@ -2626,7 +2639,6 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
       SUM(expected_days - paid_days) AS lifetime_missed_days
     FROM ranked
     GROUP BY client_id, client_name, phone, branch, loan_officer;
-
     CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_client ON ${creditScoresTable}(client_id);
     CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_score ON ${creditScoresTable}(score);
     CREATE INDEX IF NOT EXISTS idx_${creditScoresTable}_band ON ${creditScoresTable}(band);
@@ -2654,6 +2666,8 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
     const product = String(req.query.product || '').trim().toLowerCase()
     const limitRaw = req.query.limit != null ? Number(req.query.limit) : 5000
     const limit = Number.isFinite(limitRaw) ? Math.max(100, Math.min(50000, Math.floor(limitRaw))) : 5000
+    const minPrincipalPaidRaw = req.query.minPrincipalPaid != null ? Number(req.query.minPrincipalPaid) : 70
+    const minPrincipalPaid = Number.isFinite(minPrincipalPaidRaw) ? Math.max(0, Math.min(100, minPrincipalPaidRaw)) : 70
 
     // Fast path: serve from precomputed table if present
     const tableName = product === 'boda' ? 'credit_scores_boda' : product === 'zidisha' ? 'credit_scores_zidisha' : 'credit_scores'
@@ -2674,14 +2688,19 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
         missedLast30: safeNum(r.paid_days_last_30) ? 0 : safeNum(r.paid_days_last_30), // legacy field not present; keep shape
         lastPaymentDate: r.last_payment_date || null,
         daysSinceLastPay: r.days_since_last_pay == null ? null : safeNum(r.days_since_last_pay),
+        principalAmount: safeNum(r.current_principal_amount),
         outstandingKes: safeNum(r.current_outstanding),
+        percentPrincipalPaid:
+          safeNum(r.current_principal_amount) > 0
+            ? ((safeNum(r.current_principal_amount) - safeNum(r.current_outstanding)) / safeNum(r.current_principal_amount)) * 100
+            : 0,
         totalLoans: safeNum(r.total_loans),
         avgScore: safeNum(r.avg_score),
         bestScore: safeNum(r.best_score),
         worstScore: safeNum(r.worst_score),
         lifetimePaidDays: safeNum(r.lifetime_paid_days),
         lifetimeMissedDays: safeNum(r.lifetime_missed_days),
-      }))
+      })).filter((c) => Number(c.percentPrincipalPaid || 0) >= minPrincipalPaid)
 
       const kpis = {
         totalClients: clients.length,
@@ -2762,6 +2781,7 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
         officerNames: Array.from(new Set(clients.map((c) => c.loanOfficer).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
         generatedAt: new Date().toISOString(),
         source: 'precomputed',
+        minPrincipalPaid,
       })
     }
 
@@ -2836,6 +2856,17 @@ WITH loan_window AS (
   FROM zidisha_data z
   WHERE z."Disbursed On Date" IS NOT NULL
     AND z."Loan ID"           IS NOT NULL
+    AND (
+      CASE
+        WHEN TRIM(COALESCE(z."Expected Matured On Date", '')) LIKE '__/__/____'
+          THEN date(
+            substr(TRIM(z."Expected Matured On Date"), 7, 4) || '-' ||
+            substr(TRIM(z."Expected Matured On Date"), 4, 2) || '-' ||
+            substr(TRIM(z."Expected Matured On Date"), 1, 2)
+          )
+        ELSE date(TRIM(z."Expected Matured On Date"))
+      END
+    ) > date('now')
     ${productWhere}
 ),
 date_spine AS (
@@ -2886,7 +2917,7 @@ weighted AS (
 loan_agg AS (
   SELECT
     loan_id, client_id, client_name, phone, branch, loan_officer,
-    loan_status, outstanding, expected_daily,
+    loan_status, principal, outstanding, expected_daily,
     MIN(day) AS window_start,
     MAX(day) AS window_end,
     ROUND(100.0 * SUM(weight * paid) / SUM(weight), 1) AS behaviour_score,
@@ -2899,7 +2930,7 @@ loan_agg AS (
     CAST(julianday('now') - julianday(MAX(CASE WHEN paid = 1 THEN day END)) AS INTEGER) AS days_since_last_pay
   FROM weighted
   GROUP BY loan_id, client_id, client_name, phone, branch,
-           loan_officer, loan_status, outstanding, expected_daily
+           loan_officer, loan_status, principal, outstanding, expected_daily
 ),
 loan_final AS (
   SELECT
@@ -2923,17 +2954,17 @@ loan_final AS (
            CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
                 WHEN la.outstanding <= 0.01 THEN 0.0
                 ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
-           END, 1) >= 85 THEN 'Gold'
+           END, 1) >= 70 THEN 'Gold'
       WHEN ROUND(0.60 * la.behaviour_score + 0.40 *
            CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
                 WHEN la.outstanding <= 0.01 THEN 0.0
                 ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
-           END, 1) >= 70 THEN 'Silver'
+           END, 1) >= 50 THEN 'Silver'
       WHEN ROUND(0.60 * la.behaviour_score + 0.40 *
            CASE WHEN la.loan_status IN ('600','700') OR la.outstanding <= 1 THEN 100.0
                 WHEN la.outstanding <= 0.01 THEN 0.0
                 ELSE MAX(0.0, 100.0 * (1.0 - la.exposure_kes_days / la.outstanding))
-           END, 1) >= 50 THEN 'Bronze'
+           END, 1) >= 40 THEN 'Bronze'
       ELSE 'At Risk'
     END AS band
   FROM loan_agg la
@@ -2949,6 +2980,7 @@ client_scores AS (
     client_id, client_name, phone, branch, loan_officer,
     MAX(CASE WHEN rn = 1 THEN loan_id END) AS current_loan_id,
     MAX(CASE WHEN rn = 1 THEN loan_status END) AS current_status,
+    MAX(CASE WHEN rn = 1 THEN principal END) AS current_principal_amount,
     MAX(CASE WHEN rn = 1 THEN outstanding END) AS current_outstanding,
     MAX(CASE WHEN rn = 1 THEN score END) AS score,
     MAX(CASE WHEN rn = 1 THEN band END) AS band,
@@ -2973,6 +3005,7 @@ SELECT
   branch,
   loan_officer,
   current_loan_id,
+  current_principal_amount AS principal_amount,
   score,
   band,
   ROUND(behaviour, 1) AS behaviour_score,
@@ -2988,6 +3021,8 @@ SELECT
   lifetime_paid_days,
   lifetime_missed_days
 FROM client_scores
+WHERE COALESCE(current_principal_amount, 0) > 0
+  AND (((COALESCE(current_principal_amount, 0) - COALESCE(current_outstanding, 0)) * 100.0) / current_principal_amount) >= ${minPrincipalPaid}
 ORDER BY score DESC
 LIMIT ${limit};
 `
@@ -3009,7 +3044,12 @@ LIMIT ${limit};
       missedLast30: safeNum(r.missed_last_30),
       lastPaymentDate: r.last_payment_date || null,
       daysSinceLastPay: r.days_since_last_pay == null ? null : safeNum(r.days_since_last_pay),
+      principalAmount: safeNum(r.principal_amount),
       outstandingKes: safeNum(r.outstanding_kes),
+      percentPrincipalPaid:
+        safeNum(r.principal_amount) > 0
+          ? ((safeNum(r.principal_amount) - safeNum(r.outstanding_kes)) / safeNum(r.principal_amount)) * 100
+          : 0,
       totalLoans: safeNum(r.total_loans),
       avgScore: safeNum(r.avg_score),
       bestScore: safeNum(r.best_score),
@@ -3097,6 +3137,7 @@ LIMIT ${limit};
       branchNames: Array.from(new Set(clients.map((c) => c.branch).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
       officerNames: Array.from(new Set(clients.map((c) => c.loanOfficer).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
       generatedAt: new Date().toISOString(),
+      minPrincipalPaid,
     })
   } catch (e) {
     console.error('[Credit Client Performance API] Error:', e)
