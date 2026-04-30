@@ -1738,6 +1738,8 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
     // Support filtering by month/year for "Expected Matured On Date"
     const month = req.query.month ? parseInt(req.query.month, 10) : null
     const year = req.query.year ? parseInt(req.query.year, 10) : null
+  // Which date column month/year applies to (default: expected matured)
+  const dateField = String(req.query.dateField || '').trim().toLowerCase()
 
     // Build WHERE clause
     const whereConditions = []
@@ -1801,20 +1803,18 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
       params.push(...excludeClientIds.map(id => id.trim()))
     }
 
-    // Filter by month/year if provided (for Expected Matured On Date)
+    // Filter by month/year if provided.
+    // Default behavior remains: month/year filters "Expected Matured On Date".
+    // If dateField=disbursed, month/year filters "Disbursed On Date" (used by Disbursement page).
     if (month && year && month >= 1 && month <= 12) {
-      // Parse dates in format YYYY-MM-DD or DD/MM/YYYY
-      // We'll match dates that start with YYYY-MM or contain the month/year
       const monthStr = String(month).padStart(2, '0')
       const yearStr = String(year)
-      
-      // Match ISO format (YYYY-MM-DD) or DD/MM/YYYY format
-      // For ISO: year-month pattern
-      // For DD/MM/YYYY: /month/year pattern (with leading zero)
+      const col = dateField === 'disbursed' ? 'Disbursed On Date' : 'Expected Matured On Date'
+
       whereConditions.push(`(
-        ("Expected Matured On Date" LIKE ?) OR 
-        ("Expected Matured On Date" LIKE ?) OR
-        (substr("Expected Matured On Date", 7, 4) = ? AND substr("Expected Matured On Date", 4, 2) = ?)
+        ("${col}" LIKE ?) OR
+        ("${col}" LIKE ?) OR
+        (substr("${col}", 7, 4) = ? AND substr("${col}", 4, 2) = ?)
       )`)
       params.push(`${yearStr}-${monthStr}-%`, `%/${monthStr}/${yearStr}%`, yearStr, monthStr)
     }

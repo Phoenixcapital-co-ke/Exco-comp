@@ -38,7 +38,11 @@ function ZidishaDisbursement() {
           signal: controller.signal,
           products: zidishaProducts,
           branch: selectedBranch !== 'All' ? selectedBranch : undefined,
-          excludeBranch: 'Advans Branch'
+          excludeBranch: 'Advans Branch',
+          // Performance: only fetch selected month/year disbursements
+          month: selectedMonth,
+          year: selectedYear,
+          dateField: 'disbursed',
         })
         setRows(filtered)
         setLoading(false)
@@ -50,7 +54,7 @@ function ZidishaDisbursement() {
     }
     load()
     return () => controller.abort()
-  }, [selectedBranch])
+  }, [selectedBranch, selectedMonth, selectedYear])
 
   useEffect(() => {
     const loadTargets = async () => {
@@ -75,8 +79,10 @@ function ZidishaDisbursement() {
     return d.getFullYear() === selectedYear && (d.getMonth() + 1) === selectedMonth
   }
 
-  // Filtered rows for selected month
-  const monthRows = rows.filter(r => inSelectedMonth(r['Disbursed On Date'] || r.disbursed_on_date))
+  // Filtered rows for selected month (backend already filters, this is a safe guard)
+  const monthRows = useMemo(() => {
+    return rows.filter((r) => inSelectedMonth(r['Disbursed On Date'] || r.disbursed_on_date))
+  }, [rows, selectedMonth, selectedYear])
 
   // Get targets for selected month/year
   const selectedTargets = useMemo(() => {

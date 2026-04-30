@@ -35,6 +35,9 @@ export async function fetchAllZidishaRows({ signal, pageSize = 2000, product, pr
     if (year && year >= 2000 && year <= 2100) {
       params.append('year', String(year))
     }
+    if (typeof arguments[0]?.dateField === 'string' && arguments[0].dateField.trim()) {
+      params.append('dateField', String(arguments[0].dateField).trim())
+    }
     
     const res = await fetch(`${API_URLS.zidisha.data}?${params.toString()}`, {
       credentials: 'include',
