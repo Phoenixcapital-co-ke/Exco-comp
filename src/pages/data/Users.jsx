@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { API_URLS } from '../../utils/api.js'
-import { Plus, Save, XCircle, Trash2, ToggleLeft, ToggleRight, X, Users, Edit2, CheckCircle2 } from 'lucide-react'
+import { Plus, Save, XCircle, Trash2, ToggleLeft, ToggleRight, X, Users, Edit2, CheckCircle2, Search } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext.jsx'
 
 const defaultDraft = {
@@ -23,6 +23,7 @@ function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
   const [draft, setDraft] = useState(defaultDraft)
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
@@ -355,6 +356,15 @@ function UsersPage() {
     ((normalizedRole === 'custom' || normalizedRole === 'manager') && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/zidisha/')))
   const showBodaBranchSection = normalizedRole === 'boda' ||
     ((normalizedRole === 'custom' || normalizedRole === 'manager') && Array.isArray(draft.allowedPages) && draft.allowedPages.some((p) => String(p || '').startsWith('/boda/')))
+
+  const q = String(searchQuery || '').trim().toLowerCase()
+  const filteredUsers =
+    q.length === 0
+      ? users
+      : users.filter((u) => {
+          const hay = `${u.fullName || ''} ${u.username || ''} ${u.email || ''}`.toLowerCase()
+          return hay.includes(q)
+        })
 
   return (
     <div className="space-y-6">
@@ -811,12 +821,32 @@ function UsersPage() {
       )}
 
       <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-900">All Users ({users.length})</h3>
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-4 flex-wrap">
+          <h3 className="text-lg font-semibold text-gray-900">All Users ({filteredUsers.length})</h3>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-[320px]">
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search name, username, email..."
+                className="w-full rounded-lg border border-gray-300 pl-10 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white"
+              />
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            </div>
+            <button
+              type="button"
+              onClick={() => setSearchQuery((v) => String(v || '').trim())}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition-colors whitespace-nowrap"
+              title="Search"
+            >
+              <Search size={16} />
+              Search
+            </button>
+          </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="max-h-[70vh] overflow-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50 sticky top-0 z-10">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Username</th>
@@ -836,8 +866,8 @@ function UsersPage() {
                     </div>
                   </td>
                 </tr>
-              ) : users.length ? (
-                users.map((user) => (
+              ) : filteredUsers.length ? (
+                filteredUsers.map((user) => (
                   <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="font-semibold text-gray-900">{user.fullName || '—'}</div>
@@ -910,8 +940,12 @@ function UsersPage() {
                   <td colSpan={6} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center justify-center">
                       <Users size={48} className="text-gray-300 mb-3" />
-                      <p className="text-sm font-medium text-gray-500">No users available</p>
-                      <p className="text-xs text-gray-400 mt-1">Create a new user to get started</p>
+                      <p className="text-sm font-medium text-gray-500">
+                        {users.length ? 'No users match your search' : 'No users available'}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {users.length ? 'Try a different keyword' : 'Create a new user to get started'}
+                      </p>
                     </div>
                   </td>
                 </tr>

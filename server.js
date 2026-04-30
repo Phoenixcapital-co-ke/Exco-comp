@@ -642,17 +642,32 @@ async function runBodaTopUpSmsJob(slot) {
            TRIM(phone) AS phone,
            CAST(current_principal_amount AS REAL) AS principalAmount,
            CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-           TRIM(band) AS band
+           TRIM(band) AS band,
+           'boda' AS product
          FROM credit_scores_boda
+         WHERE band IN ('Gold', 'Silver')
+         UNION ALL
+         SELECT
+           TRIM(client_id) AS clientId,
+           TRIM(client_name) AS name,
+           TRIM(phone) AS phone,
+           CAST(current_principal_amount AS REAL) AS principalAmount,
+           CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
+           TRIM(band) AS band,
+           'zidisha' AS product
+         FROM credit_scores_zidisha
          WHERE band IN ('Gold', 'Silver')`,
       )
       .all()
   } catch (e) {
     // If tables are missing/empty, try a refresh once and re-read
     try {
-      console.warn('[SMS] credit_scores_boda missing; attempting refresh:', e.message)
+      console.warn('[SMS] credit_scores_* missing; attempting refresh:', e.message)
       ensureCreditIndexes()
       refreshCreditScoresForProduct('boda', { scopeProducts: ['Zidisha Boda'] })
+      refreshCreditScoresForProduct('zidisha', {
+        scopeProducts: ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express'],
+      })
       recipients = dbRW
         .prepare(
           `SELECT
@@ -661,13 +676,25 @@ async function runBodaTopUpSmsJob(slot) {
              TRIM(phone) AS phone,
              CAST(current_principal_amount AS REAL) AS principalAmount,
              CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-             TRIM(band) AS band
+             TRIM(band) AS band,
+             'boda' AS product
            FROM credit_scores_boda
+           WHERE band IN ('Gold', 'Silver')
+           UNION ALL
+           SELECT
+             TRIM(client_id) AS clientId,
+             TRIM(client_name) AS name,
+             TRIM(phone) AS phone,
+             CAST(current_principal_amount AS REAL) AS principalAmount,
+             CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
+             TRIM(band) AS band,
+             'zidisha' AS product
+           FROM credit_scores_zidisha
            WHERE band IN ('Gold', 'Silver')`,
         )
         .all()
     } catch (e2) {
-      throw new Error(`Unable to load credit_scores_boda for SMS: ${e2.message}`)
+      throw new Error(`Unable to load credit_scores_* for SMS: ${e2.message}`)
     }
   }
 

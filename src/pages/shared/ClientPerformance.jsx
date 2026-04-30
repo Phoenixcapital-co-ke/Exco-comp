@@ -99,15 +99,12 @@ export default function ClientPerformance({ product }) {
   }
 
   return (
-    <div className="p-6 space-y-5">
-      <div>
+    <div className="p-6 h-[calc(100vh-90px)] overflow-hidden flex flex-col gap-5">
+      <div className="shrink-0">
         <div className="text-2xl font-semibold text-gray-900">Client Performance</div>
-        <div className="text-sm text-gray-500">
-          Credit scorecard computed from `zidisha_data` + `boda_repayments`.
-        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 shrink-0">
         <div className="bg-white border rounded-lg p-3">
           <div className="text-xs uppercase tracking-wide text-gray-500">Clients</div>
           <div className="text-xl font-semibold">{k.totalClients ?? clients.length}</div>
@@ -134,8 +131,8 @@ export default function ClientPerformance({ product }) {
         </div>
       </div>
 
-      <div className="bg-white border rounded-lg p-4 space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+      <div className="bg-white border rounded-lg p-4 flex-1 min-h-0 flex flex-col gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 shrink-0">
           <input
             className="border rounded-md px-3 py-2 text-sm"
             placeholder="Search client, phone, branch, officer…"
@@ -185,9 +182,9 @@ export default function ClientPerformance({ product }) {
           Showing <span className="font-medium text-gray-700">{filtered.length}</span> of {clients.length} clients.
         </div>
 
-        <div className="border rounded-lg overflow-hidden">
-          <div className="overflow-auto max-h-[65vh]">
-          <table className="min-w-[1100px] w-full text-sm">
+        <div className="border rounded-lg overflow-hidden flex-1 min-h-0">
+          <div className="overflow-auto h-full">
+            <table className="min-w-[1100px] w-full text-sm">
             <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
               <tr>
                 <th className="text-left p-2">Client</th>
