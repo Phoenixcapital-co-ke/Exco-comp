@@ -337,6 +337,28 @@ try {
   console.warn('Chat_Logs init:', e.message)
 }
 
+try {
+  dbRW.exec(`
+    CREATE TABLE IF NOT EXISTS Audit_Log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      username TEXT,
+      action TEXT NOT NULL,
+      method TEXT,
+      path TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      status_code INTEGER,
+      meta_json TEXT,
+      created_at TEXT NOT NULL
+    );
+  `)
+  dbRW.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON Audit_Log (created_at DESC)`).run()
+  dbRW.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_user_id ON Audit_Log (user_id)`).run()
+} catch (e) {
+  console.warn('Audit_Log init:', e.message)
+}
+
 const PUBLIC_API_PATHS = new Set([
   '/auth/login',
   '/auth/logout',
@@ -424,6 +446,75 @@ const requireAuth = (req, res, next) => {
   if (!req.authUser) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
+  next()
+}
+
+function getClientIp(req) {
+  const xf = req.headers['x-forwarded-for']
+  if (typeof xf === 'string' && xf.trim()) {
+    return xf.split(',')[0].trim().slice(0, 128)
+  }
+  const addr = req.socket?.remoteAddress || req.ip || ''
+  return String(addr).slice(0, 128)
+}
+
+function insertAuditLog({
+  userId = null,
+  username = null,
+  action = 'event',
+  method = '',
+  path = '',
+  ip = '',
+  userAgent = '',
+  statusCode = null,
+  meta = null,
+}) {
+  try {
+    dbRW
+      .prepare(
+        `INSERT INTO Audit_Log (user_id, username, action, method, path, ip, user_agent, status_code, meta_json, created_at)
+         VALUES (@user_id, @username, @action, @method, @path, @ip, @user_agent, @status_code, @meta_json, @created_at)`,
+      )
+      .run({
+        user_id: userId ?? null,
+        username: username ?? null,
+        action,
+        method: method || null,
+        path: path || null,
+        ip: ip || null,
+        user_agent: userAgent ? String(userAgent).slice(0, 512) : null,
+        status_code: statusCode != null ? Number(statusCode) : null,
+        meta_json: meta != null ? JSON.stringify(meta) : null,
+        created_at: nowIso(),
+      })
+  } catch (e) {
+    console.warn('[audit]', e.message)
+  }
+}
+
+/** Records mutating API calls (writes). Mounted under /api — req.path is relative (e.g. /auth/login). */
+function auditApiWritesMiddleware(req, res, next) {
+  if (req.method === 'OPTIONS') return next()
+  const m = String(req.method || '').toUpperCase()
+  if (m === 'GET' || m === 'HEAD') return next()
+
+  const ip = getClientIp(req)
+  const ua = req.headers['user-agent']
+
+  res.on('finish', () => {
+    const pathname = '/api' + (req.path || '')
+    insertAuditLog({
+      userId: req.authUser?.id ?? null,
+      username: req.authUser?.username ?? null,
+      action: 'api_write',
+      method: m,
+      path: pathname,
+      ip,
+      userAgent: ua,
+      statusCode: res.statusCode,
+      meta: null,
+    })
+  })
   next()
 }
 
@@ -536,7 +627,11 @@ async function sendInviteSms(phone, message) {
   const clientId = String(process.env.ONFON_CLIENT_ID || '').trim()
   const senderId = String(process.env.ONFON_SENDER_ID || '').trim()
   if (!apiKey || !clientId || !senderId) {
-    throw new Error('Missing ONFON_API_KEY / ONFON_CLIENT_ID / ONFON_SENDER_ID')
+    const err = new Error(
+      'SMS gateway not configured: ONFON_API_KEY, ONFON_CLIENT_ID, and ONFON_SENDER_ID must be set on the server process.'
+    )
+    err.code = 'SMS_NOT_CONFIGURED'
+    throw err
   }
   const payload = {
     ApiKey: apiKey,
@@ -657,6 +752,15 @@ function getOnfonConfigured() {
     String(process.env.ONFON_CLIENT_ID || '').trim() &&
     String(process.env.ONFON_SENDER_ID || '').trim()
   )
+}
+
+/** Standard JSON when forgot-password cannot send SMS because Onfon env is missing. */
+function respondForgotPasswordSmsNotConfigured(res) {
+  return res.status(503).json({
+    code: 'sms_not_configured',
+    error:
+      'Password reset by SMS is unavailable because the SMS gateway is not configured on this server. Ask your administrator to set ONFON_API_KEY, ONFON_CLIENT_ID, and ONFON_SENDER_ID for the dashboard process (for example in PM2), restart the app, then try again.',
+  })
 }
 
 async function runBodaTopUpSmsJob(slot) {
@@ -1699,6 +1803,7 @@ app.use(cookieParser())
 app.use(express.json())
 app.use(compression())
 app.use(attachAuthFromToken)
+app.use('/api', auditApiWritesMiddleware)
 app.use('/api', (req, res, next) => {
   if (req.method === 'OPTIONS') {
     return next()
@@ -4761,21 +4866,36 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'No phone number on file for this user. Contact an administrator.' })
     }
 
+    if (!getOnfonConfigured()) {
+      return respondForgotPasswordSmsNotConfigured(res)
+    }
+
     const code = String(Math.floor(100000 + Math.random() * 900000))
     const codeHash = hashToken(code)
     const expiresAt = addMinutesIso(15)
-    dbRW.prepare(`INSERT INTO Password_Reset_Codes (user_id, code_hash, expires_at) VALUES (?, ?, ?)`).run(
-      user.id,
-      codeHash,
-      expiresAt
-    )
+    const insertResult = dbRW
+      .prepare(`INSERT INTO Password_Reset_Codes (user_id, code_hash, expires_at) VALUES (?, ?, ?)`)
+      .run(user.id, codeHash, expiresAt)
 
     const smsText = `Phoenix Capital Dashboard password reset code: ${code}. Valid 15 minutes.`
     try {
       await sendInviteSms(phoneNorm, smsText)
     } catch (smsErr) {
       console.error('[auth] forgot-password SMS failed:', smsErr)
-      return res.status(503).json({ error: 'Could not send SMS. Try again later or contact support.' })
+      try {
+        if (insertResult?.lastInsertRowid) {
+          dbRW.prepare(`DELETE FROM Password_Reset_Codes WHERE id = ?`).run(insertResult.lastInsertRowid)
+        }
+      } catch (rollbackErr) {
+        console.error('[auth] forgot-password rollback failed:', rollbackErr)
+      }
+      if (smsErr.code === 'SMS_NOT_CONFIGURED') {
+        return respondForgotPasswordSmsNotConfigured(res)
+      }
+      return res.status(503).json({
+        error: 'Could not send SMS. Try again later or contact support.',
+        details: String(smsErr.message || smsErr),
+      })
     }
 
     res.json({ ok: true, phoneHint: maskPhoneLastTwoVisible(phoneNorm) })
@@ -5557,6 +5677,67 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   }
 })
 
+// Audit trail (admin / superuser): mutating API calls are logged automatically by auditApiWritesMiddleware
+app.get('/api/audit/logs', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500)
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
+    const userIdRaw = req.query.userId != null ? parseInt(String(req.query.userId), 10) : NaN
+    const userIdFilter = Number.isFinite(userIdRaw) ? userIdRaw : null
+
+    let where = ''
+    const params = []
+    if (userIdFilter != null) {
+      where = ' WHERE user_id = ?'
+      params.push(userIdFilter)
+    }
+
+    const rows = dbRW
+      .prepare(
+        `SELECT id, user_id, username, action, method, path, ip, user_agent, status_code, meta_json, created_at
+         FROM Audit_Log${where}
+         ORDER BY id DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...params, limit, offset)
+
+    const totalRow = dbRW.prepare(`SELECT COUNT(*) as c FROM Audit_Log${where}`).get(...params)
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      username: r.username,
+      action: r.action,
+      method: r.method,
+      path: r.path,
+      ip: r.ip,
+      userAgent: r.user_agent,
+      statusCode: r.status_code,
+      meta: (() => {
+        try {
+          return r.meta_json ? JSON.parse(r.meta_json) : null
+        } catch {
+          return null
+        }
+      })(),
+      createdAt: r.created_at,
+    }))
+
+    res.json({
+      items,
+      limit,
+      offset,
+      total: Number(totalRow?.c || 0),
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/users', (req, res) => {
   try {
     const rows = dbRW
@@ -5729,14 +5910,21 @@ app.post('/api/users', async (req, res) => {
     ]
     if (confirmUrl) smsParts.push(`Confirm email ${confirmUrl}`)
     let smsSent = false
-    try {
-      await sendInviteSms(phoneNorm, smsParts.join('. '))
-      smsSent = true
-    } catch (smsErr) {
-      console.error('[users] invite SMS failed:', smsErr)
+    let smsErrorCode = null
+    if (!getOnfonConfigured()) {
+      smsErrorCode = 'sms_not_configured'
+      console.warn('[users] invite SMS skipped: Onfon env vars not set')
+    } else {
+      try {
+        await sendInviteSms(phoneNorm, smsParts.join('. '))
+        smsSent = true
+      } catch (smsErr) {
+        console.error('[users] invite SMS failed:', smsErr)
+        smsErrorCode = smsErr.code === 'SMS_NOT_CONFIGURED' ? 'sms_not_configured' : 'sms_send_failed'
+      }
     }
 
-    res.json({ ok: true, emailSent, smsSent })
+    res.json({ ok: true, emailSent, smsSent, ...(smsErrorCode ? { smsErrorCode } : {}) })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       const msg = String(e.message || '')

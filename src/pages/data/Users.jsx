@@ -329,7 +329,15 @@ function UsersPage() {
         if (data.emailSent) bits.push('confirmation email sent')
         if (data.smsSent) bits.push('SMS with username and 5-digit code sent')
         if (!data.emailSent && draft.email.trim()) bits.push('email could not be sent (check SMTP)')
-        if (!data.smsSent) bits.push('SMS could not be sent (check Onfon configuration)')
+        if (!data.smsSent) {
+          bits.push(
+            data.smsErrorCode === 'sms_not_configured'
+              ? 'SMS was not sent — gateway not configured on server (set ONFON_* env for PM2 and restart)'
+              : data.smsErrorCode === 'sms_send_failed'
+                ? 'SMS could not be sent (network or Onfon API error — check logs)'
+                : 'SMS could not be sent (check Onfon configuration)'
+          )
+        }
         setSuccess(`User "${createdUsername}" created.${bits.length ? ` ${bits.join('; ')}.` : ''}`)
       } else {
         setSuccess('User updated successfully.')

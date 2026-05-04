@@ -120,6 +120,9 @@ export const API_URLS = {
   data: {
     lastRefresh: `${API_BASE}/api/data/last-refresh`,
   },
+  audit: {
+    logs: `${API_BASE}/api/audit/logs`,
+  },
   pages: {
     list: `${API_BASE}/api/pages`,
   },
