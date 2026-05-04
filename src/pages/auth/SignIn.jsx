@@ -39,7 +39,15 @@ function SignIn() {
         throw new Error(data.error || 'Login failed')
       }
       const data = await res.json()
-      login(data.user)
+      const u = {
+        ...data.user,
+        mustChangePassword: !!(data.mustChangePassword ?? data.user?.mustChangePassword),
+      }
+      login(u)
+      if (u.mustChangePassword) {
+        navigate('/auth/first-password', { replace: true })
+        return
+      }
       const target = location.state?.from?.pathname || '/logbook/kenya/dashboard'
       navigate(target, { replace: true })
     } catch (err) {
@@ -75,14 +83,14 @@ function SignIn() {
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Username or Email</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
             <input
               type="text"
               name="username"
               value={form.username}
               onChange={handleChange}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Enter your username or email"
+              placeholder="Enter your username"
               autoComplete="username"
               required
             />
@@ -95,7 +103,7 @@ function SignIn() {
               value={form.password}
               onChange={handleChange}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Enter your password"
+              placeholder="Your password or 5-digit first-time code"
               autoComplete="current-password"
               required
             />

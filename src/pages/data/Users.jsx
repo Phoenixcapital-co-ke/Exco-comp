@@ -8,6 +8,7 @@ const defaultDraft = {
   username: '',
   fullName: '',
   email: '',
+  phone: '',
   role: 'logbook',
   password: '',
   // New users start inactive until they confirm their account
@@ -121,6 +122,7 @@ function UsersPage() {
       username: user.username,
       fullName: user.fullName || '',
       email: user.email || '',
+      phone: user.phone || '',
       role: user.role || 'user',
       password: '',
       active: !!user.active,
@@ -190,8 +192,13 @@ function UsersPage() {
       setError('Username is required')
       return
     }
-    if (!draft.email.trim()) {
-      setError('Email is required')
+    if (!draft.phone.trim()) {
+      setError('Phone number is required (used for SMS onboarding)')
+      return
+    }
+    const emailTrim = draft.email.trim()
+    if (emailTrim && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
+      setError('Invalid email address')
       return
     }
     if (draft.role === 'manager' && (!Array.isArray(draft.allowedPages) || draft.allowedPages.length === 0)) {
@@ -261,12 +268,13 @@ function UsersPage() {
       const payload = {
         username: draft.username.trim(),
         fullName: draft.fullName.trim(),
-        email: draft.email.trim(),
+        email: emailTrim,
+        phone: draft.phone.trim(),
         role: draft.role,
         ...(draft.id ? { active: draft.active } : {}),
       }
       // Only allow setting password when editing an existing user.
-      // New users will set their password via the email confirmation link.
+      // New users receive SMS (and optional email link) with a 5-digit first-time code.
       if (draft.id && draft.password.trim()) {
         payload.password = draft.password
       }
@@ -309,15 +317,20 @@ function UsersPage() {
         body: JSON.stringify(payload),
         credentials: 'include',
       })
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
         throw new Error(data.error || `Save failed (${res.status})`)
       }
       await loadUsers()
       setDraft(defaultDraft)
       setShowForm(false)
       if (isCreate) {
-        setSuccess(`User created successfully. A confirmation email was sent to ${createdUsername}.`)
+        const bits = []
+        if (data.emailSent) bits.push('confirmation email sent')
+        if (data.smsSent) bits.push('SMS with username and 5-digit code sent')
+        if (!data.emailSent && draft.email.trim()) bits.push('email could not be sent (check SMTP)')
+        if (!data.smsSent) bits.push('SMS could not be sent (check Onfon configuration)')
+        setSuccess(`User "${createdUsername}" created.${bits.length ? ` ${bits.join('; ')}.` : ''}`)
       } else {
         setSuccess('User updated successfully.')
       }
@@ -330,8 +343,8 @@ function UsersPage() {
 
   const toggleActive = async (user) => {
     try {
-      if (!user.emailVerified) {
-        setError('This user has not confirmed their account yet.')
+      if (!user.emailVerified && !user.phoneVerified) {
+        setError('This user has not activated their account yet.')
         return
       }
       const res = await fetch(API_URLS.users.update(user.id), {
@@ -362,7 +375,7 @@ function UsersPage() {
     q.length === 0
       ? users
       : users.filter((u) => {
-          const hay = `${u.fullName || ''} ${u.username || ''} ${u.email || ''}`.toLowerCase()
+          const hay = `${u.fullName || ''} ${u.username || ''} ${u.email || ''} ${u.phone || ''}`.toLowerCase()
           return hay.includes(q)
         })
 
@@ -475,13 +488,28 @@ function UsersPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Phone <span className="text-red-500">*</span> <span className="text-gray-500 font-normal">(SMS)</span>
+              </label>
+              <input
+                type="tel"
+                value={draft.phone}
+                onChange={(e) => setDraft((prev) => ({ ...prev, phone: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                placeholder="0712345678 or 254712345678"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Email <span className="text-gray-500 font-normal">(optional — confirmation link)</span>
+              </label>
               <input
                 type="email"
                 value={draft.email}
                 onChange={(e) => setDraft((prev) => ({ ...prev, email: e.target.value }))}
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                placeholder="email@example.com"
+                placeholder="Leave blank if none"
               />
             </div>
             <div>
@@ -828,7 +856,7 @@ function UsersPage() {
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search name, username, email..."
+                placeholder="Search name, username, email, phone…"
                 className="w-full rounded-lg border border-gray-300 pl-10 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white"
               />
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -851,6 +879,7 @@ function UsersPage() {
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Username</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Email</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Phone</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
@@ -859,7 +888,7 @@ function UsersPage() {
             <tbody className="bg-white divide-y divide-gray-200">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center">
+                  <td colSpan={7} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center justify-center">
                       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mb-3"></div>
                       <p className="text-sm text-gray-500">Loading users...</p>
@@ -879,22 +908,25 @@ function UsersPage() {
                       <div className="text-sm text-gray-600">{user.email || '—'}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-600">{user.phone || '—'}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
                       <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-100 text-blue-800 capitalize">
                         {user.role || 'user'}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      {!user.emailVerified ? (
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
-                          Pending confirmation
-                        </span>
-                      ) : user.active ? (
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
-                          Active
-                        </span>
-                      ) : (
+                      {!user.active ? (
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">
                           Inactive
+                        </span>
+                      ) : user.email && !user.emailVerified ? (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+                          Pending email confirmation
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
+                          Active
                         </span>
                       )}
                     </td>
@@ -937,7 +969,7 @@ function UsersPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center">
+                  <td colSpan={7} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center justify-center">
                       <Users size={48} className="text-gray-300 mb-3" />
                       <p className="text-sm font-medium text-gray-500">

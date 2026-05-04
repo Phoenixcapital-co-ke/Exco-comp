@@ -506,11 +506,46 @@ function normalizeKenyanPhone(phone) {
   let p = String(phone || '').trim()
   if (!p) return ''
   p = p.replace(/\s+/g, '').replace(/^\+/, '')
+  if (p.startsWith('254') && p.length >= 12) return p
   if (p.startsWith('0') && p.length >= 10) {
     p = `254${p.slice(1)}`
+    return p
   }
-  if (p.startsWith('254') && p.length >= 12) return p
+  // e.g. 712345678 → 254712345678
+  if (/^7\d{8}$/.test(p)) {
+    return `254${p}`
+  }
   return p
+}
+
+/** Mask phone for reset UI: only last 2 digits visible */
+function maskPhoneLastTwoVisible(phone) {
+  const p = normalizeKenyanPhone(phone)
+  if (!p || p.length < 3) return '****'
+  return `${'*'.repeat(p.length - 2)}${p.slice(-2)}`
+}
+
+/** 5-digit numeric first-time sign-in code (hashed like password until user sets a real password). */
+function generateFirstTimeCode() {
+  return String(crypto.randomInt(10000, 100000))
+}
+
+async function sendInviteSms(phone, message) {
+  const url = String(process.env.ONFON_SMS_URL || 'https://api.onfonmedia.co.ke/v1/sms/SendBulkSMS')
+  const apiKey = String(process.env.ONFON_API_KEY || '').trim()
+  const clientId = String(process.env.ONFON_CLIENT_ID || '').trim()
+  const senderId = String(process.env.ONFON_SENDER_ID || '').trim()
+  if (!apiKey || !clientId || !senderId) {
+    throw new Error('Missing ONFON_API_KEY / ONFON_CLIENT_ID / ONFON_SENDER_ID')
+  }
+  const payload = {
+    ApiKey: apiKey,
+    ClientId: clientId,
+    SenderId: senderId,
+    MessageParameters: [{ Number: normalizeKenyanPhone(phone), Text: String(message || '').trim() }],
+  }
+  const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 })
+  return resp.data
 }
 
 async function sendTopUpSMS(name, phone) {
@@ -1206,6 +1241,35 @@ try {
 // Unique email (case-insensitive) when email is not empty
 try {
   dbRW.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON Users(lower(email)) WHERE email <> '';`)
+} catch (e) {
+  // ignore
+}
+
+// Phone + first-login password change (SMS onboarding)
+try {
+  dbRW.exec(`ALTER TABLE Users ADD COLUMN phone TEXT;`)
+} catch (e) {
+  // ignore
+}
+try {
+  dbRW.exec(`ALTER TABLE Users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // ignore
+}
+try {
+  dbRW.exec(`ALTER TABLE Users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;`)
+} catch (e) {
+  // ignore
+}
+try {
+  dbRW.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON Users(phone) WHERE phone IS NOT NULL AND phone <> '';`)
+} catch (e) {
+  // ignore
+}
+try {
+  dbRW.exec(
+    `UPDATE Users SET phone_verified = 1 WHERE COALESCE(phone_verified, 0) = 0 AND COALESCE(email_verified, 0) = 1`,
+  )
 } catch (e) {
   // ignore
 }
@@ -4358,9 +4422,12 @@ const mapUserRow = (user) => {
   username: user.username,
   fullName: user.full_name,
   email: user.email,
+  phone: user.phone || '',
   role: user.role,
   active: !!user.active,
   emailVerified: !!user.email_verified,
+  phoneVerified: !!user.phone_verified,
+  mustChangePassword: !!Number(user.must_change_password || 0),
   createdAt: user.created_at,
   updatedAt: user.updated_at
   }
@@ -4578,18 +4645,19 @@ app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password, superuserOnly } = req.body || {}
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username/email and password are required' })
+      return res.status(400).json({ error: 'Username and password are required' })
     }
     const loginId = String(username).trim()
-    const loginIdLower = loginId.toLowerCase()
-    const user = dbRW
-      .prepare('SELECT * FROM Users WHERE username = ? OR lower(email) = ? LIMIT 1')
-      .get(loginId, loginIdLower)
+    const user = dbRW.prepare('SELECT * FROM Users WHERE username = ? LIMIT 1').get(loginId)
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
-    if (!user.email_verified) {
-      return res.status(403).json({ error: 'Account not confirmed. Please check your email to confirm your account.' })
+    const emailOk = !!Number(user.email_verified || 0)
+    const phoneOk = !!Number(user.phone_verified || 0)
+    if (!emailOk && !phoneOk) {
+      return res.status(403).json({
+        error: 'Account not activated. Use the link sent to your email (if provided) or sign in with the SMS you received.',
+      })
     }
     if (!user.active) {
       return res.status(403).json({ error: 'User is deactivated' })
@@ -4612,7 +4680,7 @@ app.post('/api/auth/login', (req, res) => {
     }
     const token = signAuthToken(user)
     setAuthCookie(res, token)
-    res.json({ user: mapUserRow(user) })
+    res.json({ user: mapUserRow(user), mustChangePassword: !!Number(user.must_change_password || 0) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -4644,11 +4712,12 @@ app.post('/api/auth/confirm-email', async (req, res) => {
       return res.status(400).json({ error: 'Token expired' })
     }
 
-    // Confirm account and activate it
-    dbRW.prepare(`UPDATE Users SET email_verified = 1, active = 1, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
-      hashPassword(password),
-      row.user_id
-    )
+    // Confirm account and activate it (email path sets password; no forced change after this)
+    dbRW
+      .prepare(
+        `UPDATE Users SET email_verified = 1, active = 1, password_hash = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      )
+      .run(hashPassword(password), row.user_id)
     dbRW.prepare(`UPDATE Email_Verifications SET used_at = ? WHERE id = ?`).run(nowIso(), row.id)
 
     res.json({ ok: true })
@@ -4660,17 +4729,36 @@ app.post('/api/auth/confirm-email', async (req, res) => {
   }
 })
 
+function findUserByUsernameOrPhone(raw) {
+  const trimmed = String(raw || '').trim()
+  if (!trimmed) return null
+  const byUser = dbRW.prepare('SELECT * FROM Users WHERE username = ? LIMIT 1').get(trimmed)
+  if (byUser) return byUser
+  const phoneNorm = normalizeKenyanPhone(trimmed)
+  if (phoneNorm) {
+    const byPhone = dbRW.prepare('SELECT * FROM Users WHERE phone = ? LIMIT 1').get(phoneNorm)
+    if (byPhone) return byPhone
+  }
+  return null
+}
+
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
-    const { email } = req.body || {}
-    const emailNorm = normalizeEmail(email)
-    if (!emailNorm) return res.status(400).json({ error: 'Email is required' })
+    const identifier = String(req.body?.identifier ?? req.body?.username ?? '').trim()
+    if (!identifier) return res.status(400).json({ error: 'Username or phone number is required' })
 
-    const user = dbRW.prepare('SELECT * FROM Users WHERE lower(email) = ? LIMIT 1').get(emailNorm)
-    if (!user) return res.status(404).json({ error: 'Email not found' })
+    const user = findUserByUsernameOrPhone(identifier)
+    if (!user) return res.status(404).json({ error: 'No account found for that username or phone number' })
     if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
-    if (!user.email_verified) {
-      return res.status(403).json({ error: 'Account not confirmed. Please confirm your account first.' })
+    const emailOk = !!Number(user.email_verified || 0)
+    const phoneOk = !!Number(user.phone_verified || 0)
+    if (!emailOk && !phoneOk) {
+      return res.status(403).json({ error: 'Account not activated.' })
+    }
+
+    const phoneNorm = normalizeKenyanPhone(user.phone)
+    if (!phoneNorm) {
+      return res.status(400).json({ error: 'No phone number on file for this user. Contact an administrator.' })
     }
 
     const code = String(Math.floor(100000 + Math.random() * 900000))
@@ -4682,12 +4770,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       expiresAt
     )
 
-    const subject = 'Password reset code'
-    const text = `Your Phoenix Capital Dashboard password reset code is: ${code}\n\nThis code expires in 15 minutes.`
-    const html = `<p>Your Phoenix Capital Dashboard password reset code is:</p><p style="font-size:20px;font-weight:bold;letter-spacing:2px">${code}</p><p>This code expires in 15 minutes.</p>`
-    const sendResult = await sendEmail({ to: user.email, subject, text, html })
+    const smsText = `Phoenix Capital Dashboard password reset code: ${code}. Valid 15 minutes.`
+    try {
+      await sendInviteSms(phoneNorm, smsText)
+    } catch (smsErr) {
+      console.error('[auth] forgot-password SMS failed:', smsErr)
+      return res.status(503).json({ error: 'Could not send SMS. Try again later or contact support.' })
+    }
 
-    res.json({ ok: true, emailSent: !!sendResult.ok })
+    res.json({ ok: true, phoneHint: maskPhoneLastTwoVisible(phoneNorm) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -4695,16 +4786,19 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 app.post('/api/auth/reset-password', (req, res) => {
   try {
-    const { email, code, newPassword } = req.body || {}
-    const emailNorm = normalizeEmail(email)
-    if (!emailNorm || !code || !newPassword) {
-      return res.status(400).json({ error: 'Email, code, and newPassword are required' })
+    const identifier = String(req.body?.identifier ?? req.body?.username ?? '').trim()
+    const { code, newPassword } = req.body || {}
+    if (!identifier || !code || !newPassword) {
+      return res.status(400).json({ error: 'Username or phone, code, and newPassword are required' })
     }
-    const user = dbRW.prepare('SELECT * FROM Users WHERE lower(email) = ? LIMIT 1').get(emailNorm)
-    if (!user) return res.status(404).json({ error: 'Email not found' })
+    validatePasswordOrThrow(newPassword)
+    const user = findUserByUsernameOrPhone(identifier)
+    if (!user) return res.status(404).json({ error: 'No account found for that username or phone number' })
     if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
-    if (!user.email_verified) {
-      return res.status(403).json({ error: 'Account not confirmed. Please confirm your account first.' })
+    const emailOk = !!Number(user.email_verified || 0)
+    const phoneOk = !!Number(user.phone_verified || 0)
+    if (!emailOk && !phoneOk) {
+      return res.status(403).json({ error: 'Account not activated.' })
     }
 
     const latest = dbRW
@@ -4724,13 +4818,42 @@ app.post('/api/auth/reset-password', (req, res) => {
       return res.status(400).json({ error: 'Invalid reset code' })
     }
 
-    dbRW.prepare(`UPDATE Users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
-      hashPassword(newPassword),
-      user.id
-    )
+    dbRW
+      .prepare(`UPDATE Users SET password_hash = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(hashPassword(newPassword), user.id)
     dbRW.prepare(`UPDATE Password_Reset_Codes SET used_at = ? WHERE id = ?`).run(nowIso(), latest.id)
     res.json({ ok: true })
   } catch (e) {
+    if (e && e.statusCode) {
+      return res.status(e.statusCode).json({ error: e.message })
+    }
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/auth/first-password-change', requireAuth, (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {}
+    validatePasswordOrThrow(newPassword)
+    const row = dbRW.prepare('SELECT * FROM Users WHERE id = ? LIMIT 1').get(req.authUser.id)
+    if (!row) return res.status(401).json({ error: 'Unauthorized' })
+    if (!Number(row.must_change_password || 0)) {
+      return res.status(400).json({ error: 'Password change is not required for this account.' })
+    }
+    if (hashPassword(String(currentPassword ?? '')) !== row.password_hash) {
+      return res.status(400).json({ error: 'Current password is incorrect' })
+    }
+    dbRW
+      .prepare(
+        `UPDATE Users SET password_hash = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      )
+      .run(hashPassword(newPassword), row.id)
+    const fresh = dbRW.prepare('SELECT * FROM Users WHERE id = ? LIMIT 1').get(row.id)
+    res.json({ ok: true, user: mapUserRow(fresh) })
+  } catch (e) {
+    if (e && e.statusCode) {
+      return res.status(e.statusCode).json({ error: e.message })
+    }
     res.status(500).json({ error: e.message })
   }
 })
@@ -5437,7 +5560,9 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 app.get('/api/users', (req, res) => {
   try {
     const rows = dbRW
-      .prepare('SELECT id, username, full_name, email, role, active, email_verified, created_at, updated_at FROM Users ORDER BY username COLLATE NOCASE')
+      .prepare(
+        'SELECT id, username, full_name, email, phone, role, active, email_verified, phone_verified, must_change_password, created_at, updated_at FROM Users ORDER BY username COLLATE NOCASE',
+      )
       .all()
       .map(mapUserRow)
     res.json(rows)
@@ -5446,40 +5571,44 @@ app.get('/api/users', (req, res) => {
   }
 })
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', async (req, res) => {
   try {
     const {
       username,
       fullName,
       email,
+      phone,
       role = 'logbook',
-      password,
-      active = 1,
       allowedPages = [],
       allowedZidishaBranches = [],
       allowedBodaBranches = [],
       allowedLogbookBranches = []
     } = req.body || {}
     if (!username) return res.status(400).json({ error: 'Username is required' })
+    const phoneNorm = normalizeKenyanPhone(phone)
+    if (!phoneNorm) return res.status(400).json({ error: 'A valid phone number is required for SMS onboarding' })
     const emailNorm = normalizeEmail(email)
-    if (!emailNorm) return res.status(400).json({ error: 'Email is required' })
     const roleStr = String(role || 'user').trim().toLowerCase()
-    const tempPassword = password ? String(password) : crypto.randomBytes(24).toString('hex')
-    
-    // Insert user
+    const firstTimeCode = generateFirstTimeCode()
+    const loginUrl = `${getAppBaseUrl()}/login`
+
+    // Insert user: active immediately; SMS delivers username + 5-digit code; optional email link for confirmation
     const result = dbRW
       .prepare(
-        `INSERT INTO Users (username, full_name, email, role, active, password_hash)
-         VALUES (@username, @full_name, @email, @role, @active, @password_hash)`
+        `INSERT INTO Users (username, full_name, email, phone, role, active, password_hash, email_verified, phone_verified, must_change_password)
+         VALUES (@username, @full_name, @email, @phone, @role, @active, @password_hash, @email_verified, @phone_verified, @must_change_password)`
       )
       .run({
         username: String(username).trim(),
         full_name: fullName ? String(fullName).trim() : '',
-        email: emailNorm,
+        email: emailNorm || '',
+        phone: phoneNorm,
         role: roleStr,
-        // New users are inactive until they confirm their email + set password
-        active: 0,
-        password_hash: hashPassword(tempPassword)
+        active: 1,
+        password_hash: hashPassword(firstTimeCode),
+        email_verified: 0,
+        phone_verified: 1,
+        must_change_password: 1,
       })
     
     const userId = result.lastInsertRowid
@@ -5562,33 +5691,52 @@ app.post('/api/users', (req, res) => {
       }
     }
     
-    // Create confirmation token and send email
-    const token = crypto.randomBytes(32).toString('hex')
-    const tokenHash = hashToken(token)
-    const expiresAt = addMinutesIso(60 * 24) // 24 hours
-    dbRW
-      .prepare(`INSERT INTO Email_Verifications (user_id, token_hash, expires_at) VALUES (?, ?, ?)`)
-      .run(userId, tokenHash, expiresAt)
-
-    const confirmUrl = `${getAppBaseUrl()}/auth/confirm?token=${encodeURIComponent(token)}`
-    const subject = 'Confirm your account'
-    const text =
-      `Your Phoenix Capital Dashboard account was created.\n\n` +
-      `Please confirm your account and set your password using this link:\n${confirmUrl}\n\n` +
-      `This link expires in 24 hours.`
-    const html =
-      `<p>Your Phoenix Capital Dashboard account was created.</p>` +
-      `<p>Please confirm your account and set your password:</p>` +
-      `<p><a href="${confirmUrl}">Confirm account</a></p>` +
-      `<p>This link expires in 24 hours.</p>`
-
-    sendEmail({ to: emailNorm, subject, text, html })
-      .then((r) => res.json({ ok: true, emailSent: !!r.ok }))
-      .catch((err) => {
+    let emailSent = false
+    let confirmUrl = ''
+    if (emailNorm) {
+      const token = crypto.randomBytes(32).toString('hex')
+      const tokenHash = hashToken(token)
+      const expiresAt = addMinutesIso(60 * 24) // 24 hours
+      dbRW.prepare(`INSERT INTO Email_Verifications (user_id, token_hash, expires_at) VALUES (?, ?, ?)`).run(userId, tokenHash, expiresAt)
+      confirmUrl = `${getAppBaseUrl()}/auth/confirm?token=${encodeURIComponent(token)}`
+      const subject = 'Confirm your account'
+      const text =
+        `Your Phoenix Capital Dashboard account was created.\n\n` +
+        `Please confirm your email and set your password using this link:\n${confirmUrl}\n\n` +
+        `This link expires in 24 hours.\n\n` +
+        `You also received an SMS with your username and 5-digit first-time sign-in code.`
+      const html =
+        `<p>Your Phoenix Capital Dashboard account was created.</p>` +
+        `<p>Please confirm your email and set your password:</p>` +
+        `<p><a href="${confirmUrl}">Confirm account</a></p>` +
+        `<p>This link expires in 24 hours.</p>` +
+        `<p>You also received an SMS with your username and 5-digit first-time sign-in code.</p>`
+      try {
+        const sendResult = await sendEmail({ to: emailNorm, subject, text, html })
+        emailSent = !!sendResult.ok
+      } catch (err) {
         console.error('Failed to send confirmation email:', err)
-        // User is created; surface email failure to admin
-        res.json({ ok: true, emailSent: false })
-      })
+      }
+    }
+
+    const uname = String(username).trim()
+    const smsParts = [
+      'Phoenix Capital Dashboard',
+      `Login ${loginUrl}`,
+      `Username ${uname}`,
+      `First-time code ${firstTimeCode}`,
+      'Use this code as your password on first sign-in then set a new password when prompted.',
+    ]
+    if (confirmUrl) smsParts.push(`Confirm email ${confirmUrl}`)
+    let smsSent = false
+    try {
+      await sendInviteSms(phoneNorm, smsParts.join('. '))
+      smsSent = true
+    } catch (smsErr) {
+      console.error('[users] invite SMS failed:', smsErr)
+    }
+
+    res.json({ ok: true, emailSent, smsSent })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       const msg = String(e.message || '')
@@ -5597,6 +5745,9 @@ app.post('/api/users', (req, res) => {
       }
       if (msg.includes('idx_users_email_unique') || msg.includes('Users.email')) {
         return res.status(409).json({ error: 'Email already exists' })
+      }
+      if (msg.includes('idx_users_phone_unique') || msg.includes('Users.phone')) {
+        return res.status(409).json({ error: 'Phone number already in use' })
       }
       return res.status(409).json({ error: 'Duplicate user' })
     }
@@ -5614,7 +5765,7 @@ app.put('/api/users/:id', (req, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    const { fullName, email, role, active, password, allowedPages, allowedZidishaBranches, allowedBodaBranches, allowedLogbookBranches } = req.body || {}
+    const { fullName, email, phone, role, active, password, allowedPages, allowedZidishaBranches, allowedBodaBranches, allowedLogbookBranches } = req.body || {}
     const fields = []
     const params = { id }
 
@@ -5624,7 +5775,11 @@ app.put('/api/users/:id', (req, res) => {
     }
     if (typeof email !== 'undefined') {
       fields.push('email = @email')
-      params.email = String(email ?? '').trim()
+      params.email = normalizeEmail(email)
+    }
+    if (typeof phone !== 'undefined') {
+      fields.push('phone = @phone')
+      params.phone = normalizeKenyanPhone(phone) || ''
     }
     if (typeof role !== 'undefined') {
       fields.push('role = @role')
@@ -5636,6 +5791,7 @@ app.put('/api/users/:id', (req, res) => {
     }
     if (password) {
       fields.push('password_hash = @password_hash')
+      fields.push('must_change_password = 0')
       params.password_hash = hashPassword(password)
     }
 
@@ -5766,7 +5922,15 @@ app.put('/api/users/:id', (req, res) => {
     res.json({ ok: true })
   } catch (e) {
     if (e && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: 'Username already exists' })
+      const msg = String(e.message || '')
+      if (msg.includes('Users.username')) return res.status(409).json({ error: 'Username already exists' })
+      if (msg.includes('email') || msg.includes('idx_users_email_unique')) {
+        return res.status(409).json({ error: 'Email already exists' })
+      }
+      if (msg.includes('phone') || msg.includes('idx_users_phone_unique')) {
+        return res.status(409).json({ error: 'Phone number already in use' })
+      }
+      return res.status(409).json({ error: 'Duplicate value' })
     }
     res.status(500).json({ error: e.message })
   }

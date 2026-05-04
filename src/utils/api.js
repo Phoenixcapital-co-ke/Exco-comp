@@ -78,6 +78,7 @@ export const API_URLS = {
     confirmEmail: `${API_BASE}/api/auth/confirm-email`,
     forgotPassword: `${API_BASE}/api/auth/forgot-password`,
     resetPassword: `${API_BASE}/api/auth/reset-password`,
+    firstPasswordChange: `${API_BASE}/api/auth/first-password-change`,
   },
   users: {
     list: `${API_BASE}/api/users`,

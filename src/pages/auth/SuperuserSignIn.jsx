@@ -36,7 +36,15 @@ function SuperuserSignIn() {
       if (String(data.user?.role || '').toLowerCase() !== 'superuser') {
         throw new Error('Access denied. Superuser credentials required.')
       }
-      login(data.user)
+      const u = {
+        ...data.user,
+        mustChangePassword: !!(data.mustChangePassword ?? data.user?.mustChangePassword),
+      }
+      login(u)
+      if (u.mustChangePassword) {
+        navigate('/auth/first-password', { replace: true })
+        return
+      }
       const target = location.state?.from?.pathname || '/logbook/kenya/dashboard'
       navigate(target, { replace: true })
     } catch (err) {

@@ -5,7 +5,9 @@ import phoenixLogo from '../../assets/phoenix-logo.png'
 
 function ForgotPassword() {
   const [step, setStep] = useState(1)
-  const [email, setEmail] = useState('')
+  /** Username or phone (same value user typed on step 1 — sent again on reset for consistency). */
+  const [identifier, setIdentifier] = useState('')
+  const [phoneHint, setPhoneHint] = useState('')
   const [code, setCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -22,13 +24,15 @@ function ForgotPassword() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ identifier: identifier.trim() }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Failed to request reset code')
       }
-      setSuccess('Reset code sent. Check your email.')
+      const data = await res.json()
+      setPhoneHint(data.phoneHint || '')
+      setSuccess('We sent a code by SMS to the number on file. Enter the code and choose a new password below.')
       setStep(2)
     } catch (err) {
       setError(err.message)
@@ -47,7 +51,11 @@ function ForgotPassword() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, code, newPassword }),
+        body: JSON.stringify({
+          identifier: identifier.trim(),
+          code: code.trim(),
+          newPassword,
+        }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -75,9 +83,9 @@ function ForgotPassword() {
           <h1 className="text-lg font-semibold text-gray-900">Reset your password</h1>
           <p className="text-sm text-gray-500">
             {step === 1
-              ? 'Enter your email to receive a reset code.'
+              ? 'Enter your username or the phone number on your account. We will send a code by SMS.'
               : step === 2
-                ? 'Enter the code from your email and choose a new password.'
+                ? 'Enter the SMS code and your new password.'
                 : 'Done.'}
           </p>
         </div>
@@ -94,14 +102,14 @@ function ForgotPassword() {
         {step === 1 && (
           <form className="space-y-4" onSubmit={requestCode}>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username or phone number</label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                placeholder="you@example.com"
-                autoComplete="email"
+                placeholder="e.g. jsmith or 0712345678"
+                autoComplete="username"
                 required
               />
             </div>
@@ -110,26 +118,21 @@ function ForgotPassword() {
               disabled={submitting}
               className="w-full flex justify-center items-center gap-2 rounded-lg bg-primary-600 text-white py-2.5 text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-60"
             >
-              {submitting ? 'Sending...' : 'Send reset code'}
+              {submitting ? 'Sending…' : 'Send SMS code'}
             </button>
           </form>
         )}
 
         {step === 2 && (
           <form className="space-y-4" onSubmit={resetPassword}>
+            {phoneHint ? (
+              <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700">
+                <div className="font-medium text-gray-900 mb-1">SMS sent to number ending in</div>
+                <div className="font-mono tracking-wide">{phoneHint}</div>
+              </div>
+            ) : null}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                autoComplete="email"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Reset code</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">SMS code</label>
               <input
                 type="text"
                 value={code}
@@ -157,15 +160,22 @@ function ForgotPassword() {
               disabled={submitting}
               className="w-full flex justify-center items-center gap-2 rounded-lg bg-primary-600 text-white py-2.5 text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-60"
             >
-              {submitting ? 'Resetting...' : 'Reset password'}
+              {submitting ? 'Resetting…' : 'Reset password'}
             </button>
             <button
               type="button"
               disabled={submitting}
-              onClick={() => setStep(1)}
+              onClick={() => {
+                setStep(1)
+                setCode('')
+                setNewPassword('')
+                setPhoneHint('')
+                setSuccess(null)
+                setError(null)
+              }}
               className="w-full rounded-lg border border-gray-300 text-gray-700 py-2.5 text-sm font-semibold hover:bg-gray-50 transition disabled:opacity-60"
             >
-              Request a new code
+              Start over
             </button>
           </form>
         )}
@@ -189,5 +199,3 @@ function ForgotPassword() {
 }
 
 export default ForgotPassword
-
-

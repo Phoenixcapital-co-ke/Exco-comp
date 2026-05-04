@@ -29,6 +29,18 @@ function RequireAuth({ children, allowedRoles }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
+  if (user.mustChangePassword) {
+    if (location.pathname !== '/auth/first-password') {
+      return <Navigate to="/auth/first-password" replace />
+    }
+    return children
+  }
+
+  if (location.pathname === '/auth/first-password') {
+    const fallback = ROLE_DEFAULT_ROUTE[String(user.role || '').toLowerCase()] || '/logbook/kenya/dashboard'
+    return <Navigate to={fallback === '/login' ? '/logbook/kenya/dashboard' : fallback} replace />
+  }
+
     const normalizedUserRole = String(user.role || '').toLowerCase()
   const isSuperuser = normalizedUserRole === 'superuser'
   const isAdmin = normalizedUserRole === 'admin'
