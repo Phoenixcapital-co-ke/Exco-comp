@@ -4746,14 +4746,27 @@ const normalizeZidishaBranchRow = (row) => {
   return name
 }
 
+function findUserByUsernameOrEmail(loginId) {
+  const trimmed = String(loginId || '').trim()
+  if (!trimmed) return null
+  const byUsername = dbRW.prepare('SELECT * FROM Users WHERE username = ? LIMIT 1').get(trimmed)
+  if (byUsername) return byUsername
+  const emailNorm = trimmed.toLowerCase()
+  return (
+    dbRW
+      .prepare(`SELECT * FROM Users WHERE LOWER(TRIM(COALESCE(email, ''))) = ? LIMIT 1`)
+      .get(emailNorm) || null
+  )
+}
+
 app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password, superuserOnly } = req.body || {}
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' })
+      return res.status(400).json({ error: 'Username or email and password are required' })
     }
     const loginId = String(username).trim()
-    const user = dbRW.prepare('SELECT * FROM Users WHERE username = ? LIMIT 1').get(loginId)
+    const user = findUserByUsernameOrEmail(loginId)
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }

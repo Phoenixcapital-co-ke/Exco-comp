@@ -75,14 +75,14 @@ function SuperuserSignIn() {
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Username or email</label>
             <input
               type="text"
               name="username"
               value={form.username}
               onChange={handleChange}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Enter superuser username"
+              placeholder="Superuser username or email"
               autoComplete="username"
               required
             />
