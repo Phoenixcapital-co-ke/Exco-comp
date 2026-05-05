@@ -57,6 +57,22 @@ dbRW.exec(`
   );
 `)
 
+// --- Collection arrears SMS log (dedupe per day+slot+client) ---
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Collection_Arrears_SMS_Log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    send_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    client_id TEXT,
+    phone TEXT,
+    total_outstanding REAL,
+    status TEXT,
+    response TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(send_date, slot, client_id)
+  );
+`)
+
 // Migrate old SMS log schema (client+loan dedupe) → new schema (client-only dedupe)
 try {
   const cols = dbRW.prepare(`PRAGMA table_info(TopUp_SMS_Log);`).all().map((c) => c.name)
@@ -773,6 +789,15 @@ function bodaTopUpClientPercentPaid(c) {
   return c.totalPrincipal > 0 ? (safePaid / c.totalPrincipal) * 100 : 0
 }
 
+function formatKes(amount) {
+  const n = Number(amount) || 0
+  try {
+    return `KES ${n.toLocaleString('en-KE', { maximumFractionDigits: 0 })}`
+  } catch {
+    return `KES ${Math.round(n).toString()}`
+  }
+}
+
 function getOnfonConfigured() {
   return !!(
     String(process.env.ONFON_API_KEY || '').trim() &&
@@ -922,6 +947,167 @@ async function runBodaTopUpSmsJob(slot) {
   }
 
   return { sendDate, slot: slotNorm, attempted, sent, skipped, errors, minPct: minPctSafe }
+}
+
+async function runBodaCollectionArrearsSmsJob(slot) {
+  const slotNorm = String(slot || '').trim() || 'unknown'
+  const sendDate = getNairobiDateKey()
+
+  if (!getOnfonConfigured()) {
+    return { sendDate, slot: slotNorm, attempted: 0, sent: 0, skipped: 0, errors: 0, reason: 'sms_not_configured' }
+  }
+
+  // Use Nairobi date key as "today" reference (midnight boundary for overdue)
+  const todayKey = getNairobiDateKey()
+
+  let rows = []
+  try {
+    rows = dbRW
+      .prepare(
+        `SELECT
+           TRIM("Client Id") AS clientId,
+           TRIM("Client Name") AS clientName,
+           TRIM("Phone Number") AS phone,
+           SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
+         FROM boda_Schedule
+         WHERE date("Due Date") < date(?)
+         GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
+         HAVING totalOutstanding > 0`,
+      )
+      .all(todayKey)
+  } catch (e) {
+    console.error('[CRON] Collection arrears query failed:', e.message)
+    throw e
+  }
+
+  const templateRaw = String(process.env.COLLECTION_ARREARS_SMS_TEMPLATE || '').trim()
+  const template =
+    templateRaw ||
+    'Dear ${firstName}, you are in arrears of ${amount}. Please pay up your dues to stay active.'
+
+  let attempted = 0
+  let sent = 0
+  let skipped = 0
+  let errors = 0
+
+  for (const r of rows) {
+    const clientId = String(r.clientId || '').trim()
+    if (!clientId) continue
+
+    // Dedupe per day+slot+client
+    const exists = dbRW
+      .prepare('SELECT 1 FROM Collection_Arrears_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
+      .get(sendDate, slotNorm, clientId)
+    if (exists) {
+      skipped += 1
+      continue
+    }
+
+    const phoneKenya = normalizeKenyanPhoneStrict(r.phone)
+    if (!phoneKenya) {
+      skipped += 1
+      dbRW
+        .prepare(
+          `INSERT OR IGNORE INTO Collection_Arrears_SMS_Log (send_date, slot, client_id, phone, total_outstanding, status, response)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(sendDate, slotNorm, clientId, String(r.phone || ''), Number(r.totalOutstanding || 0), 'skipped', 'non_kenyan_or_missing_phone')
+      continue
+    }
+
+    const fullName = String(r.clientName || '').trim()
+    const firstName = (fullName.split(/\s+/).filter(Boolean)[0] || '').trim() || 'Customer'
+    const amount = formatKes(Number(r.totalOutstanding || 0))
+    const msg = template
+      .replace(/\$\{firstName\}/g, firstName)
+      .replace(/\$\{amount\}/g, amount)
+      .replace(/\$\{totalOutstanding\}/g, String(Number(r.totalOutstanding || 0)))
+
+    attempted += 1
+    try {
+      const resp = await sendInviteSms(phoneKenya, msg)
+      dbRW
+        .prepare(
+          `INSERT INTO Collection_Arrears_SMS_Log (send_date, slot, client_id, phone, total_outstanding, status, response)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(sendDate, slotNorm, clientId, phoneKenya, Number(r.totalOutstanding || 0), 'sent', JSON.stringify(resp || {}))
+      sent += 1
+    } catch (e) {
+      errors += 1
+      dbRW
+        .prepare(
+          `INSERT OR IGNORE INTO Collection_Arrears_SMS_Log (send_date, slot, client_id, phone, total_outstanding, status, response)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(sendDate, slotNorm, clientId, phoneKenya, Number(r.totalOutstanding || 0), 'error', String(e?.message || e))
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  return { sendDate, slot: slotNorm, attempted, sent, skipped, errors }
+}
+
+function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includeAlreadySent = false } = {}) {
+  const sendDate = String(asOfDate || getNairobiDateKey()).slice(0, 10)
+  const slotNorm = String(slot || '07:05').trim() || '07:05'
+  const limitSafe = Math.min(Math.max(Number(limit) || 200, 1), 1000)
+
+  const templateRaw = String(process.env.COLLECTION_ARREARS_SMS_TEMPLATE || '').trim()
+  const template =
+    templateRaw ||
+    'Dear ${firstName}, you are in arrears of ${amount}. Please pay up your dues to stay active.'
+
+  const rows = dbRW
+    .prepare(
+      `SELECT
+         TRIM("Client Id") AS clientId,
+         TRIM("Client Name") AS clientName,
+         TRIM("Phone Number") AS phone,
+         SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
+       FROM boda_Schedule
+       WHERE date("Due Date") < date(?)
+       GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
+       HAVING totalOutstanding > 0
+       ORDER BY totalOutstanding DESC
+       LIMIT ?`,
+    )
+    .all(sendDate, limitSafe)
+
+  const out = []
+  for (const r of rows) {
+    const clientId = String(r.clientId || '').trim()
+    if (!clientId) continue
+    const fullName = String(r.clientName || '').trim()
+    const firstName = (fullName.split(/\s+/).filter(Boolean)[0] || '').trim() || 'Customer'
+    const totalOutstanding = Number(r.totalOutstanding || 0)
+    const amount = formatKes(totalOutstanding)
+    const message = template
+      .replace(/\$\{firstName\}/g, firstName)
+      .replace(/\$\{amount\}/g, amount)
+      .replace(/\$\{totalOutstanding\}/g, String(totalOutstanding))
+
+    const alreadySent = !!dbRW
+      .prepare('SELECT 1 FROM Collection_Arrears_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
+      .get(sendDate, slotNorm, clientId)
+
+    if (!includeAlreadySent && alreadySent) continue
+
+    out.push({
+      clientId,
+      clientName: fullName,
+      firstName,
+      phone: String(r.phone || '').trim(),
+      totalOutstanding,
+      sendDate,
+      slot: slotNorm,
+      alreadySent,
+      message,
+    })
+  }
+
+  return { sendDate, slot: slotNorm, count: out.length, items: out }
 }
 
 // Helper function to fetch with retry and timeout
@@ -2715,6 +2901,32 @@ app.get('/api/boda/repayments/daily', (req, res) => {
   }
 })
 
+// Preview: which clients would receive the arrears SMS (no sending)
+app.get('/api/boda/arrears-sms/preview', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '200'), 10) || 200, 1), 1000)
+    const slot = String(req.query.slot ?? '07:05').trim() || '07:05'
+    const asOfDate = req.query.date != null ? String(req.query.date).trim() : ''
+    const includeAlreadySent = ['1', 'true', 'yes'].includes(String(req.query.includeAlreadySent || '').toLowerCase())
+
+    const result = buildBodaCollectionArrearsPreview({
+      asOfDate: asOfDate || undefined,
+      slot,
+      limit,
+      includeAlreadySent,
+    })
+    res.json(result)
+  } catch (e) {
+    console.error('[Boda Arrears SMS Preview API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // --- Credit scorecard acceleration: precomputed tables + indexes ---
 function ensureCreditIndexes() {
   try {
@@ -3477,6 +3689,7 @@ app.post('/api/credit/refresh', requireAuth, (req, res) => {
 // Table: boda_Schedule. Columns: Branch Name, Client Id, Client Name, Due Date, Loan Id, Period, Total Expected, Total Outstanding
 app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
   try {
+    const productName = 'Zidisha Boda'
     const month = parseInt(req.query.month, 10)
     const year = parseInt(req.query.year, 10)
     const dueDay = req.query.dueDay != null && String(req.query.dueDay).trim() !== '' ? Number(req.query.dueDay) : null
@@ -3514,8 +3727,9 @@ app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
          COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
          COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
        FROM boda_Schedule
-       WHERE "Due Date" >= ? AND "Due Date" < ?`
-    ).all(monthStart, monthEnd)
+       WHERE "Due Date" >= ? AND "Due Date" < ?
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = ?`
+    ).all(monthStart, monthEnd, productName)
 
     // Distinct due-day options for the month (used by UI dropdown)
     const dueDaysSet = new Set()
@@ -3578,6 +3792,7 @@ app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
 // Boda schedule month summary - values for top cards
 app.get('/api/boda/schedule/summary', requireAuth, (req, res) => {
   try {
+    const productName = 'Zidisha Boda'
     const month = parseInt(req.query.month, 10)
     const year = parseInt(req.query.year, 10)
     const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
@@ -3612,8 +3827,9 @@ app.get('/api/boda/schedule/summary', requireAuth, (req, res) => {
          COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
          COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
        FROM boda_Schedule
-       WHERE "Due Date" >= ? AND "Due Date" < ?`
-    ).all(monthStart, monthEnd)
+       WHERE "Due Date" >= ? AND "Due Date" < ?
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = ?`
+    ).all(monthStart, monthEnd, productName)
 
     let totalExpected = 0
     let totalOutstanding = 0
@@ -3667,6 +3883,7 @@ app.get('/api/boda/schedule/summary', requireAuth, (req, res) => {
 // Boda schedule MTD by branch - for "MTD Collection by Branch" table
 app.get('/api/boda/schedule/mtd-by-branch', requireAuth, (req, res) => {
   try {
+    const productName = 'Zidisha Boda'
     const month = parseInt(req.query.month, 10)
     const year = parseInt(req.query.year, 10)
     const cutoffDayRaw = req.query.cutoffDay != null && String(req.query.cutoffDay).trim() !== '' ? Number(req.query.cutoffDay) : null
@@ -3700,8 +3917,9 @@ app.get('/api/boda/schedule/mtd-by-branch', requireAuth, (req, res) => {
          COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
          COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
        FROM boda_Schedule
-       WHERE "Due Date" >= ? AND "Due Date" < ?`
-    ).all(monthStart, monthEnd)
+       WHERE "Due Date" >= ? AND "Due Date" < ?
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = ?`
+    ).all(monthStart, monthEnd, productName)
 
     const agg = new Map()
     for (const r of rows) {
@@ -3741,6 +3959,7 @@ app.get('/api/boda/schedule/mtd-by-branch', requireAuth, (req, res) => {
 // Boda schedule daily expected vs collected (by Due Date day-of-month)
 app.get('/api/boda/schedule/daily', requireAuth, (req, res) => {
   try {
+    const productName = 'Zidisha Boda'
     const month = parseInt(req.query.month, 10)
     const year = parseInt(req.query.year, 10)
     const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
@@ -3771,8 +3990,9 @@ app.get('/api/boda/schedule/daily', requireAuth, (req, res) => {
          COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS totalExpected,
          COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS totalOutstanding
        FROM boda_Schedule
-       WHERE "Due Date" >= ? AND "Due Date" < ?`
-    ).all(monthStart, monthEnd)
+       WHERE "Due Date" >= ? AND "Due Date" < ?
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = ?`
+    ).all(monthStart, monthEnd, productName)
 
     const expectedByDay = Array(daysIn + 1).fill(0)
     const collectedByDay = Array(daysIn + 1).fill(0)
@@ -8671,6 +8891,33 @@ cron.schedule('5 13 * * *', async () => {
     console.log('[CRON] TopUp SMS job (13:05) result:', result)
   } catch (e) {
     console.error('[CRON] TopUp SMS job (13:05) failed:', e.message)
+  }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+// Daily SMS: Collection arrears (overdue schedule) at 07:05 and 21:05 Nairobi time
+cron.schedule('5 7 * * *', async () => {
+  console.log(`[CRON] Running Collection Arrears SMS job (07:05) at ${new Date().toISOString()}`)
+  try {
+    const result = await runBodaCollectionArrearsSmsJob('07:05')
+    console.log('[CRON] Collection Arrears SMS job (07:05) result:', result)
+  } catch (e) {
+    console.error('[CRON] Collection Arrears SMS job (07:05) failed:', e.message)
+  }
+}, {
+  scheduled: true,
+  timezone: 'Africa/Nairobi'
+})
+
+cron.schedule('5 21 * * *', async () => {
+  console.log(`[CRON] Running Collection Arrears SMS job (21:05) at ${new Date().toISOString()}`)
+  try {
+    const result = await runBodaCollectionArrearsSmsJob('21:05')
+    console.log('[CRON] Collection Arrears SMS job (21:05) result:', result)
+  } catch (e) {
+    console.error('[CRON] Collection Arrears SMS job (21:05) failed:', e.message)
   }
 }, {
   scheduled: true,

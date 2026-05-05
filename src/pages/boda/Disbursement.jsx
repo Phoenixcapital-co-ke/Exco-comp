@@ -360,31 +360,78 @@ function BodaDisbursement() {
     return results.sort((a, b) => Math.max(b.actual, b.target) - Math.max(a.actual, a.target))
   }, [rows, selectedYear, selectedMonth, bodaBranches, targetMap])
 
-  const monthlyTrend = useMemo(() => {
-    // Base the 12-month window around the selected year/month, falling back to "now"
-    const baseYear = selectedYear || now.getFullYear()
-    const baseMonth = selectedMonth || now.getMonth() + 1
+  const branchTargetTableRows = useMemo(() => {
+    if (!selectedYear || !selectedMonth) return []
 
-    const points = []
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(baseYear, baseMonth - 1 - i, 1)
-      points.push({ y: d.getFullYear(), m: d.getMonth() + 1 })
+    const daysInMonth = new Date(selectedYear, selectedMonth, 0).getDate()
+    const countSundaysInMonth = (year, month) => {
+      // month is 1-12
+      let sundays = 0
+      for (let d = 1; d <= new Date(year, month, 0).getDate(); d++) {
+        const dow = new Date(year, month - 1, d).getDay() // 0 = Sunday
+        if (dow === 0) sundays += 1
+      }
+      return sundays
     }
-    const map = new Map(points.map(({ y, m }) => [`${y}-${m}`, 0]))
+
+    const workingDays = Math.max(1, daysInMonth - countSundaysInMonth(selectedYear, selectedMonth))
+
+    const today = new Date()
+    const isCurrentMonth = selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
+    const mtdCalendarDays = isCurrentMonth ? Math.min(today.getDate(), daysInMonth) : daysInMonth
+    const countWorkingDaysUpTo = (year, month, dayInclusive) => {
+      const daysIn = new Date(year, month, 0).getDate()
+      const end = Math.min(Math.max(Number(dayInclusive) || 0, 0), daysIn)
+      let work = 0
+      for (let d = 1; d <= end; d++) {
+        const dow = new Date(year, month - 1, d).getDay()
+        if (dow !== 0) work += 1
+      }
+      return work
+    }
+    const mtdWorkingDays = isCurrentMonth ? countWorkingDaysUpTo(selectedYear, selectedMonth, mtdCalendarDays) : workingDays
+
+    const branchMonthActual = new Map()
+    const branchMtdActual = new Map()
     for (const row of rows) {
+      const branchName = cleanBranchName((row['Branch Name'] || row.branch_name || '').trim())
+      if (!branchName) continue
       const amt = Number(row['Principal Amount']) || 0
       const ds = row['Disbursed On Date'] || row.disbursed_on_date
       if (!amt || !ds) continue
       const d = new Date(ds)
       if (isNaN(d.getTime())) continue
-      const key = `${d.getFullYear()}-${d.getMonth() + 1}`
-      if (map.has(key)) map.set(key, map.get(key) + amt)
+      if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
+
+      branchMonthActual.set(branchName, (branchMonthActual.get(branchName) || 0) + amt)
+      if (d.getDate() <= mtdCalendarDays) {
+        branchMtdActual.set(branchName, (branchMtdActual.get(branchName) || 0) + amt)
+      }
     }
-    return points.map(({ y, m }) => ({
-      month: `${MONTH_NAMES[m]} ${String(y).slice(-2)}`,
-      amount: map.get(`${y}-${m}`) || 0,
-    }))
-  }, [rows, now, selectedYear, selectedMonth])
+
+    const out = []
+    for (const branch of bodaBranches) {
+      const targetRow = targetMap.get(branch)
+      const eomTarget = targetRow ? Number(targetRow.disbursementTarget) || 0 : 0
+      const disbursement = branchMonthActual.get(branch) || 0
+      const eomPct = eomTarget > 0 ? (disbursement / eomTarget) * 100 : 0
+      const dailyTarget = eomTarget > 0 ? eomTarget / workingDays : 0
+      const mtdTarget = dailyTarget * mtdWorkingDays
+      const mtdActual = branchMtdActual.get(branch) || 0
+      const mtdPct = mtdTarget > 0 ? (mtdActual / mtdTarget) * 100 : 0
+
+      out.push({
+        branch,
+        eomTarget,
+        disbursement,
+        eomPct,
+        mtdTarget,
+        mtdPct,
+      })
+    }
+
+    return out.sort((a, b) => b.disbursement - a.disbursement)
+  }, [rows, selectedYear, selectedMonth, bodaBranches, targetMap])
 
   const dailyTrend = useMemo(() => {
     if (!selectedYear || !selectedMonth) return []
@@ -616,16 +663,42 @@ function BodaDisbursement() {
         ) : (
           <>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Monthly Disbursement Trend (Last 12 Months)</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={monthlyTrend}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis tickFormatter={(v) => `${(v / 1000000).toFixed(1)}M`} />
-                  <Tooltip formatter={(v) => formatKES(v)} />
-                  <Area type="monotone" dataKey="amount" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} name="Disbursed" />
-                </AreaChart>
-              </ResponsiveContainer>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Branch Targets ({selectedMonth && selectedYear ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">EOM Target</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">Disbursement</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">EOM %</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">MTD Target</th>
+                      <th className="px-4 py-2 text-right font-semibold text-gray-600">MTD %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {branchTargetTableRows.map((r) => (
+                      <tr key={r.branch} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 text-gray-900">{r.branch}</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(r.eomTarget)}</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(r.disbursement)}</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{Number(r.eomPct || 0).toFixed(1)}%</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{formatKES(r.mtdTarget)}</td>
+                        <td className="px-4 py-2 text-right text-gray-900">{Number(r.mtdPct || 0).toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                    {!branchTargetTableRows.length && (
+                      <tr>
+                        <td className="px-4 py-6 text-center text-gray-500" colSpan={6}>
+                          No branch target data for this month.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
