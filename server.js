@@ -609,6 +609,33 @@ function normalizeKenyanPhone(phone) {
   return p
 }
 
+/** Kenyan MSISDN normalizer: returns '' unless it can be normalized to 254XXXXXXXXX. */
+function normalizeKenyanPhoneStrict(phone) {
+  let p = String(phone || '').trim()
+  if (!p) return ''
+  p = p.replace(/\s+/g, '').replace(/^\+/, '')
+  if (p.startsWith('254') && p.length >= 12) return p
+  if (p.startsWith('0') && p.length >= 10) return `254${p.slice(1)}`
+  if (/^7\d{8}$/.test(p)) return `254${p}`
+  return ''
+}
+
+function maskEmail(email) {
+  const e = String(email || '').trim()
+  const at = e.indexOf('@')
+  if (at <= 0) return '***'
+  const local = e.slice(0, at)
+  const domain = e.slice(at + 1)
+  const first = local[0] || '*'
+  const maskedLocal = `${first}${'*'.repeat(Math.max(1, local.length - 1))}`
+  const domainParts = domain.split('.').filter(Boolean)
+  const safeDomain =
+    domainParts.length >= 2
+      ? `${'*'.repeat(Math.min(6, domainParts[0].length || 3))}.${domainParts.slice(1).join('.')}`
+      : '*'.repeat(Math.min(8, domain.length || 3))
+  return `${maskedLocal}@${safeDomain}`
+}
+
 /** Mask phone for reset UI: only last 2 digits visible */
 function maskPhoneLastTwoVisible(phone) {
   const p = normalizeKenyanPhone(phone)
@@ -4847,7 +4874,7 @@ app.post('/api/auth/confirm-email', async (req, res) => {
   }
 })
 
-function findUserByUsernameOrPhone(raw) {
+function findUserByUsernameOrPhoneOrEmail(raw) {
   const trimmed = String(raw || '').trim()
   if (!trimmed) return null
   const byUser = dbRW.prepare('SELECT * FROM Users WHERE username = ? LIMIT 1').get(trimmed)
@@ -4857,6 +4884,11 @@ function findUserByUsernameOrPhone(raw) {
     const byPhone = dbRW.prepare('SELECT * FROM Users WHERE phone = ? LIMIT 1').get(phoneNorm)
     if (byPhone) return byPhone
   }
+  const emailNorm = trimmed.toLowerCase()
+  const byEmail = dbRW
+    .prepare(`SELECT * FROM Users WHERE LOWER(TRIM(COALESCE(email, ''))) = ? LIMIT 1`)
+    .get(emailNorm)
+  if (byEmail) return byEmail
   return null
 }
 
@@ -4865,7 +4897,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const identifier = String(req.body?.identifier ?? req.body?.username ?? '').trim()
     if (!identifier) return res.status(400).json({ error: 'Username or phone number is required' })
 
-    const user = findUserByUsernameOrPhone(identifier)
+    const user = findUserByUsernameOrPhoneOrEmail(identifier)
     if (!user) return res.status(404).json({ error: 'No account found for that username or phone number' })
     if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
     const emailOk = !!Number(user.email_verified || 0)
@@ -4874,13 +4906,12 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.status(403).json({ error: 'Account not activated.' })
     }
 
-    const phoneNorm = normalizeKenyanPhone(user.phone)
-    if (!phoneNorm) {
-      return res.status(400).json({ error: 'No phone number on file for this user. Contact an administrator.' })
-    }
-
-    if (!getOnfonConfigured()) {
-      return respondForgotPasswordSmsNotConfigured(res)
+    const phoneKenya = normalizeKenyanPhoneStrict(user.phone)
+    const emailNorm = normalizeEmail(user.email)
+    if (!phoneKenya && !emailNorm) {
+      return res.status(400).json({
+        error: 'No valid Kenyan phone or email address on file for this user. Contact an administrator.',
+      })
     }
 
     const code = String(Math.floor(100000 + Math.random() * 900000))
@@ -4892,7 +4923,51 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const smsText = `Phoenix Capital Dashboard password reset code: ${code}. Valid 15 minutes.`
     try {
-      await sendInviteSms(phoneNorm, smsText)
+      let smsSent = false
+      let emailSent = false
+
+      // Email always (when present) — helps non-Kenyan users
+      if (emailNorm) {
+        try {
+          const subject = 'Password reset code'
+          const text =
+            `Your Phoenix Capital Dashboard password reset code is: ${code}\n\n` +
+            `Valid for 15 minutes.\n\n` +
+            `If you did not request this, you can ignore this email.`
+          const html =
+            `<p>Your Phoenix Capital Dashboard password reset code is:</p>` +
+            `<p style="font-size:18px;font-weight:700;letter-spacing:0.08em">${code}</p>` +
+            `<p>Valid for 15 minutes.</p>` +
+            `<p>If you did not request this, you can ignore this email.</p>`
+          const sendResult = await sendEmail({ to: emailNorm, subject, text, html })
+          emailSent = !!sendResult?.ok
+        } catch (emailErr) {
+          console.error('[auth] forgot-password email failed:', emailErr)
+        }
+      }
+
+      // SMS only if Kenyan number + Onfon configured
+      if (phoneKenya) {
+        if (!getOnfonConfigured()) {
+          // If there's no email fallback, fail with actionable config message
+          if (!emailNorm) return respondForgotPasswordSmsNotConfigured(res)
+        } else {
+          await sendInviteSms(phoneKenya, smsText)
+          smsSent = true
+        }
+      }
+
+      if (!smsSent && !emailSent) {
+        throw new Error('Could not send reset code via SMS or email')
+      }
+
+      return res.json({
+        ok: true,
+        smsSent,
+        emailSent,
+        ...(smsSent ? { phoneHint: maskPhoneLastTwoVisible(phoneKenya) } : {}),
+        ...(emailSent ? { emailHint: maskEmail(emailNorm) } : {}),
+      })
     } catch (smsErr) {
       console.error('[auth] forgot-password SMS failed:', smsErr)
       try {
@@ -4910,8 +4985,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         details: String(smsErr.message || smsErr),
       })
     }
-
-    res.json({ ok: true, phoneHint: maskPhoneLastTwoVisible(phoneNorm) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -4925,7 +4998,7 @@ app.post('/api/auth/reset-password', (req, res) => {
       return res.status(400).json({ error: 'Username or phone, code, and newPassword are required' })
     }
     validatePasswordOrThrow(newPassword)
-    const user = findUserByUsernameOrPhone(identifier)
+    const user = findUserByUsernameOrPhoneOrEmail(identifier)
     if (!user) return res.status(404).json({ error: 'No account found for that username or phone number' })
     if (!user.active) return res.status(403).json({ error: 'User is deactivated' })
     const emailOk = !!Number(user.email_verified || 0)
@@ -5779,9 +5852,13 @@ app.post('/api/users', async (req, res) => {
       allowedLogbookBranches = []
     } = req.body || {}
     if (!username) return res.status(400).json({ error: 'Username is required' })
-    const phoneNorm = normalizeKenyanPhone(phone)
-    if (!phoneNorm) return res.status(400).json({ error: 'A valid phone number is required for SMS onboarding' })
     const emailNorm = normalizeEmail(email)
+    const phoneRaw = String(phone ?? '').trim()
+    const phoneKenya = normalizeKenyanPhoneStrict(phoneRaw)
+    // Allow non-Kenyan users if they have email (Uganda, etc.)
+    if (!phoneKenya && !emailNorm) {
+      return res.status(400).json({ error: 'Provide a Kenyan phone number or an email address for onboarding' })
+    }
     const roleStr = String(role || 'user').trim().toLowerCase()
     const firstTimeCode = generateFirstTimeCode()
     const loginUrl = `${getAppBaseUrl()}/login`
@@ -5796,12 +5873,12 @@ app.post('/api/users', async (req, res) => {
         username: String(username).trim(),
         full_name: fullName ? String(fullName).trim() : '',
         email: emailNorm || '',
-        phone: phoneNorm,
+        phone: phoneKenya || phoneRaw,
         role: roleStr,
         active: 1,
         password_hash: hashPassword(firstTimeCode),
         email_verified: 0,
-        phone_verified: 1,
+        phone_verified: phoneKenya ? 1 : 0,
         must_change_password: 1,
       })
     
@@ -5898,13 +5975,19 @@ app.post('/api/users', async (req, res) => {
         `Your Phoenix Capital Dashboard account was created.\n\n` +
         `Please confirm your email and set your password using this link:\n${confirmUrl}\n\n` +
         `This link expires in 24 hours.\n\n` +
-        `You also received an SMS with your username and 5-digit first-time sign-in code.`
+        `Login: ${loginUrl}\n` +
+        `Username: ${String(username).trim()}\n` +
+        `First-time code: ${firstTimeCode}\n\n` +
+        `Use the first-time code as your password on first sign-in, then set a new password when prompted.`
       const html =
         `<p>Your Phoenix Capital Dashboard account was created.</p>` +
         `<p>Please confirm your email and set your password:</p>` +
         `<p><a href="${confirmUrl}">Confirm account</a></p>` +
         `<p>This link expires in 24 hours.</p>` +
-        `<p>You also received an SMS with your username and 5-digit first-time sign-in code.</p>`
+        `<p><b>Login:</b> ${loginUrl}<br/>` +
+        `<b>Username:</b> ${String(username).trim()}<br/>` +
+        `<b>First-time code:</b> ${firstTimeCode}</p>` +
+        `<p>Use the first-time code as your password on first sign-in, then set a new password when prompted.</p>`
       try {
         const sendResult = await sendEmail({ to: emailNorm, subject, text, html })
         emailSent = !!sendResult.ok
@@ -5924,12 +6007,15 @@ app.post('/api/users', async (req, res) => {
     if (confirmUrl) smsParts.push(`Confirm email ${confirmUrl}`)
     let smsSent = false
     let smsErrorCode = null
-    if (!getOnfonConfigured()) {
+    if (!phoneKenya) {
+      smsErrorCode = 'sms_not_kenyan'
+      console.warn('[users] invite SMS skipped: non-Kenyan or missing phone')
+    } else if (!getOnfonConfigured()) {
       smsErrorCode = 'sms_not_configured'
       console.warn('[users] invite SMS skipped: Onfon env vars not set')
     } else {
       try {
-        await sendInviteSms(phoneNorm, smsParts.join('. '))
+        await sendInviteSms(phoneKenya, smsParts.join('. '))
         smsSent = true
       } catch (smsErr) {
         console.error('[users] invite SMS failed:', smsErr)

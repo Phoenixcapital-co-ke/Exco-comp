@@ -333,6 +333,8 @@ function UsersPage() {
           bits.push(
             data.smsErrorCode === 'sms_not_configured'
               ? 'SMS was not sent — gateway not configured on server (set ONFON_* env for PM2 and restart)'
+              : data.smsErrorCode === 'sms_not_kenyan'
+                ? 'SMS was not sent — non‑Kenyan phone; onboarding details were sent by email instead (if provided)'
               : data.smsErrorCode === 'sms_send_failed'
                 ? 'SMS could not be sent (network or Onfon API error — check logs)'
                 : 'SMS could not be sent (check Onfon configuration)'

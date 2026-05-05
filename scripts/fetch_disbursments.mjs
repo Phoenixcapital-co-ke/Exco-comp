@@ -773,6 +773,7 @@ const BODA_SCHEDULE_COLUMNS = [
   'Client Id',
   'Client Name',
   'Phone Number',
+  'Product Name',
   'Due Date',
   'Loan Id',
   'Period',
@@ -867,6 +868,7 @@ function initBodaScheduleTable(db) {
       "Client Id" TEXT,
       "Client Name" TEXT,
       "Phone Number" TEXT,
+      "Product Name" TEXT,
       "Due Date" TEXT,
       "Loan Id" TEXT,
       "Period" TEXT,
@@ -889,6 +891,7 @@ function initBodaScheduleTable(db) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_due_date ON ${BODA_SCHEDULE_TABLE}("Due Date")`)
     db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_loan_id ON ${BODA_SCHEDULE_TABLE}("Loan Id")`)
     db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_client_id ON ${BODA_SCHEDULE_TABLE}("Client Id")`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_product_name ON ${BODA_SCHEDULE_TABLE}("Product Name")`)
   } catch (e) {
     console.warn('Error creating indexes for boda_Schedule:', e.message)
   }

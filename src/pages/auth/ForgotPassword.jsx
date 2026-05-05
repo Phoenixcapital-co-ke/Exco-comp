@@ -8,6 +8,7 @@ function ForgotPassword() {
   /** Username or phone (same value user typed on step 1 — sent again on reset for consistency). */
   const [identifier, setIdentifier] = useState('')
   const [phoneHint, setPhoneHint] = useState('')
+  const [emailHint, setEmailHint] = useState('')
   const [code, setCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -32,7 +33,8 @@ function ForgotPassword() {
       }
       const data = await res.json()
       setPhoneHint(data.phoneHint || '')
-      setSuccess('We sent a code by SMS to the number on file. Enter the code and choose a new password below.')
+      setEmailHint(data.emailHint || '')
+      setSuccess('We sent a reset code to your account contact (SMS and/or email). Enter the code and choose a new password below.')
       setStep(2)
     } catch (err) {
       setError(err.message)
@@ -83,7 +85,7 @@ function ForgotPassword() {
           <h1 className="text-lg font-semibold text-gray-900">Reset your password</h1>
           <p className="text-sm text-gray-500">
             {step === 1
-              ? 'Enter your username or the phone number on your account. We will send a code by SMS.'
+              ? 'Enter your username, email, or the phone number on your account. We will send a reset code to your account contact (SMS and/or email).'
               : step === 2
                 ? 'Enter the SMS code and your new password.'
                 : 'Done.'}
@@ -102,13 +104,13 @@ function ForgotPassword() {
         {step === 1 && (
           <form className="space-y-4" onSubmit={requestCode}>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Username or phone number</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username, email, or phone number</label>
               <input
                 type="text"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                placeholder="e.g. jsmith or 0712345678"
+                placeholder="e.g. jsmith, name@company.com, or 0712345678"
                 autoComplete="username"
                 required
               />
@@ -118,7 +120,7 @@ function ForgotPassword() {
               disabled={submitting}
               className="w-full flex justify-center items-center gap-2 rounded-lg bg-primary-600 text-white py-2.5 text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-60"
             >
-              {submitting ? 'Sending…' : 'Send SMS code'}
+              {submitting ? 'Sending…' : 'Send reset code'}
             </button>
           </form>
         )}
@@ -131,8 +133,14 @@ function ForgotPassword() {
                 <div className="font-mono tracking-wide">{phoneHint}</div>
               </div>
             ) : null}
+            {emailHint ? (
+              <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700">
+                <div className="font-medium text-gray-900 mb-1">Email sent to</div>
+                <div className="font-mono tracking-wide">{emailHint}</div>
+              </div>
+            ) : null}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">SMS code</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reset code</label>
               <input
                 type="text"
                 value={code}
@@ -170,6 +178,7 @@ function ForgotPassword() {
                 setCode('')
                 setNewPassword('')
                 setPhoneHint('')
+                setEmailHint('')
                 setSuccess(null)
                 setError(null)
               }}
