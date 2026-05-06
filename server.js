@@ -959,6 +959,7 @@ async function runBodaCollectionArrearsSmsJob(slot) {
 
   // Use Nairobi date key as "today" reference (midnight boundary for overdue)
   const todayKey = getNairobiDateKey()
+  const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
 
   let rows = []
   try {
@@ -971,10 +972,14 @@ async function runBodaCollectionArrearsSmsJob(slot) {
            SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
          FROM boda_Schedule
          WHERE date("Due Date") < date(?)
+           AND (
+             LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
+             OR date("Due Date") < date(?, '-15 day')
+           )
          GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
          HAVING totalOutstanding > 0`,
       )
-      .all(todayKey)
+      .all(todayKey, ...minDaysProducts, todayKey)
   } catch (e) {
     console.error('[CRON] Collection arrears query failed:', e.message)
     throw e
@@ -1053,6 +1058,7 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
   const sendDate = String(asOfDate || getNairobiDateKey()).slice(0, 10)
   const slotNorm = String(slot || '07:05').trim() || '07:05'
   const limitSafe = Math.min(Math.max(Number(limit) || 200, 1), 1000)
+  const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
 
   const templateRaw = String(process.env.COLLECTION_ARREARS_SMS_TEMPLATE || '').trim()
   const template =
@@ -1068,12 +1074,16 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
          SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
        FROM boda_Schedule
        WHERE date("Due Date") < date(?)
+         AND (
+           LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
+           OR date("Due Date") < date(?, '-15 day')
+         )
        GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
        HAVING totalOutstanding > 0
        ORDER BY totalOutstanding DESC
        LIMIT ?`,
     )
-    .all(sendDate, limitSafe)
+    .all(sendDate, ...minDaysProducts, sendDate, limitSafe)
 
   const out = []
   for (const r of rows) {
