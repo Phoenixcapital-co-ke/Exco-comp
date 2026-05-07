@@ -13,6 +13,7 @@ function BodaCollection() {
   // Due Date filter is day-of-month within the selected Month/Year
   // '' means "All days"
   const [selectedDueDay, setSelectedDueDay] = useState('')
+  const [dueDayTouched, setDueDayTouched] = useState(false)
   const [rows, setRows] = useState([])
   const [dailyLoans, setDailyLoans] = useState([])
   const [repaymentMap, setRepaymentMap] = useState({})
@@ -291,6 +292,11 @@ function BodaCollection() {
       loadScheduleSummary()
     }
   }, [selectedMonth, selectedYear, selectedBranch])
+
+  // Reset due-day "touched" when period changes (so current-month can auto-default again)
+  useEffect(() => {
+    setDueDayTouched(false)
+  }, [selectedMonth, selectedYear])
 
   // Fetch Daily Expected vs Collected (from boda_Schedule)
   useEffect(() => {
@@ -578,6 +584,7 @@ function BodaCollection() {
   // When viewing the current month/year, default the Due Date (Day) to "today" if available
   useEffect(() => {
     if (selectedDueDay) return
+    if (dueDayTouched) return
     if (!availableDueDays.length) return
 
     const todayDay = now.getDate()
@@ -587,7 +594,7 @@ function BodaCollection() {
     if (selectedYear === todayYear && selectedMonth === todayMonth && availableDueDays.includes(todayDay)) {
       setSelectedDueDay(String(todayDay))
     }
-  }, [availableDueDays, selectedDueDay, selectedMonth, selectedYear, now])
+  }, [availableDueDays, selectedDueDay, dueDayTouched, selectedMonth, selectedYear, now])
 
   // Branch Summary Table (with Due Date filter) - now from boda_Schedule
   const branchSummary = useMemo(() => {
@@ -1130,7 +1137,10 @@ function BodaCollection() {
                 <select
                   className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={selectedDueDay}
-                  onChange={(e) => setSelectedDueDay(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedDueDay(e.target.value)
+                    setDueDayTouched(true)
+                  }}
                 >
                   <option value="">All</option>
                   {availableDueDays.map((d) => (
@@ -1142,7 +1152,10 @@ function BodaCollection() {
                 <button
                   type="button"
                   className="mb-[2px] rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                  onClick={() => setSelectedDueDay('')}
+                  onClick={() => {
+                    setSelectedDueDay('')
+                    setDueDayTouched(true)
+                  }}
                 >
                   Clear
                 </button>
