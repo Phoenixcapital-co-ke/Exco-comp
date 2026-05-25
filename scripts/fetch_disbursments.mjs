@@ -8,6 +8,10 @@
 //   SKIP_ZIDISHA_DAILY=1     -> skip Zidisha Daily Expected vs Repayed ingestion
 //   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
 // Optional: DISBURSEMENTS_LOOKBACK_DAYS (default 60), COLLECTIONS_LOOKBACK_DAYS (default 90)
+// Musoni pacing / resilience (export downloads only):
+//   MUSONI_FETCH_DELAY_MS    -> wait this many ms before each Musoni GET (default 0). Try 3000–8000 if the API returns 5xx under load.
+//   MUSONI_RETRY_COUNT       -> extra attempts after the first failure for retryable HTTP statuses (429, 5xx); default 3 (4 tries total).
+//   MUSONI_RETRY_BASE_MS     -> base backoff before first retry; doubles each retry (default 2000).
 
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
@@ -35,6 +39,14 @@ const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
 const SKIP_ZIDISHA_DAILY = process.env.SKIP_ZIDISHA_DAILY === '1'
 const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
+
+const MUSONI_FETCH_DELAY_MS = Math.max(0, Number(process.env.MUSONI_FETCH_DELAY_MS || 0) || 0)
+const _mrc = Number(process.env.MUSONI_RETRY_COUNT)
+const MUSONI_RETRY_COUNT =
+  Number.isFinite(_mrc) && _mrc >= 0 ? Math.min(Math.floor(_mrc), 10) : 3
+const _mrb = Number(process.env.MUSONI_RETRY_BASE_MS)
+const MUSONI_RETRY_BASE_MS =
+  Number.isFinite(_mrb) && _mrb >= 500 ? _mrb : 2000
 
 // Rolling lookback window (in days) for disbursements incremental fetch.
 // Default 60 days; can be overridden via DISBURSEMENTS_LOOKBACK_DAYS env var.
@@ -811,6 +823,36 @@ const ZIDISHA_HEADERS = {
   'User-Agent': 'DAP/1.0',
   'Accept': 'application/json',
 }
+
+/** Single GET for Musoni data-export URLs: optional delay, then retries on 429 / 5xx. */
+async function fetchMusoniGET(url, label) {
+  if (MUSONI_FETCH_DELAY_MS > 0) {
+    await new Promise((r) => setTimeout(r, MUSONI_FETCH_DELAY_MS))
+  }
+  let lastStatus = 0
+  let lastBody = ''
+  for (let attempt = 0; attempt <= MUSONI_RETRY_COUNT; attempt++) {
+    const res = await fetch(url, { method: 'GET', headers: ZIDISHA_HEADERS })
+    if (res.ok) return res
+    lastStatus = res.status
+    try {
+      lastBody = await res.text()
+    } catch {
+      lastBody = ''
+    }
+    const retryable = lastStatus === 429 || lastStatus >= 500
+    if (!retryable || attempt === MUSONI_RETRY_COUNT) {
+      const snippet = lastBody ? ` — ${lastBody.slice(0, 400)}` : ''
+      throw new Error(`${label} API fetch failed: ${lastStatus}${snippet}`)
+    }
+    const wait = MUSONI_RETRY_BASE_MS * Math.pow(2, attempt)
+    console.warn(
+      `[Musoni] ${label} HTTP ${lastStatus}, retry ${attempt + 1}/${MUSONI_RETRY_COUNT} after ${wait}ms`,
+    )
+    await new Promise((r) => setTimeout(r, wait))
+  }
+  throw new Error(`${label} API fetch failed: ${lastStatus}`)
+}
 // Only persist the original core financial fields from the Zidisha export.
 // We intentionally skip Business Profile fields to avoid issues with occasional
 // malformed / structurally different rows in the source export.
@@ -1057,8 +1099,7 @@ function initZidishaDailyTable(db, columns) {
 }
 
 async function fetchZidishaCsv() {
-  const res = await fetch(ZIDISHA_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
-  if (!res.ok) throw new Error(`Zidisha API fetch failed: ${res.status}`)
+  const res = await fetchMusoniGET(ZIDISHA_URL, 'Zidisha')
   const csv = await res.text()
   if (PAPAPARSE) {
     const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
@@ -1117,8 +1158,7 @@ async function fetchZidishaCsv() {
 }
 
 async function fetchBodaRepaymentsCsv() {
-  const res = await fetch(BODA_REPAY_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
-  if (!res.ok) throw new Error(`Boda repayments API fetch failed: ${res.status}`)
+  const res = await fetchMusoniGET(BODA_REPAY_URL, 'Boda repayments')
   const csv = await res.text()
   if (PAPAPARSE) {
     const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
@@ -1177,8 +1217,7 @@ async function fetchBodaRepaymentsCsv() {
 }
 
 async function fetchBodaScheduleCsv() {
-  const res = await fetch(BODA_SCHEDULE_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
-  if (!res.ok) throw new Error(`Boda schedule API fetch failed: ${res.status}`)
+  const res = await fetchMusoniGET(BODA_SCHEDULE_URL, 'Boda schedule')
   const csv = await res.text()
   if (PAPAPARSE) {
     const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })
@@ -1302,8 +1341,7 @@ function insertBodaRepayment(db, row) {
 }
 
 async function fetchZidishaDailyCsv() {
-  const res = await fetch(ZIDISHA_DAILY_URL, { method: 'GET', headers: ZIDISHA_HEADERS })
-  if (!res.ok) throw new Error(`Zidisha Daily API fetch failed: ${res.status}`)
+  const res = await fetchMusoniGET(ZIDISHA_DAILY_URL, 'Zidisha Daily')
   const csv = await res.text()
   if (PAPAPARSE) {
     const { data } = PAPAPARSE.parse(csv, { header: true, skipEmptyLines: true })

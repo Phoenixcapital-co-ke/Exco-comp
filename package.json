@@ -17,6 +17,7 @@
     "pm2:save": "pm2 save",
     "ingest:disbursments": "node scripts/fetch_disbursments.mjs",
     "ingest:disbursements": "node scripts/fetch_disbursments.mjs",
+    "audit:sms": "python scripts/audit_sms_logs.py data/app.db",
     "migrate:disbursments": "node scripts/migrate_disbursments_from_raw.mjs",
     "db:drop-raw": "node scripts/drop_raw_from_logbook_disbursement.mjs"
   },

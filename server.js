@@ -625,15 +625,24 @@ function normalizeKenyanPhone(phone) {
   return p
 }
 
-/** Kenyan MSISDN normalizer: returns '' unless it can be normalized to 254XXXXXXXXX. */
+/** Kenyan mobile MSISDN: 2547XXXXXXXX only (rejects landlines like 25411…). */
 function normalizeKenyanPhoneStrict(phone) {
-  let p = String(phone || '').trim()
-  if (!p) return ''
-  p = p.replace(/\s+/g, '').replace(/^\+/, '')
-  if (p.startsWith('254') && p.length >= 12) return p
-  if (p.startsWith('0') && p.length >= 10) return `254${p.slice(1)}`
-  if (/^7\d{8}$/.test(p)) return `254${p}`
-  return ''
+  const p = normalizeKenyanPhone(phone)
+  return /^2547\d{8}$/.test(p) ? p : ''
+}
+
+/** Product scope for collection arrears SMS (comma-separated; use * or all for every product). */
+function getCollectionArrearsProductFilter() {
+  const raw = String(process.env.COLLECTION_ARREARS_SMS_PRODUCTS || 'Zidisha Boda').trim()
+  if (!raw || raw === '*' || raw.toLowerCase() === 'all') {
+    return { clause: '', params: [] }
+  }
+  const products = raw.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean)
+  if (!products.length) return { clause: '', params: [] }
+  return {
+    clause: ` AND LOWER(COALESCE(TRIM("Product Name"), '')) IN (${products.map(() => '?').join(', ')}) `,
+    params: products,
+  }
 }
 
 function maskEmail(email) {
@@ -821,69 +830,26 @@ async function runBodaTopUpSmsJob(slot) {
   const minPct = Number(process.env.TOPUP_MIN_PERCENT_PAID || 70)
   const minPctSafe = Number.isFinite(minPct) ? minPct : 70
 
-  // New source of truth: Client Performance tables (precomputed)
-  // Recipients: Gold/Silver AND principal paid >= minPctSafe
+  // Zidisha Boda top-up only (credit_scores_boda). Gold/Silver + principal paid >= minPctSafe.
+  const topUpSelectSql = `SELECT
+           TRIM(client_id) AS clientId,
+           TRIM(client_name) AS name,
+           TRIM(phone) AS phone,
+           CAST(current_principal_amount AS REAL) AS principalAmount,
+           CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
+           TRIM(band) AS band
+         FROM credit_scores_boda
+         WHERE band IN ('Gold', 'Silver')`
   let recipients = []
   try {
-    recipients = dbRW
-      .prepare(
-        `SELECT
-           TRIM(client_id) AS clientId,
-           TRIM(client_name) AS name,
-           TRIM(phone) AS phone,
-           CAST(current_principal_amount AS REAL) AS principalAmount,
-           CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-           TRIM(band) AS band,
-           'boda' AS product
-         FROM credit_scores_boda
-         WHERE band IN ('Gold', 'Silver')
-         UNION ALL
-         SELECT
-           TRIM(client_id) AS clientId,
-           TRIM(client_name) AS name,
-           TRIM(phone) AS phone,
-           CAST(current_principal_amount AS REAL) AS principalAmount,
-           CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-           TRIM(band) AS band,
-           'zidisha' AS product
-         FROM credit_scores_zidisha
-         WHERE band IN ('Gold', 'Silver')`,
-      )
-      .all()
+    recipients = dbRW.prepare(topUpSelectSql).all()
   } catch (e) {
     // If tables are missing/empty, try a refresh once and re-read
     try {
-      console.warn('[SMS] credit_scores_* missing; attempting refresh:', e.message)
+      console.warn('[SMS] credit_scores_boda missing; attempting refresh:', e.message)
       ensureCreditIndexes()
       refreshCreditScoresForProduct('boda', { scopeProducts: ['Zidisha Boda'] })
-      refreshCreditScoresForProduct('zidisha', {
-        scopeProducts: ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express'],
-      })
-      recipients = dbRW
-        .prepare(
-          `SELECT
-             TRIM(client_id) AS clientId,
-             TRIM(client_name) AS name,
-             TRIM(phone) AS phone,
-             CAST(current_principal_amount AS REAL) AS principalAmount,
-             CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-             TRIM(band) AS band,
-             'boda' AS product
-           FROM credit_scores_boda
-           WHERE band IN ('Gold', 'Silver')
-           UNION ALL
-           SELECT
-             TRIM(client_id) AS clientId,
-             TRIM(client_name) AS name,
-             TRIM(phone) AS phone,
-             CAST(current_principal_amount AS REAL) AS principalAmount,
-             CAST(current_principal_outstanding AS REAL) AS principalOutstanding,
-             TRIM(band) AS band,
-             'zidisha' AS product
-           FROM credit_scores_zidisha
-           WHERE band IN ('Gold', 'Silver')`,
-        )
-        .all()
+      recipients = dbRW.prepare(topUpSelectSql).all()
     } catch (e2) {
       throw new Error(`Unable to load credit_scores_* for SMS: ${e2.message}`)
     }
@@ -908,7 +874,7 @@ async function runBodaTopUpSmsJob(slot) {
       skipped += 1
       continue
     }
-    const phone = normalizeKenyanPhone(r.phone)
+    const phone = normalizeKenyanPhoneStrict(r.phone)
     if (!phone) {
       skipped += 1
       continue
@@ -960,6 +926,7 @@ async function runBodaCollectionArrearsSmsJob(slot) {
   // Use Nairobi date key as "today" reference (midnight boundary for overdue)
   const todayKey = getNairobiDateKey()
   const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
+  const productFilter = getCollectionArrearsProductFilter()
 
   let rows = []
   try {
@@ -976,10 +943,11 @@ async function runBodaCollectionArrearsSmsJob(slot) {
              LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
              OR date("Due Date") < date(?, '-15 day')
            )
+           ${productFilter.clause}
          GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
          HAVING totalOutstanding > 0`,
       )
-      .all(todayKey, ...minDaysProducts, todayKey)
+      .all(todayKey, ...minDaysProducts, todayKey, ...productFilter.params)
   } catch (e) {
     console.error('[CRON] Collection arrears query failed:', e.message)
     throw e
@@ -999,10 +967,13 @@ async function runBodaCollectionArrearsSmsJob(slot) {
     const clientId = String(r.clientId || '').trim()
     if (!clientId) continue
 
-    // Dedupe per day+slot+client
+    // Dedupe once per client per calendar day (07:05 and 21:05 share the same cap)
     const exists = dbRW
-      .prepare('SELECT 1 FROM Collection_Arrears_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
-      .get(sendDate, slotNorm, clientId)
+      .prepare(
+        `SELECT 1 FROM Collection_Arrears_SMS_Log
+         WHERE send_date = ? AND client_id = ? AND status IN ('sent', 'skipped') LIMIT 1`,
+      )
+      .get(sendDate, clientId)
     if (exists) {
       skipped += 1
       continue
@@ -1051,6 +1022,15 @@ async function runBodaCollectionArrearsSmsJob(slot) {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
+  console.log('[SMS] Collection arrears job done:', {
+    sendDate,
+    slot: slotNorm,
+    products: String(process.env.COLLECTION_ARREARS_SMS_PRODUCTS || 'Zidisha Boda'),
+    attempted,
+    sent,
+    skipped,
+    errors,
+  })
   return { sendDate, slot: slotNorm, attempted, sent, skipped, errors }
 }
 
@@ -1059,6 +1039,7 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
   const slotNorm = String(slot || '07:05').trim() || '07:05'
   const limitSafe = Math.min(Math.max(Number(limit) || 200, 1), 1000)
   const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
+  const productFilter = getCollectionArrearsProductFilter()
 
   const templateRaw = String(process.env.COLLECTION_ARREARS_SMS_TEMPLATE || '').trim()
   const template =
@@ -1078,12 +1059,13 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
            LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
            OR date("Due Date") < date(?, '-15 day')
          )
+         ${productFilter.clause}
        GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
        HAVING totalOutstanding > 0
        ORDER BY totalOutstanding DESC
        LIMIT ?`,
     )
-    .all(sendDate, ...minDaysProducts, sendDate, limitSafe)
+    .all(sendDate, ...minDaysProducts, sendDate, ...productFilter.params, limitSafe)
 
   const out = []
   for (const r of rows) {
@@ -1099,8 +1081,11 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
       .replace(/\$\{totalOutstanding\}/g, String(totalOutstanding))
 
     const alreadySent = !!dbRW
-      .prepare('SELECT 1 FROM Collection_Arrears_SMS_Log WHERE send_date = ? AND slot = ? AND client_id = ? LIMIT 1')
-      .get(sendDate, slotNorm, clientId)
+      .prepare(
+        `SELECT 1 FROM Collection_Arrears_SMS_Log
+         WHERE send_date = ? AND client_id = ? AND status IN ('sent', 'skipped') LIMIT 1`,
+      )
+      .get(sendDate, clientId)
 
     if (!includeAlreadySent && alreadySent) continue
 
@@ -1117,7 +1102,143 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
     })
   }
 
-  return { sendDate, slot: slotNorm, count: out.length, items: out }
+  return {
+    sendDate,
+    slot: slotNorm,
+    count: out.length,
+    products: String(process.env.COLLECTION_ARREARS_SMS_PRODUCTS || 'Zidisha Boda'),
+    items: out,
+  }
+}
+
+/** Admin report: SMS log history, invalid numbers, and next-run eligibility counts. */
+function buildSmsAuditReport({ days = 30 } = {}) {
+  const daysSafe = Math.min(Math.max(Number(days) || 30, 7), 90)
+  const report = {
+    generatedAt: new Date().toISOString(),
+    days: daysSafe,
+    onfonConfigured: getOnfonConfigured(),
+    config: {
+      topUpMinPercentPaid: Number(process.env.TOPUP_MIN_PERCENT_PAID || 70),
+      collectionArrearsProducts: String(process.env.COLLECTION_ARREARS_SMS_PRODUCTS || 'Zidisha Boda'),
+    },
+    tables: {},
+    nextRunEstimates: {},
+  }
+
+  const tableExists = (name) => {
+    try {
+      return !!dbRW.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name)
+    } catch {
+      return false
+    }
+  }
+
+  const summarizeLog = (tableName) => {
+    if (!tableExists(tableName)) {
+      return { exists: false, dailySent: [], byDateSlotStatus: [], byStatus: [], invalidSentPhones: [], skippedReasons: [] }
+    }
+    const dailySent = dbRW
+      .prepare(
+        `SELECT send_date AS sendDate, COUNT(*) AS sent
+         FROM ${tableName} WHERE status = 'sent'
+           AND send_date >= date('now', ?)
+         GROUP BY send_date ORDER BY send_date DESC`,
+      )
+      .all(`-${daysSafe} days`)
+
+    const byDateSlotStatus = dbRW
+      .prepare(
+        `SELECT send_date AS sendDate, slot, status, COUNT(*) AS n
+         FROM ${tableName}
+         WHERE send_date >= date('now', ?)
+         GROUP BY send_date, slot, status
+         ORDER BY send_date DESC, slot, status`,
+      )
+      .all(`-${daysSafe} days`)
+
+    const byStatus = dbRW
+      .prepare(
+        `SELECT status, COUNT(*) AS n FROM ${tableName}
+         WHERE send_date >= date('now', ?) GROUP BY status ORDER BY n DESC`,
+      )
+      .all(`-${daysSafe} days`)
+
+    const sentPhones = dbRW
+      .prepare(
+        `SELECT phone, COUNT(*) AS n FROM ${tableName}
+         WHERE status = 'sent' AND send_date >= date('now', ?)
+         GROUP BY phone`,
+      )
+      .all(`-${daysSafe} days`)
+
+    const invalidSentPhones = []
+    let invalidSentCount = 0
+    for (const r of sentPhones) {
+      const norm = normalizeKenyanPhoneStrict(r.phone)
+      if (!norm) {
+        invalidSentCount += r.n
+        if (invalidSentPhones.length < 25) {
+          invalidSentPhones.push({ phone: r.phone, count: r.n })
+        }
+      }
+    }
+
+    const skippedReasons = dbRW
+      .prepare(
+        `SELECT COALESCE(response, status) AS reason, COUNT(*) AS n
+         FROM ${tableName}
+         WHERE status = 'skipped' AND send_date >= date('now', ?)
+         GROUP BY reason ORDER BY n DESC LIMIT 15`,
+      )
+      .all(`-${daysSafe} days`)
+
+    return {
+      exists: true,
+      dailySent,
+      byDateSlotStatus,
+      byStatus,
+      invalidSentCount,
+      invalidSentPhones,
+      skippedReasons,
+    }
+  }
+
+  report.tables.topUp = summarizeLog('TopUp_SMS_Log')
+  report.tables.collectionArrears = summarizeLog('Collection_Arrears_SMS_Log')
+
+  try {
+    const gs = dbRW.prepare(`SELECT COUNT(*) AS n FROM credit_scores_boda WHERE band IN ('Gold','Silver')`).get().n
+    let invalidPool = 0
+    const phones = dbRW.prepare(`SELECT phone FROM credit_scores_boda WHERE band IN ('Gold','Silver')`).all()
+    for (const r of phones) {
+      if (!normalizeKenyanPhoneStrict(r.phone)) invalidPool += 1
+    }
+    report.nextRunEstimates.topUp = {
+      goldSilverPool: gs,
+      invalidPhonesInPool: invalidPool,
+      note: 'Actual sends also require principal paid >= TOPUP_MIN_PERCENT_PAID and per-day slot dedupe',
+    }
+  } catch (e) {
+    report.nextRunEstimates.topUp = { error: e.message }
+  }
+
+  try {
+    const preview = buildBodaCollectionArrearsPreview({ limit: 5000, includeAlreadySent: false })
+    const withValidPhone = preview.items.filter((i) => normalizeKenyanPhoneStrict(i.phone)).length
+    const alreadySentToday = preview.items.filter((i) => i.alreadySent).length
+    report.nextRunEstimates.collectionArrears = {
+      eligibleClients: preview.count,
+      withValidMobile: withValidPhone,
+      alreadySentToday: alreadySentToday,
+      wouldAttemptNew: Math.max(0, withValidPhone - alreadySentToday),
+      products: preview.products,
+    }
+  } catch (e) {
+    report.nextRunEstimates.collectionArrears = { error: e.message }
+  }
+
+  return report
 }
 
 // Helper function to fetch with retry and timeout
@@ -2911,6 +3032,21 @@ app.get('/api/boda/repayments/daily', (req, res) => {
   }
 })
 
+// SMS audit: log totals, invalid numbers, next-run estimates (admin/superuser)
+app.get('/api/admin/sms/audit', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30'), 10) || 30, 7), 90)
+    res.json(buildSmsAuditReport({ days }))
+  } catch (e) {
+    console.error('[SMS Audit API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Preview: which clients would receive the arrears SMS (no sending)
 app.get('/api/boda/arrears-sms/preview', requireAuth, (req, res) => {
   try {
@@ -2951,6 +3087,41 @@ function ensureCreditIndexes() {
   try {
     dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_client ON zidisha_data("Client Id");`)
   } catch {}
+}
+
+/** Musoni Expected Matured On Date → SQLite date (DD/MM/YYYY or ISO). */
+function zidishaExpectedMaturityExpr(alias = 'z') {
+  const col = `${alias}."Expected Matured On Date"`
+  return `(
+    CASE
+      WHEN TRIM(COALESCE(${col}, '')) LIKE '__/__/____'
+        THEN date(
+          substr(TRIM(${col}), 7, 4) || '-' ||
+          substr(TRIM(${col}), 4, 2) || '-' ||
+          substr(TRIM(${col}), 1, 2)
+        )
+      ELSE date(TRIM(${col}))
+    END
+  )`
+}
+
+/**
+ * Client performance loan window.
+ * Default: only loans whose Expected Matured On Date is still in the future.
+ * includePastMaturity (All any %): also loans past that date but still owing.
+ */
+function zidishaActiveLoanForPerformanceWhere(alias = 'z', includePastMaturity = false) {
+  const mat = zidishaExpectedMaturityExpr(alias)
+  if (!includePastMaturity) {
+    return `${mat} > date('now')`
+  }
+  return `(
+    ${mat} > date('now')
+    OR (
+      ${mat} <= date('now')
+      AND CAST(${alias}."Total Outstanding Derived" AS REAL) > 1
+    )
+  )`
 }
 
 function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProducts = [] } = {}) {
@@ -3026,17 +3197,7 @@ function refreshCreditScoresForProduct(product, { scopeBranches = [], scopeProdu
         ON r.loan_id = z."Loan ID"
       WHERE z."Disbursed On Date" IS NOT NULL
         AND z."Loan ID" IS NOT NULL
-        AND (
-          CASE
-            WHEN TRIM(COALESCE(z."Expected Matured On Date", '')) LIKE '__/__/____'
-              THEN date(
-                substr(TRIM(z."Expected Matured On Date"), 7, 4) || '-' ||
-                substr(TRIM(z."Expected Matured On Date"), 4, 2) || '-' ||
-                substr(TRIM(z."Expected Matured On Date"), 1, 2)
-              )
-            ELSE date(TRIM(z."Expected Matured On Date"))
-          END
-        ) > date('now')
+        AND ${zidishaActiveLoanForPerformanceWhere('z', false)}
         ${productClause}
         ${branchClause}
     ),
@@ -3170,9 +3331,9 @@ app.get('/api/credit/client-performance', requireAuth, (req, res) => {
         ? new Set(allowedBranches.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
         : null
 
-    // Fast path: serve from precomputed table if present
+    // Fast path: precomputed table (in-term loans only). "All (any %)" needs past-maturity rows → live SQL.
     const tableName = product === 'boda' ? 'credit_scores_boda' : product === 'zidisha' ? 'credit_scores_zidisha' : 'credit_scores'
-    const pre = tryQueryCreditScoresTable(tableName, limit)
+    const pre = minPrincipalPaid > 0 ? tryQueryCreditScoresTable(tableName, limit) : null
     if (Array.isArray(pre)) {
       const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
       const clients = pre
@@ -3365,17 +3526,7 @@ WITH loan_window AS (
   FROM zidisha_data z
   WHERE z."Disbursed On Date" IS NOT NULL
     AND z."Loan ID"           IS NOT NULL
-    AND (
-      CASE
-        WHEN TRIM(COALESCE(z."Expected Matured On Date", '')) LIKE '__/__/____'
-          THEN date(
-            substr(TRIM(z."Expected Matured On Date"), 7, 4) || '-' ||
-            substr(TRIM(z."Expected Matured On Date"), 4, 2) || '-' ||
-            substr(TRIM(z."Expected Matured On Date"), 1, 2)
-          )
-        ELSE date(TRIM(z."Expected Matured On Date"))
-      END
-    ) > date('now')
+    AND ${zidishaActiveLoanForPerformanceWhere('z', minPrincipalPaid === 0)}
     ${productWhere}
 ),
 date_spine AS (
