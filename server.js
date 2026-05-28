@@ -7581,39 +7581,21 @@ app.get('/api/par/branches', async (req, res) => {
     // Aggregate by branch_code
     const openLoansMap = new Map()
     const pastMissedMap = new Map()
-    const par30Map = new Map()
-    const par60Map = new Map()
-    const par90Map = new Map()
-
-    const getPrincipal = (loan) => {
-      const rawPrincipal =
-        loan?.principal_balance_amount ??
-        loan?.PrincipalBalanceAmount ??
-        loan?.['principal_balance_amount'] ??
-        loan?.['Principal Balance Amount'] ??
-        loan?.['Principal Balance'] ??
-        0
-      const principal = typeof rawPrincipal === 'number' ? rawPrincipal : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
-      return principal
-    }
-
-    const getDaysPastDue = (loan) => {
-      const raw = loan?.days_past_due ?? loan?.DaysPastDue ?? loan?.['Days Past Due'] ?? loan?.days_past ?? loan?.DaysPast ?? loan?.['DaysPast'] ?? 0
-      const n = Number(String(raw).replace(/[^\d.-]/g, '')) || 0
-      return Number.isFinite(n) ? n : 0
-    }
 
     // Process open loans
     for (const row of openLoansRows) {
       const branchCode = row.branch_code
       try {
         const loan = JSON.parse(row.loan_data)
-        const principal = getPrincipal(loan)
-        const dpd = getDaysPastDue(loan)
+        const rawPrincipal =
+          loan.principal_balance_amount ??
+          loan.PrincipalBalanceAmount ??
+          loan['principal_balance_amount'] ??
+          loan['Principal Balance Amount'] ??
+          loan['Principal Balance'] ??
+          0
+        const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
         openLoansMap.set(branchCode, (openLoansMap.get(branchCode) || 0) + principal)
-        if (dpd >= 30) par30Map.set(branchCode, (par30Map.get(branchCode) || 0) + principal)
-        if (dpd >= 60) par60Map.set(branchCode, (par60Map.get(branchCode) || 0) + principal)
-        if (dpd >= 90) par90Map.set(branchCode, (par90Map.get(branchCode) || 0) + principal)
       } catch (e) {
         console.error(`Error parsing open loan for branch ${branchCode}:`, e.message)
       }
@@ -7648,22 +7630,13 @@ app.get('/api/par/branches', async (req, res) => {
       const openLoans = Number(openLoansMap.get(branchCode) || 0)
       const pastMissed = Number(pastMissedMap.get(branchCode) || 0)
       const parRate = openLoans > 0 ? (pastMissed / openLoans) * 100 : 0
-      const par30 = Number(par30Map.get(branchCode) || 0)
-      const par60 = Number(par60Map.get(branchCode) || 0)
-      const par90 = Number(par90Map.get(branchCode) || 0)
 
       branchData.push({
         code: branchCode,
         name: branch.name || branchCode,
         pastMissed: pastMissed,
         openLoans: openLoans,
-        parRate: parRate,
-        par30,
-        par60,
-        par90,
-        par30Rate: openLoans > 0 ? (par30 / openLoans) * 100 : 0,
-        par60Rate: openLoans > 0 ? (par60 / openLoans) * 100 : 0,
-        par90Rate: openLoans > 0 ? (par90 / openLoans) * 100 : 0,
+        parRate: parRate
       })
     }
 
