@@ -184,33 +184,32 @@ function LogbookPAR({ country }) {
     return () => clearInterval(interval)
   }, [loadHistory, loadBranchData, loadBorrowerData, loadLoanOfficers, loadLastRunTime])
 
-  const latestPastMissed = history.length
-    ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0)
-    : null
-  const latestOpenLoans = history.length
-    ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
-    : null
-
-  // For country pages, compute totals from branch-level PAR (already country-filtered by backend)
-  const countryTotals = useMemo(() => {
-    const open = Array.isArray(branchData)
-      ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
-      : 0
-    const missed = Array.isArray(branchData)
-      ? branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
-      : 0
-    return { openLoans: open, pastMissed: missed }
+  // Always compute totals from branch-level data (it is already country-filtered and branch-scoped by backend).
+  // This allows PAR 30/60/90 to be shown without changing the stored PAR history schema.
+  const scopedTotals = useMemo(() => {
+    const open = Array.isArray(branchData) ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0) : 0
+    const pastMissed = Array.isArray(branchData) ? branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0) : 0
+    const par30 = Array.isArray(branchData) ? branchData.reduce((sum, b) => sum + (Number(b.par30) || 0), 0) : 0
+    const par60 = Array.isArray(branchData) ? branchData.reduce((sum, b) => sum + (Number(b.par60) || 0), 0) : 0
+    const par90 = Array.isArray(branchData) ? branchData.reduce((sum, b) => sum + (Number(b.par90) || 0), 0) : 0
+    return { openLoans: open, pastMissed, par30, par60, par90 }
   }, [branchData])
 
-  const scopedOpenLoans = country ? countryTotals.openLoans : latestOpenLoans
-  const scopedPastMissed = country ? countryTotals.pastMissed : latestPastMissed
+  const parNowRate = useMemo(() => {
+    return scopedTotals.openLoans > 0 ? (scopedTotals.pastMissed / scopedTotals.openLoans) * 100 : null
+  }, [scopedTotals])
 
-  const par30Plus = useMemo(() => {
-    if (scopedPastMissed != null && scopedOpenLoans != null && scopedOpenLoans > 0) {
-      return ((scopedPastMissed / scopedOpenLoans) * 100).toFixed(1)
-    }
-    return null
-  }, [scopedPastMissed, scopedOpenLoans])
+  const par30Rate = useMemo(() => {
+    return scopedTotals.openLoans > 0 ? (scopedTotals.par30 / scopedTotals.openLoans) * 100 : null
+  }, [scopedTotals])
+
+  const par60Rate = useMemo(() => {
+    return scopedTotals.openLoans > 0 ? (scopedTotals.par60 / scopedTotals.openLoans) * 100 : null
+  }, [scopedTotals])
+
+  const par90Rate = useMemo(() => {
+    return scopedTotals.openLoans > 0 ? (scopedTotals.par90 / scopedTotals.openLoans) * 100 : null
+  }, [scopedTotals])
 
   const branchOptions = useMemo(() => {
     const options = [{ code: 'ALL', name: 'All Branches' }]
@@ -346,6 +345,13 @@ function LogbookPAR({ country }) {
       .sort((a, b) => a.day - b.day)
   }, [history, selectedMonth])
 
+  // Table-only formatter: show plain number (no "KES"/currency symbol), but still respect country FX conversion.
+  const formatAmountPlain = useCallback((amount) => {
+    const n = convert(amount)
+    const safe = Number.isFinite(n) ? n : 0
+    return safe.toLocaleString('en', { maximumFractionDigits: 0 })
+  }, [convert])
+
   return (
     <div className="space-y-6">
       <div>
@@ -441,23 +447,45 @@ function LogbookPAR({ country }) {
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">PAR </p>
-              {historyLoading ? (
+              <p className="text-sm font-medium text-gray-600">PAR</p>
+              {branchLoading ? (
                 <>
                   <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
                   <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
                 </>
               ) : (
                 <>
-              <p className="text-2xl font-bold text-gray-900">
-                {par30Plus != null ? `${par30Plus}%` : '—'}
-              </p>
-              {par30Plus != null && (
-                <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
+                  <p className="text-2xl font-bold text-gray-900">{parNowRate != null ? `${parNowRate.toFixed(1)}%` : '—'}</p>
+                  {parNowRate != null && (
+                    <p className="text-xs text-gray-500 mt-1">{formatMoney(scopedTotals.pastMissed)} / {formatMoney(scopedTotals.openLoans)}</p>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="p-3 rounded-lg bg-red-50 text-red-600">
+              <AlertTriangle size={24} />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-600">PAR 30+</p>
+              {branchLoading ? (
+                <>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-gray-900">{par30Rate != null ? `${par30Rate.toFixed(1)}%` : '—'}</p>
+                  {par30Rate != null && (
+                    <p className="text-xs text-gray-500 mt-1">{formatMoney(scopedTotals.par30)} / {formatMoney(scopedTotals.openLoans)}</p>
                   )}
                 </>
               )}
@@ -467,29 +495,51 @@ function LogbookPAR({ country }) {
             </div>
           </div>
         </div>
-        
+
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">Open Loans</p>
-              {(country ? branchLoading : historyLoading) ? (
+              <p className="text-sm font-medium text-gray-600">PAR 60+</p>
+              {branchLoading ? (
                 <>
                   <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
                 </>
               ) : (
                 <>
-              <p className="text-2xl font-bold text-gray-900">
-                {scopedOpenLoans != null ? formatMoney(scopedOpenLoans) : '—'}
-              </p>
-              {scopedOpenLoans != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
+                  <p className="text-2xl font-bold text-gray-900">{par60Rate != null ? `${par60Rate.toFixed(1)}%` : '—'}</p>
+                  {par60Rate != null && (
+                    <p className="text-xs text-gray-500 mt-1">{formatMoney(scopedTotals.par60)} / {formatMoney(scopedTotals.openLoans)}</p>
                   )}
                 </>
               )}
             </div>
-            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <TrendingUp size={24} />
+            <div className="p-3 rounded-lg bg-yellow-50 text-yellow-700">
+              <AlertTriangle size={24} />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-600">PAR 90+</p>
+              {branchLoading ? (
+                <>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-gray-900">{par90Rate != null ? `${par90Rate.toFixed(1)}%` : '—'}</p>
+                  {par90Rate != null && (
+                    <p className="text-xs text-gray-500 mt-1">{formatMoney(scopedTotals.par90)} / {formatMoney(scopedTotals.openLoans)}</p>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="p-3 rounded-lg bg-red-50 text-red-600">
+              <AlertTriangle size={24} />
             </div>
           </div>
         </div>
@@ -497,25 +547,25 @@ function LogbookPAR({ country }) {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">High Risk Loans</p>
-              {(country ? branchLoading : historyLoading) ? (
+              <p className="text-sm font-medium text-gray-600">Open Loans</p>
+              {branchLoading ? (
                 <>
                   <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-44"></div>
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40"></div>
                 </>
               ) : (
                 <>
               <p className="text-2xl font-bold text-gray-900">
-                    {scopedPastMissed != null ? formatMoney(scopedPastMissed) : '—'}
+                {formatMoney(scopedTotals.openLoans)}
               </p>
-              {scopedPastMissed != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
+              {(
+                <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
                   )}
                 </>
               )}
             </div>
-            <div className="p-3 rounded-lg bg-red-50 text-red-600">
-              <AlertTriangle size={24} />
+            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+              <TrendingUp size={24} />
             </div>
           </div>
         </div>
@@ -541,8 +591,12 @@ function LogbookPAR({ country }) {
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
                       <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Open Loans</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Past-Missed Repayment</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
                       <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR %</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30%</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -555,29 +609,51 @@ function LogbookPAR({ country }) {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatMoney(branch.openLoans)}
+                          {formatAmountPlain(branch.openLoans)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatMoney(branch.pastMissed)}
+                          {formatAmountPlain(branch.pastMissed || 0)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
+                          {formatAmountPlain(branch.par30 || 0)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
+                          {formatAmountPlain(branch.par60 || 0)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
+                          {formatAmountPlain(branch.par90 || 0)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <span
                             className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                              branch.parRate >= 10
+                              (branch.parRate ?? 0) >= 10
                                 ? 'bg-red-100 text-red-800'
-                                : branch.parRate >= 5
+                                : (branch.parRate ?? 0) >= 5
                                 ? 'bg-yellow-100 text-yellow-800'
                                 : 'bg-green-100 text-green-800'
                             }`}
                           >
-                            {branch.parRate.toFixed(1)}%
+                            {(branch.parRate ?? 0).toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                          <span
+                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                              (branch.par30Rate ?? branch.parRate) >= 10
+                                ? 'bg-red-100 text-red-800'
+                                : (branch.par30Rate ?? branch.parRate) >= 5
+                                ? 'bg-yellow-100 text-yellow-800'
+                                : 'bg-green-100 text-green-800'
+                            }`}
+                          >
+                            {(branch.par30Rate ?? branch.parRate).toFixed(1)}%
                           </span>
                         </td>
                       </tr>
                     ))}
                     {branchData.length === 0 && (
                       <tr>
-                        <td className="px-6 py-6 text-center text-gray-500" colSpan={4}>
+                        <td className="px-6 py-6 text-center text-gray-500" colSpan={8}>
                           No branch data available. Trigger a snapshot to fetch data.
                         </td>
                       </tr>
@@ -659,10 +735,10 @@ function LogbookPAR({ country }) {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatMoney(entry.openLoans)}
+                          {formatAmountPlain(entry.openLoans)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatMoney(entry.pastMissed)}
+                          {formatAmountPlain(entry.pastMissed)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <span
