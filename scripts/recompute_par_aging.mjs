@@ -2,13 +2,13 @@
  * Recompute PAR aging (par_30..par_90_plus) from stored Open_loans + Past_Missed_repayment for a snapshot time.
  * Usage: node scripts/recompute_par_aging.mjs [snapshot_time]
  */
-import Database from 'better-sqlite3'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import {
   backfillLoandiskLoanTableFromJson,
   buildLoandiskLoanSelectSql,
   ensureLoandiskLoanTableColumns,
+  openAppDbWrite,
   parseLoandiskLoanRecord,
 } from '../lib/loandiskLoanSchema.mjs'
 
@@ -58,9 +58,10 @@ function addParDelinquent(totals, loan, row) {
   else if (bucket === '90plus') totals.par90Plus += p
 }
 
-const db = new Database(dbPath)
+const db = openAppDbWrite(dbPath)
 const timeArg = process.argv[2]
 
+try {
 for (const table of ['Open_loans', 'Past_Missed_repayment']) {
   ensureLoandiskLoanTableColumns(db, table)
 }
@@ -130,5 +131,15 @@ console.log(`  PAR 60 (31-60d):  ${pct(totals.par60)}%`)
 console.log(`  PAR 90 (61-90d):  ${pct(totals.par90)}%`)
 console.log(`  PAR 90+ (91+d):   ${pct(totals.par90Plus)}%`)
 console.log(`  Missed rows: ${missedRows.length}`)
-
-db.close()
+} catch (e) {
+  if (e?.code === 'SQLITE_BUSY' || String(e?.message || '').includes('database is locked')) {
+    console.error(
+      '\nDatabase is locked — stop the running Node app, then re-run:\n' +
+        '  pm2 stop all   (or stop your Windows service / node server.js)\n' +
+        '  node scripts/recompute_par_aging.mjs\n',
+    )
+  }
+  throw e
+} finally {
+  db.close()
+}
