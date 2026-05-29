@@ -3,7 +3,7 @@
 
 phoenixcapital.nyamao.me {
     # Reverse proxy to Node.js backend
-    reverse_proxy localhost:3001 {
+    reverse_proxy localhost:3000 {
         # WebSocket support (if needed for SSE)
         header_up Connection "keep-alive"
     }
