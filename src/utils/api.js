@@ -13,6 +13,14 @@ function resolveDefaultBase() {
     // When served via HTTPS (Cloudflare Tunnel, production), reuse same origin to avoid mixed content
     return origin
   }
+  // Vite dev server (5173) — API runs on a separate port
+  if (hasWindow && window.location.port === '5173') {
+    return `http://${hostname}:3001`
+  }
+  // Production: Node serves dist + API on the same port (e.g. 3000)
+  if (hasWindow && origin) {
+    return origin
+  }
   return `http://${hostname}:3001`
 }
 

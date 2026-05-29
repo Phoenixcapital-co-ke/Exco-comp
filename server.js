@@ -16,7 +16,6 @@ import dotenv from 'dotenv'
 import axios from 'axios'
 import {
   ensureLoandiskLoanTableColumns,
-  dropLoandiskLoanDataColumn,
   insertLoandiskLoanRow,
   parseLoandiskLoanRecord,
   snapshotRowFromLoan,
@@ -164,15 +163,7 @@ dbRW.prepare(`
 `).run();
 ensureLoandiskLoanTableColumns(dbRW, 'Open_loans')
 ensureLoandiskLoanTableColumns(dbRW, 'Past_Missed_repayment')
-for (const t of ['Open_loans', 'Past_Missed_repayment']) {
-  try {
-    if (dropLoandiskLoanDataColumn(dbRW, t)) {
-      console.log(`Dropped loan_data column from ${t}`)
-    }
-  } catch (e) {
-    console.warn(`Could not drop loan_data from ${t}:`, e.message)
-  }
-}
+// Drop loan_data only via scripts/drop_loandisk_loan_data_column.mjs (not on every boot — blocks listen on large DBs).
 // History table: daily last record per Borrower Access ID for PAR
 dbRW.prepare(`
   CREATE TABLE IF NOT EXISTS PAR_Borrower_Access_History (
