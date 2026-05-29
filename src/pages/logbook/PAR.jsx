@@ -2,7 +2,22 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { AlertTriangle, TrendingUp, Loader2, Play } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
-import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+
+function parRateBadgeClass(rate) {
+  if (rate >= 10) return 'bg-red-100 text-red-800'
+  if (rate >= 5) return 'bg-yellow-100 text-yellow-800'
+  return 'bg-green-100 text-green-800'
+}
+
+function ParRateBadge({ rate }) {
+  const n = Number(rate) || 0
+  return (
+    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${parRateBadgeClass(n)}`}>
+      {n.toFixed(1)}%
+    </span>
+  )
+}
 
 function LogbookPAR({ country }) {
   const { convert, formatMoney } = useLogbookCurrency()
@@ -205,12 +220,63 @@ function LogbookPAR({ country }) {
   const scopedOpenLoans = country ? countryTotals.openLoans : latestOpenLoans
   const scopedPastMissed = country ? countryTotals.pastMissed : latestPastMissed
 
-  const par30Plus = useMemo(() => {
-    if (scopedPastMissed != null && scopedOpenLoans != null && scopedOpenLoans > 0) {
-      return ((scopedPastMissed / scopedOpenLoans) * 100).toFixed(1)
+  const parSummary = useMemo(() => {
+    const openFromBranches = Array.isArray(branchData)
+      ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
+      : 0
+    const open = openFromBranches > 0 ? openFromBranches : Number(scopedOpenLoans) || 0
+
+    if (Array.isArray(branchData) && branchData.length > 0 && open > 0) {
+      const par30 = branchData.reduce((sum, b) => sum + (Number(b.par30) || 0), 0)
+      const par60 = branchData.reduce((sum, b) => sum + (Number(b.par60) || 0), 0)
+      const par90 = branchData.reduce((sum, b) => sum + (Number(b.par90) || 0), 0)
+      const par90Plus = branchData.reduce((sum, b) => sum + (Number(b.par90Plus) || 0), 0)
+      const pastMissed = branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
+      const pct = (n) => (open > 0 ? (n / open) * 100 : 0)
+      return {
+        openLoans: open,
+        pastMissed,
+        par30Rate: pct(par30),
+        par60Rate: pct(par60),
+        par90Rate: pct(par90),
+        par90PlusRate: pct(par90Plus),
+        totalParRate: pct(pastMissed),
+      }
+    }
+
+    const h = history[0]
+    if (h && open > 0) {
+      const par30 = Number(h.par_30 ?? h.par30 ?? 0)
+      const par60 = Number(h.par_60 ?? h.par60 ?? 0)
+      const par90 = Number(h.par_90 ?? h.par90 ?? 0)
+      const par90Plus = Number(h.par_90_plus ?? h.par90Plus ?? 0)
+      const pastMissed = Number(h.Past_Arrears_missed ?? h.past_arrears_missed ?? scopedPastMissed ?? 0)
+      const pct = (n) => (open > 0 ? (n / open) * 100 : 0)
+      return {
+        openLoans: open,
+        pastMissed,
+        par30Rate: pct(par30),
+        par60Rate: pct(par60),
+        par90Rate: pct(par90),
+        par90PlusRate: pct(par90Plus),
+        totalParRate: pct(pastMissed),
+      }
+    }
+
+    if (scopedPastMissed != null && open > 0) {
+      const total = (scopedPastMissed / open) * 100
+      return {
+        openLoans: open,
+        pastMissed: scopedPastMissed,
+        par30Rate: 0,
+        par60Rate: 0,
+        par90Rate: 0,
+        par90PlusRate: 0,
+        totalParRate: total,
+      }
     }
     return null
-  }, [scopedPastMissed, scopedOpenLoans])
+  }, [branchData, history, scopedOpenLoans, scopedPastMissed])
 
   const branchOptions = useMemo(() => {
     const options = [{ code: 'ALL', name: 'All Branches' }]
@@ -441,81 +507,96 @@ function LogbookPAR({ country }) {
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">PAR </p>
-              {historyLoading ? (
-                <>
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-32"></div>
-                </>
+              <p className="text-sm font-medium text-gray-600">Total PAR</p>
+              {(country ? branchLoading : historyLoading) ? (
+                <div className="h-8 bg-gray-200 rounded animate-pulse mt-1" />
               ) : (
                 <>
-              <p className="text-2xl font-bold text-gray-900">
-                {par30Plus != null ? `${par30Plus}%` : '—'}
-              </p>
-              {par30Plus != null && (
-                <p className="text-xs text-gray-500 mt-1">Past-Missed / Open Loans</p>
-                  )}
+                  <p className="text-2xl font-bold text-gray-900">
+                    {parSummary != null ? `${parSummary.totalParRate.toFixed(1)}%` : '—'}
+                  </p>
                 </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
-              <AlertTriangle size={24} />
+              <AlertTriangle size={22} />
             </div>
           </div>
         </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+
+        {[
+          { key: 'par30Rate', label: 'PAR 30', color: 'bg-amber-50 text-amber-600' },
+          { key: 'par60Rate', label: 'PAR 60', color: 'bg-orange-50 text-orange-600' },
+          { key: 'par90Rate', label: 'PAR 90', color: 'bg-red-50 text-red-600' },
+          { key: 'par90PlusRate', label: 'PAR 90+', color: 'bg-rose-50 text-rose-700' },
+        ].map(({ key, label, color }) => (
+          <div key={key} className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-600">{label}</p>
+                {branchLoading ? (
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mt-1" />
+                ) : (
+                  <>
+                    <p className="text-2xl font-bold text-gray-900">
+                      {parSummary != null ? `${parSummary[key].toFixed(1)}%` : '—'}
+                    </p>
+                  </>
+                )}
+              </div>
+              <div className={`p-3 rounded-lg ${color}`}>
+                <AlertTriangle size={22} />
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
           <div className="flex items-center justify-between">
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-600">Open Loans</p>
               {(country ? branchLoading : historyLoading) ? (
                 <>
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1" />
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40" />
                 </>
               ) : (
                 <>
-              <p className="text-2xl font-bold text-gray-900">
-                {scopedOpenLoans != null ? formatMoney(scopedOpenLoans) : '—'}
-              </p>
-              {scopedOpenLoans != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Open loans snapshot</p>
-                  )}
+                  <p className="text-2xl font-bold text-gray-900">
+                    {scopedOpenLoans != null ? formatMoney(scopedOpenLoans) : '—'}
+                  </p>
                 </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <TrendingUp size={24} />
+              <TrendingUp size={22} />
             </div>
           </div>
         </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
           <div className="flex items-center justify-between">
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">High Risk Loans</p>
+              <p className="text-sm font-medium text-gray-600">At-Risk Balance</p>
               {(country ? branchLoading : historyLoading) ? (
                 <>
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1"></div>
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-44"></div>
+                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1" />
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-44" />
                 </>
               ) : (
                 <>
-              <p className="text-2xl font-bold text-gray-900">
+                  <p className="text-2xl font-bold text-gray-900">
                     {scopedPastMissed != null ? formatMoney(scopedPastMissed) : '—'}
-              </p>
-              {scopedPastMissed != null && (
-                <p className="text-xs text-gray-500 mt-1">Latest Past-Missed repayment snapshot</p>
-                  )}
+                  </p>
                 </>
               )}
             </div>
             <div className="p-3 rounded-lg bg-red-50 text-red-600">
-              <AlertTriangle size={24} />
+              <AlertTriangle size={22} />
             </div>
           </div>
         </div>
@@ -536,42 +617,32 @@ function LogbookPAR({ country }) {
                   <p className="text-sm">Loading branch data...</p>
                 </div>
               ) : (
-                <table className="min-w-full divide-y divide-gray-200">
+                <table className="min-w-full w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Open Loans</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Past-Missed Repayment</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR %</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Open Loans</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">At-Risk</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {branchData.map((branch) => (
                       <tr key={branch.code} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap">
+                        <td className="px-4 py-4 whitespace-nowrap">
                           <div>
                             <p className="text-sm font-medium text-gray-900">{branch.name}</p>
                             <p className="text-xs text-gray-500">{branch.code}</p>
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
+                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
                           {formatMoney(branch.openLoans)}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
+                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
                           {formatMoney(branch.pastMissed)}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                              branch.parRate >= 10
-                                ? 'bg-red-100 text-red-800'
-                                : branch.parRate >= 5
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : 'bg-green-100 text-green-800'
-                            }`}
-                          >
-                            {branch.parRate.toFixed(1)}%
-                          </span>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={branch.parRate} />
                         </td>
                       </tr>
                     ))}
@@ -620,22 +691,22 @@ function LogbookPAR({ country }) {
                 <p className="text-sm">Loading borrower access data...</p>
               </div>
             ) : (
-              <table className="min-w-full divide-y divide-gray-200">
+              <table className="min-w-full w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Loan Officer
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Open Loans
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Past-Missed Repayment
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      At-Risk
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      PAR %
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      PAR Rate
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Branches
                     </th>
                   </tr>
@@ -646,7 +717,7 @@ function LogbookPAR({ country }) {
                     const officerName = loanOfficerMap.get(officerId)
                     return (
                       <tr key={entry.officerId} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap">
+                        <td className="px-4 py-4 whitespace-nowrap">
                           <div>
                             <p className="text-sm font-medium text-gray-900">
                               {officerName || officerId || 'Unknown Officer'}
@@ -658,26 +729,16 @@ function LogbookPAR({ country }) {
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
+                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
                           {formatMoney(entry.openLoans)}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
+                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
                           {formatMoney(entry.pastMissed)}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                              entry.parRate >= 10
-                                ? 'bg-red-100 text-red-800'
-                                : entry.parRate >= 5
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : 'bg-green-100 text-green-800'
-                            }`}
-                          >
-                            {entry.parRate.toFixed(1)}%
-                          </span>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.parRate} />
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">
                           {entry.branches && entry.branches.length
                             ? entry.branches.map((code) => branchCodeToName.get(code) || code).join(', ')
                             : '—'}
@@ -702,10 +763,7 @@ function LogbookPAR({ country }) {
       {monthOptions.length > 0 && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend</h3>
-              <p className="text-sm text-gray-500">Latest daily snapshot of PAR 30+ for the selected month.</p>
-            </div>
+            <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend</h3>
             <div className="flex items-center gap-2">
               <label
                 htmlFor="par-month-filter"
@@ -772,6 +830,149 @@ function LogbookPAR({ country }) {
           )}
         </div>
       )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900">PAR Aging by Branch</h3>
+          </div>
+          <div className="flex-1 overflow-x-auto overflow-y-auto">
+            {branchLoading ? (
+              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
+                <Loader2 className="animate-spin mb-3" size={24} />
+                <p className="text-sm">Loading branch aging data...</p>
+              </div>
+            ) : (
+              <table className="min-w-[720px] w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90+</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {branchData.map((branch) => (
+                    <tr key={`aging-${branch.code}`} className="hover:bg-gray-50">
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{branch.name}</p>
+                          <p className="text-xs text-gray-500">{branch.code}</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <ParRateBadge rate={branch.par30Rate ?? 0} />
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <ParRateBadge rate={branch.par60Rate ?? 0} />
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <ParRateBadge rate={branch.par90Rate ?? 0} />
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <ParRateBadge rate={branch.par90PlusRate ?? 0} />
+                      </td>
+                    </tr>
+                  ))}
+                  {branchData.length === 0 && (
+                    <tr>
+                      <td className="px-6 py-6 text-center text-gray-500" colSpan={5}>
+                        No branch aging data. Trigger a snapshot to fetch data.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">PAR Aging per Borrower Access ID</h3>
+              <div className="flex items-center gap-2">
+                <label htmlFor="aging-borrower-branch-filter" className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Branch
+                </label>
+                <select
+                  id="aging-borrower-branch-filter"
+                  value={borrowerBranchFilter}
+                  onChange={(e) => setBorrowerBranchFilter(e.target.value)}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                >
+                  {branchOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="flex-1 overflow-x-auto overflow-y-auto">
+            {borrowerLoading ? (
+              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
+                <Loader2 className="animate-spin mb-3" size={24} />
+                <p className="text-sm">Loading officer aging data...</p>
+              </div>
+            ) : (
+              <table className="min-w-[720px] w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan Officer</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90+</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {filteredBorrowerData.map((entry) => {
+                    const officerId = String(entry.officerId ?? '')
+                    const officerName = loanOfficerMap.get(officerId)
+                    return (
+                      <tr key={`aging-${entry.officerId}`} className="hover:bg-gray-50">
+                        <td className="px-4 py-4 whitespace-nowrap">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">
+                              {officerName || officerId || 'Unknown Officer'}
+                            </p>
+                            {officerId && officerName && (
+                              <p className="text-xs text-gray-500">ID: {officerId}</p>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.par30Rate ?? 0} />
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.par60Rate ?? 0} />
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.par90Rate ?? 0} />
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.par90PlusRate ?? 0} />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {filteredBorrowerData.length === 0 && (
+                    <tr>
+                      <td className="px-6 py-6 text-center text-gray-500" colSpan={5}>
+                        No officer aging data. Trigger a snapshot to fetch data.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

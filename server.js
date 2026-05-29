@@ -14,6 +14,17 @@ import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
 import axios from 'axios'
+import {
+  ensureLoandiskLoanTableColumns,
+  dropLoandiskLoanDataColumn,
+  insertLoandiskLoanRow,
+  parseLoandiskLoanRecord,
+  snapshotRowFromLoan,
+  LOANDISK_LOAN_DB_COLUMNS,
+  LOANDISK_LOAN_ROW_SELECT,
+} from './lib/loandiskLoanSchema.mjs'
+
+const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
 dotenv.config()
 
@@ -128,13 +139,19 @@ try {
 } catch (e) {
   // Column already exists, ignore
 }
+for (const col of ['par_30', 'par_60', 'par_90', 'par_90_plus']) {
+  try {
+    dbRW.prepare(`ALTER TABLE PAR ADD COLUMN ${col} REAL`).run();
+  } catch (e) {
+    // already exists
+  }
+}
 // Create tables for branch-level loan data
 // Store full loan records as JSON with branch_code and timestamp
 dbRW.prepare(`
   CREATE TABLE IF NOT EXISTS Open_loans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     branch_code TEXT NOT NULL,
-    loan_data TEXT NOT NULL,
     time TEXT NOT NULL
   )
 `).run();
@@ -142,10 +159,20 @@ dbRW.prepare(`
   CREATE TABLE IF NOT EXISTS Past_Missed_repayment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     branch_code TEXT NOT NULL,
-    loan_data TEXT NOT NULL,
     time TEXT NOT NULL
   )
 `).run();
+ensureLoandiskLoanTableColumns(dbRW, 'Open_loans')
+ensureLoandiskLoanTableColumns(dbRW, 'Past_Missed_repayment')
+for (const t of ['Open_loans', 'Past_Missed_repayment']) {
+  try {
+    if (dropLoandiskLoanDataColumn(dbRW, t)) {
+      console.log(`Dropped loan_data column from ${t}`)
+    }
+  } catch (e) {
+    console.warn(`Could not drop loan_data from ${t}:`, e.message)
+  }
+}
 // History table: daily last record per Borrower Access ID for PAR
 dbRW.prepare(`
   CREATE TABLE IF NOT EXISTS PAR_Borrower_Access_History (
@@ -161,6 +188,13 @@ dbRW.prepare(`
     UNIQUE(officer_id, snapshot_date)
   )
 `).run();
+for (const col of ['par_30', 'par_60', 'par_90', 'par_90_plus']) {
+  try {
+    dbRW.prepare(`ALTER TABLE PAR_Borrower_Access_History ADD COLUMN ${col} REAL DEFAULT 0`).run();
+  } catch (e) {
+    // already exists
+  }
+}
 // Add indexes for faster queries on time/date columns
 try {
   dbRW.prepare('CREATE INDEX IF NOT EXISTS idx_open_loans_time ON Open_loans(time)').run();
@@ -1410,6 +1444,141 @@ async function fetchLoanPrincipalSum(branchCode, loanStatusId) {
   }
 
   return { sum: grandTotal, fetched, totalResults, loans: allLoans }
+}
+
+/** Principal balance from a Loandisk advanced_search_loans row. */
+function parseParLoanPrincipal(loan) {
+  const rawPrincipal =
+    loan?.principal_balance_amount ??
+    loan?.PrincipalBalanceAmount ??
+    loan?.['principal_balance_amount'] ??
+    loan?.['Principal Balance Amount'] ??
+    loan?.['Principal Balance'] ??
+    0
+  return typeof rawPrincipal === 'number'
+    ? rawPrincipal
+    : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+}
+
+/** Days past due from Loandisk loan row or flattened DB columns. */
+function parseParLoanDaysPastDue(loan, row) {
+  const candidates = [
+    row?.days_past_due,
+    loan?.days_past_due,
+    loan?.DaysPast,
+    loan?.days_past,
+    loan?.['Days Past Due'],
+    loan?.['Days Past Maturity'],
+    loan?.days_past_maturity,
+    loan?.daysPastMaturity,
+  ]
+  for (const c of candidates) {
+    if (c == null || c === '') continue
+    const n = Number(String(c).replace(/[^\d.-]/g, ''))
+    if (Number.isFinite(n)) return Math.max(0, Math.floor(n))
+  }
+  return null
+}
+
+/**
+ * PAR aging bucket from days_past_due on Past_Missed_repayment rows:
+ * PAR 30 = 1–30, PAR 60 = 31–60, PAR 90 = 61–90, PAR 90+ = 91+.
+ * Returns null if days missing or 0 (loan still counts in total PAR).
+ */
+function parAgingBucketFromDays(days) {
+  if (days == null || days < 1) return null
+  if (days <= 30) return 30
+  if (days <= 60) return 60
+  if (days <= 90) return 90
+  return '90plus'
+}
+
+function createParTotals() {
+  return {
+    openLoans: 0,
+    pastMissed: 0,
+    par30: 0,
+    par60: 0,
+    par90: 0,
+    par90Plus: 0,
+  }
+}
+
+function addParOpenLoan(totals, principal) {
+  const p = Number(principal) || 0
+  if (p > 0) totals.openLoans += p
+}
+
+function addParDelinquentLoan(totals, loan, row) {
+  const p = parseParLoanPrincipal(loan)
+  if (p <= 0) return
+  // Total PAR: all past-missed / arrears / past-maturity (no days_past_due filter)
+  totals.pastMissed += p
+  const days = parseParLoanDaysPastDue(loan, row)
+  const bucket = parAgingBucketFromDays(days)
+  if (bucket === 30) totals.par30 += p
+  else if (bucket === 60) totals.par60 += p
+  else if (bucket === 90) totals.par90 += p
+  else if (bucket === '90plus') totals.par90Plus += p
+}
+
+function finalizeParTotals(totals) {
+  const denom = totals.openLoans > 0 ? totals.openLoans : 0
+  const pct = (n) => (denom > 0 ? (n / denom) * 100 : 0)
+  return {
+    openLoans: totals.openLoans,
+    pastMissed: totals.pastMissed,
+    par30: totals.par30,
+    par60: totals.par60,
+    par90: totals.par90,
+    par90Plus: totals.par90Plus,
+    parRate: pct(totals.pastMissed),
+    par30Rate: pct(totals.par30),
+    par60Rate: pct(totals.par60),
+    par90Rate: pct(totals.par90),
+    par90PlusRate: pct(totals.par90Plus),
+  }
+}
+
+/** Aggregate PAR totals + per-branch from stored snapshot loan rows. */
+function aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows) {
+  const global = createParTotals()
+  const byBranch = new Map()
+
+  const branchTotals = (code) => {
+    const key = String(code || '').trim()
+    if (!byBranch.has(key)) byBranch.set(key, createParTotals())
+    return byBranch.get(key)
+  }
+
+  for (const row of openLoansRows || []) {
+    try {
+      const loan = parseLoandiskLoanRecord(row)
+      if (!loan) continue
+      const p = parseParLoanPrincipal(loan)
+      addParOpenLoan(global, p)
+      addParOpenLoan(branchTotals(row.branch_code), p)
+    } catch {
+      continue
+    }
+  }
+
+  for (const row of pastMissedRows || []) {
+    try {
+      const loan = parseLoandiskLoanRecord(row)
+      if (!loan) continue
+      addParDelinquentLoan(global, loan, row)
+      addParDelinquentLoan(branchTotals(row.branch_code), loan, row)
+    } catch {
+      continue
+    }
+  }
+
+  const branches = {}
+  for (const [code, t] of byBranch.entries()) {
+    branches[code] = finalizeParTotals(t)
+  }
+  return { global: finalizeParTotals(global), branches }
 }
 
 // Fetch collectors from Loandisk API for a specific branch
@@ -4532,7 +4701,7 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
       const latestTime = latestPar?.time
       if (latestTime) {
-        const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestTime)
         const portfolioMap = new Map()
         const accountCountMap = new Map()
         const customerSetMap = new Map()
@@ -4546,7 +4715,8 @@ app.get('/api/logbook/collector-performance', (req, res) => {
 
           let loan
           try {
-            loan = JSON.parse(row.loan_data)
+            loan = parseLoandiskLoanRecord(row)
+            if (!loan) continue
           } catch {
             continue
           }
@@ -4704,13 +4874,13 @@ app.get('/api/logbook/collector-performance', (req, res) => {
         const latestTime = latestPar?.time
         if (latestTime && effectiveBranches.length > 0) {
           const effectiveSet = new Set(effectiveBranches)
-          const openRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
-          const missedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+          const openRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestTime)
+          const missedRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`).all(latestTime)
           const addFromLoanData = (arr) => {
             for (const row of arr) {
               if (!effectiveSet.has(String(row.branch_code ?? '').trim())) continue
-              let loan
-              try { loan = JSON.parse(row.loan_data) } catch { continue }
+              let loan = parseLoandiskLoanRecord(row)
+              if (!loan) continue
               const ids = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
               for (const officerId of ids) {
                 const id = String(officerId || '').trim()
@@ -5885,25 +6055,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
           byCode.set(code, b)
         }
 
-        const rows = dbRW.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const rows = dbRW.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestTime)
         const sums = new Map()
         for (const r of rows) {
           const code = String(r.branch_code ?? '').trim()
           if (!code || !byCode.has(code)) continue // respect scope
-          let loan
-          try {
-            loan = JSON.parse(r.loan_data)
-          } catch {
-            continue
-          }
-          const rawPrincipal =
-            loan.principal_balance_amount ??
-            loan.PrincipalBalanceAmount ??
-            loan['principal_balance_amount'] ??
-            loan['Principal Balance Amount'] ??
-            loan['Principal Balance'] ??
-            0
-          const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+          const loan = parseLoandiskLoanRecord(r)
+          if (!loan) continue
+          const principal = parseParLoanPrincipal(loan)
           if (!principal) continue
           sums.set(code, (sums.get(code) || 0) + principal)
         }
@@ -5953,25 +6112,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
           if (!code) continue
           byCode.set(code, b)
         }
-        const rows = dbRW.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+        const rows = dbRW.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestTime)
         const sums = new Map()
         for (const r of rows) {
           const code = String(r.branch_code ?? '').trim()
           if (!code || !byCode.has(code)) continue
-          let loan
-          try {
-            loan = JSON.parse(r.loan_data)
-          } catch {
-            continue
-          }
-          const rawPrincipal =
-            loan.principal_balance_amount ??
-            loan.PrincipalBalanceAmount ??
-            loan['principal_balance_amount'] ??
-            loan['Principal Balance Amount'] ??
-            loan['Principal Balance'] ??
-            0
-          const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
+          const loan = parseLoandiskLoanRecord(r)
+          if (!loan) continue
+          const principal = parseParLoanPrincipal(loan)
           if (!principal) continue
           sums.set(code, (sums.get(code) || 0) + principal)
         }
@@ -7399,7 +7547,11 @@ app.get('/api/par', (req, res) => {
 
     // Default behavior (no country filter): return stored global totals.
     if (!countryParam) {
-    const rows = dbRW.prepare('SELECT time, Past_Arrears_missed, Open_loans FROM PAR ORDER BY time DESC').all()
+    const rows = dbRW.prepare(`
+      SELECT time, Past_Arrears_missed, Open_loans,
+             par_30, par_60, par_90, par_90_plus
+      FROM PAR ORDER BY time DESC
+    `).all()
       return res.json(rows)
     }
 
@@ -7420,7 +7572,8 @@ app.get('/api/par', (req, res) => {
     // This avoids scanning/parsing all loan-level records for every request.
     const rows = dbRW
       .prepare(`
-        SELECT snapshot_time, open_loans, past_missed, branches
+        SELECT snapshot_time, open_loans, past_missed, branches,
+               par_30, par_60, par_90, par_90_plus
         FROM PAR_Borrower_Access_History
         ORDER BY snapshot_time DESC
       `)
@@ -7448,9 +7601,21 @@ app.get('/api/par', (req, res) => {
       const open = Number(row.open_loans) || 0
       const missed = Number(row.past_missed) || 0
 
-      const existing = bySnapshot.get(snapshot) || { time: snapshot, Past_Arrears_missed: 0, Open_loans: 0 }
+      const existing = bySnapshot.get(snapshot) || {
+        time: snapshot,
+        Past_Arrears_missed: 0,
+        Open_loans: 0,
+        par_30: 0,
+        par_60: 0,
+        par_90: 0,
+        par_90_plus: 0,
+      }
       existing.Past_Arrears_missed += missed
       existing.Open_loans += open
+      existing.par_30 += Number(row.par_30) || 0
+      existing.par_60 += Number(row.par_60) || 0
+      existing.par_90 += Number(row.par_90) || 0
+      existing.par_90_plus += Number(row.par_90_plus) || 0
       bySnapshot.set(snapshot, existing)
     }
 
@@ -7532,6 +7697,54 @@ let parBranchesCache = { time: null, data: null }
 let parBorrowerAccessCache = { time: null, data: null }
 let parHistoryCountryCache = new Map()
 
+/** Past_Missed_repayment table layout + column list (Loandisk fields flattened). */
+app.get('/api/par/past-missed/schema', requireAuth, (req, res) => {
+  try {
+    const cols = dbRW.prepare(`PRAGMA table_info(Past_Missed_repayment)`).all()
+    res.json({
+      table: 'Past_Missed_repayment',
+      description:
+        'One row per past-missed/arrears/past-maturity loan per PAR snapshot. Loandisk fields stored in columns (no loan_data JSON blob).',
+      snapshotKeys: ['id', 'branch_code', 'time'],
+      loandiskColumns: LOANDISK_LOAN_DB_COLUMNS,
+      agingField: 'days_past_due',
+      delinquencyStatusFields: ['child_status_id', 'loan_status_id'],
+      sqliteColumns: cols.map((c) => ({ name: c.name, type: c.type, pk: c.pk })),
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Query past-missed loans as column rows (latest snapshot unless ?time=). */
+app.get('/api/par/past-missed/loans', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+    const limitRaw = Number(req.query.limit ?? 100)
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 100, 1), 5000)
+    const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+    const snapshotTime = req.query.time != null ? String(req.query.time).trim() : latestPar?.time
+    if (!snapshotTime) return res.json({ time: null, count: 0, rows: [] })
+
+    const selectCols = ['id', 'branch_code', 'time', ...LOANDISK_LOAN_DB_COLUMNS].join(', ')
+    const rows = branch
+      ? db
+          .prepare(
+            `SELECT ${selectCols} FROM Past_Missed_repayment WHERE time = ? AND branch_code = ? LIMIT ?`,
+          )
+          .all(snapshotTime, branch, limit)
+      : db.prepare(`SELECT ${selectCols} FROM Past_Missed_repayment WHERE time = ? LIMIT ?`).all(snapshotTime, limit)
+
+    res.json({ time: snapshotTime, branch: branch || null, count: rows.length, rows })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/par/branches', async (req, res) => {
   try {
     const effectiveBranches = getEffectiveLogbookBranches(req)
@@ -7575,50 +7788,10 @@ app.get('/api/par/branches', async (req, res) => {
     }
 
     // Read all loan records from saved tables
-    const openLoansRows = db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(snapshotTime)
-    const pastMissedRows = db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(snapshotTime)
+    const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(snapshotTime)
+    const pastMissedRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`).all(snapshotTime)
 
-    // Aggregate by branch_code
-    const openLoansMap = new Map()
-    const pastMissedMap = new Map()
-
-    // Process open loans
-    for (const row of openLoansRows) {
-      const branchCode = row.branch_code
-      try {
-        const loan = JSON.parse(row.loan_data)
-        const rawPrincipal =
-          loan.principal_balance_amount ??
-          loan.PrincipalBalanceAmount ??
-          loan['principal_balance_amount'] ??
-          loan['Principal Balance Amount'] ??
-          loan['Principal Balance'] ??
-          0
-        const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
-        openLoansMap.set(branchCode, (openLoansMap.get(branchCode) || 0) + principal)
-      } catch (e) {
-        console.error(`Error parsing open loan for branch ${branchCode}:`, e.message)
-      }
-    }
-
-    // Process past-missed loans
-    for (const row of pastMissedRows) {
-      const branchCode = row.branch_code
-      try {
-        const loan = JSON.parse(row.loan_data)
-        const rawPrincipal =
-          loan.principal_balance_amount ??
-          loan.PrincipalBalanceAmount ??
-          loan['principal_balance_amount'] ??
-          loan['Principal Balance Amount'] ??
-          loan['Principal Balance'] ??
-          0
-        const principal = Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
-        pastMissedMap.set(branchCode, (pastMissedMap.get(branchCode) || 0) + principal)
-      } catch (e) {
-        console.error(`Error parsing past-missed loan for branch ${branchCode}:`, e.message)
-      }
-    }
+    const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
 
     const branchData = []
 
@@ -7626,23 +7799,29 @@ app.get('/api/par/branches', async (req, res) => {
     for (const branch of activeBranches) {
       const branchCode = String(branch.code ?? '').trim()
       if (!branchCode) continue
-      
-      const openLoans = Number(openLoansMap.get(branchCode) || 0)
-      const pastMissed = Number(pastMissedMap.get(branchCode) || 0)
-      const parRate = openLoans > 0 ? (pastMissed / openLoans) * 100 : 0
+
+      const agg = branchParMap[branchCode] || finalizeParTotals(createParTotals())
 
       branchData.push({
         code: branchCode,
         name: branch.name || branchCode,
-        pastMissed: pastMissed,
-        openLoans: openLoans,
-        parRate: parRate
+        pastMissed: agg.pastMissed,
+        openLoans: agg.openLoans,
+        parRate: agg.parRate,
+        par30: agg.par30,
+        par60: agg.par60,
+        par90: agg.par90,
+        par90Plus: agg.par90Plus,
+        par30Rate: agg.par30Rate,
+        par60Rate: agg.par60Rate,
+        par90Rate: agg.par90Rate,
+        par90PlusRate: agg.par90PlusRate,
       })
     }
 
     // Sort by PAR rate descending
     branchData.sort((a, b) => b.parRate - a.parRate)
-    
+
     if (!requestedTime && !countryParam) {
       parBranchesCache = { time: latestPar.time, data: branchData }
     }
@@ -7680,11 +7859,11 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     // Load saved loan records for the snapshot
     let openLoansRows = branch 
-      ? db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ? AND branch_code = ?').all(latestTime, branch)
-      : db.prepare('SELECT branch_code, loan_data FROM Open_loans WHERE time = ?').all(latestTime)
+      ? db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ? AND branch_code = ?`).all(latestTime, branch)
+      : db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestTime)
     let pastMissedRows = branch
-      ? db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ? AND branch_code = ?').all(latestTime, branch)
-      : db.prepare('SELECT branch_code, loan_data FROM Past_Missed_repayment WHERE time = ?').all(latestTime)
+      ? db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ? AND branch_code = ?`).all(latestTime, branch)
+      : db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`).all(latestTime)
 
     if (countryParam && effectiveBranches.length > 0) {
       const effectiveSet = new Set(effectiveBranches)
@@ -7694,32 +7873,21 @@ app.get('/api/par/borrower-access', async (req, res) => {
 
     const officerMap = new Map()
 
-    // Optimized accumulation function with faster processing
-    const accumulateLoan = (rows, key) => {
+    const accumulateLoan = (rows, kind) => {
       for (const row of rows) {
         try {
-          // Fast JSON parse with early exit on error
           let loan
           try {
-            loan = JSON.parse(row.loan_data)
-          } catch (parseErr) {
-            continue // Skip invalid JSON silently
+            loan = parseLoandiskLoanRecord(row)
+            if (!loan) continue
+          } catch {
+            continue
           }
-          
+
           const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
           if (!borrowerAccessIds.length) continue
 
-          // Optimize principal extraction - check number type first
-          const rawPrincipal = loan.principal_balance_amount ?? 
-            loan.PrincipalBalanceAmount ??
-            loan['principal_balance_amount'] ??
-            loan['Principal Balance Amount'] ??
-                              loan['Principal Balance'] ?? 0
-          const principal = typeof rawPrincipal === 'number' 
-            ? rawPrincipal 
-            : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
-
-          // Early exit if principal is 0
+          const principal = parseParLoanPrincipal(loan)
           if (principal === 0) continue
 
           borrowerAccessIds.forEach((officerId) => {
@@ -7729,33 +7897,40 @@ app.get('/api/par/borrower-access', async (req, res) => {
             if (!officerMap.has(officerKey)) {
               officerMap.set(officerKey, {
                 officerId: officerKey,
-                openLoans: 0,
-                pastMissed: 0,
-                branches: new Set()
+                ...createParTotals(),
+                branches: new Set(),
               })
             }
 
             const entry = officerMap.get(officerKey)
-            entry[key] += principal
+            if (kind === 'open') addParOpenLoan(entry, principal)
+            else addParDelinquentLoan(entry, loan, row)
             entry.branches.add(row.branch_code)
           })
-        } catch (e) {
-          // Silently skip errors to avoid logging overhead
+        } catch {
           continue
         }
       }
     }
 
-    accumulateLoan(openLoansRows, 'openLoans')
-    accumulateLoan(pastMissedRows, 'pastMissed')
+    accumulateLoan(openLoansRows, 'open')
+    accumulateLoan(pastMissedRows, 'delinquent')
 
     const officerData = Array.from(officerMap.values()).map((entry) => {
-      const parRate = entry.openLoans > 0 ? (entry.pastMissed / entry.openLoans) * 100 : 0
+      const agg = finalizeParTotals(entry)
       return {
         officerId: entry.officerId,
-        openLoans: entry.openLoans,
-        pastMissed: entry.pastMissed,
-        parRate,
+        openLoans: agg.openLoans,
+        pastMissed: agg.pastMissed,
+        parRate: agg.parRate,
+        par30: agg.par30,
+        par60: agg.par60,
+        par90: agg.par90,
+        par90Plus: agg.par90Plus,
+        par30Rate: agg.par30Rate,
+        par60Rate: agg.par60Rate,
+        par90Rate: agg.par90Rate,
+        par90PlusRate: agg.par90PlusRate,
         branches: Array.from(entry.branches),
         snapshotTime: latestTime,
       }
@@ -7850,11 +8025,7 @@ async function executePARSnapshot() {
 
         // Store all past-missed loan records with branch_code
         for (const loan of pastMissed.loans || []) {
-          allPastMissedLoans.push({
-            branch_code: branchCode,
-            loan_data: JSON.stringify(loan),
-            time: null // Will be set later
-          })
+          allPastMissedLoans.push({ branch_code: branchCode, loan })
         }
 
         // Fetch open loans for this branch
@@ -7864,11 +8035,7 @@ async function executePARSnapshot() {
 
         // Store all open loan records with branch_code
         for (const loan of openLoans.loans || []) {
-          allOpenLoans.push({
-            branch_code: branchCode,
-            loan_data: JSON.stringify(loan),
-            time: null // Will be set later
-          })
+          allOpenLoans.push({ branch_code: branchCode, loan })
         }
 
         branchStats.push({
@@ -7910,57 +8077,61 @@ async function executePARSnapshot() {
     })
 
     const ts = getNairobiTime()
-    dbRW.prepare('INSERT INTO PAR (time, Past_Arrears_missed, Open_loans) VALUES (?, ?, ?)').run(ts, totalPastMissed, totalOpenLoans)
+    const parAgg = aggregateParFromSnapshotLoanRows(
+      allOpenLoans.map((r) => snapshotRowFromLoan(r.branch_code, r.loan)),
+      allPastMissedLoans.map((r) => snapshotRowFromLoan(r.branch_code, r.loan)),
+    )
+    dbRW
+      .prepare(
+        `INSERT INTO PAR (time, Past_Arrears_missed, Open_loans, par_30, par_60, par_90, par_90_plus)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        ts,
+        totalPastMissed,
+        totalOpenLoans,
+        parAgg.global.par30,
+        parAgg.global.par60,
+        parAgg.global.par90,
+        parAgg.global.par90Plus,
+      )
     
     // Save branch-level loan data to tables
     // Clear old records for this timestamp (in case of re-runs)
     dbRW.prepare('DELETE FROM Open_loans WHERE time = ?').run(ts)
     dbRW.prepare('DELETE FROM Past_Missed_repayment WHERE time = ?').run(ts)
     
-    // Insert all loan records
-    const insertOpenLoans = dbRW.prepare('INSERT INTO Open_loans (branch_code, loan_data, time) VALUES (?, ?, ?)')
-    const insertPastMissed = dbRW.prepare('INSERT INTO Past_Missed_repayment (branch_code, loan_data, time) VALUES (?, ?, ?)')
-    
-    // Save all open loan records
+    // Insert all loan records (flattened columns only)
     for (const loanRecord of allOpenLoans) {
-      insertOpenLoans.run(loanRecord.branch_code, loanRecord.loan_data, ts)
+      insertLoandiskLoanRow(dbRW, 'Open_loans', {
+        branch_code: loanRecord.branch_code,
+        time: ts,
+        loan: loanRecord.loan,
+      })
     }
-    
-    // Save all past-missed loan records
+
     for (const loanRecord of allPastMissedLoans) {
-      insertPastMissed.run(loanRecord.branch_code, loanRecord.loan_data, ts)
+      insertLoandiskLoanRow(dbRW, 'Past_Missed_repayment', {
+        branch_code: loanRecord.branch_code,
+        time: ts,
+        loan: loanRecord.loan,
+      })
     }
     
     // After saving loan-level data, also aggregate and persist per Borrower Access ID (officer) for history
     try {
       const officerMap = new Map()
 
-      const accumulateLoanForHistory = (records, key) => {
+      const accumulateLoanForHistory = (records, kind) => {
         for (const rec of records) {
           try {
-            let loan
-            try {
-              loan = JSON.parse(rec.loan_data)
-            } catch {
-              continue
-            }
+            const loan = rec.loan && typeof rec.loan === 'object' ? rec.loan : parseLoandiskLoanRecord(rec)
+            if (!loan) continue
 
             const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
             if (!borrowerAccessIds.length) continue
 
-            const rawPrincipal =
-              loan.principal_balance_amount ??
-              loan.PrincipalBalanceAmount ??
-              loan['principal_balance_amount'] ??
-              loan['Principal Balance Amount'] ??
-              loan['Principal Balance'] ??
-              0
-
-            const principal =
-              typeof rawPrincipal === 'number'
-                ? rawPrincipal
-                : Number(String(rawPrincipal).replace(/[^\d.-]/g, '')) || 0
-
+            const principal = parseParLoanPrincipal(loan)
             if (principal === 0) continue
 
             borrowerAccessIds.forEach((officerId) => {
@@ -7970,14 +8141,14 @@ async function executePARSnapshot() {
               if (!officerMap.has(officerKey)) {
                 officerMap.set(officerKey, {
                   officerId: officerKey,
-                  openLoans: 0,
-                  pastMissed: 0,
+                  ...createParTotals(),
                   branches: new Set(),
                 })
               }
 
               const entry = officerMap.get(officerKey)
-              entry[key] += principal
+              if (kind === 'open') addParOpenLoan(entry, principal)
+              else addParDelinquentLoan(entry, loan, snapshotRowFromLoan(rec.branch_code, loan))
               entry.branches.add(rec.branch_code)
             })
           } catch {
@@ -7986,8 +8157,8 @@ async function executePARSnapshot() {
         }
       }
 
-      accumulateLoanForHistory(allOpenLoans, 'openLoans')
-      accumulateLoanForHistory(allPastMissedLoans, 'pastMissed')
+      accumulateLoanForHistory(allOpenLoans, 'open')
+      accumulateLoanForHistory(allPastMissedLoans, 'delinquent')
 
       const snapshotDate = String(ts).slice(0, 10) // YYYY-MM-DD from ISO string
       const insertHist = dbRW.prepare(`
@@ -7998,6 +8169,10 @@ async function executePARSnapshot() {
           open_loans,
           past_missed,
           par_rate,
+          par_30,
+          par_60,
+          par_90,
+          par_90_plus,
           branches
         ) VALUES (
           @snapshot_time,
@@ -8006,6 +8181,10 @@ async function executePARSnapshot() {
           @open_loans,
           @past_missed,
           @par_rate,
+          @par_30,
+          @par_60,
+          @par_90,
+          @par_90_plus,
           @branches
         )
         ON CONFLICT(officer_id, snapshot_date) DO UPDATE SET
@@ -8013,19 +8192,27 @@ async function executePARSnapshot() {
           open_loans = excluded.open_loans,
           past_missed = excluded.past_missed,
           par_rate = excluded.par_rate,
+          par_30 = excluded.par_30,
+          par_60 = excluded.par_60,
+          par_90 = excluded.par_90,
+          par_90_plus = excluded.par_90_plus,
           branches = excluded.branches,
           created_at = CURRENT_TIMESTAMP
       `)
 
       for (const entry of officerMap.values()) {
-        const parRate = entry.openLoans > 0 ? (entry.pastMissed / entry.openLoans) * 100 : 0
+        const agg = finalizeParTotals(entry)
         insertHist.run({
           snapshot_time: ts,
           snapshot_date: snapshotDate,
           officer_id: entry.officerId,
-          open_loans: entry.openLoans,
-          past_missed: entry.pastMissed,
-          par_rate: parRate,
+          open_loans: agg.openLoans,
+          past_missed: agg.pastMissed,
+          par_rate: agg.parRate,
+          par_30: agg.par30,
+          par_60: agg.par60,
+          par_90: agg.par90,
+          par_90_plus: agg.par90Plus,
           branches: JSON.stringify(Array.from(entry.branches || [])),
         })
       }
