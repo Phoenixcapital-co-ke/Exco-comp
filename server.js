@@ -51,6 +51,14 @@ const events = new EventEmitter()
 const db = new Database('data/app.db', { readonly: true });
 // Separate write-enabled handle for inserts/updates
 const dbRW = new Database('data/app.db');
+try {
+  dbRW.pragma('journal_mode = WAL')
+  db.pragma('journal_mode = WAL')
+} catch {
+  // ignore if WAL unavailable
+}
+dbRW.pragma('busy_timeout = 60000')
+db.pragma('busy_timeout = 30000')
 
 // --- SMS log table (dedupe) ---
 dbRW.exec(`
@@ -5471,7 +5479,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       // Email always (when present) — helps non-Kenyan users
       if (emailNorm) {
         try {
-          const subject = 'Password reset code'
+    const subject = 'Password reset code'
           const text =
             `Your Phoenix Capital Dashboard password reset code is: ${code}\n\n` +
             `Valid for 15 minutes.\n\n` +
@@ -6382,7 +6390,7 @@ app.post('/api/users', async (req, res) => {
     const roleStr = String(role || 'user').trim().toLowerCase()
     const firstTimeCode = generateFirstTimeCode()
     const loginUrl = `${getAppBaseUrl()}/login`
-
+    
     // Insert user: active immediately; SMS delivers username + 5-digit code; optional email link for confirmation
     const result = dbRW
       .prepare(
@@ -6443,7 +6451,7 @@ app.post('/api/users', async (req, res) => {
         }
       }
     }
-
+    
     // If custom or manager role, save Boda branch permissions (required if any Boda page/module is assigned)
     if (roleStr === 'custom' || roleStr === 'manager') {
       const pagesArr = Array.isArray(allowedPages) ? allowedPages : []
@@ -6485,24 +6493,24 @@ app.post('/api/users', async (req, res) => {
     let emailSent = false
     let confirmUrl = ''
     if (emailNorm) {
-      const token = crypto.randomBytes(32).toString('hex')
-      const tokenHash = hashToken(token)
-      const expiresAt = addMinutesIso(60 * 24) // 24 hours
+    const token = crypto.randomBytes(32).toString('hex')
+    const tokenHash = hashToken(token)
+    const expiresAt = addMinutesIso(60 * 24) // 24 hours
       dbRW.prepare(`INSERT INTO Email_Verifications (user_id, token_hash, expires_at) VALUES (?, ?, ?)`).run(userId, tokenHash, expiresAt)
       confirmUrl = `${getAppBaseUrl()}/auth/confirm?token=${encodeURIComponent(token)}`
-      const subject = 'Confirm your account'
-      const text =
-        `Your Phoenix Capital Dashboard account was created.\n\n` +
+    const subject = 'Confirm your account'
+    const text =
+      `Your Phoenix Capital Dashboard account was created.\n\n` +
         `Please confirm your email and set your password using this link:\n${confirmUrl}\n\n` +
         `This link expires in 24 hours.\n\n` +
         `Login: ${loginUrl}\n` +
         `Username: ${String(username).trim()}\n` +
         `First-time code: ${firstTimeCode}\n\n` +
         `Use the first-time code as your password on first sign-in, then set a new password when prompted.`
-      const html =
-        `<p>Your Phoenix Capital Dashboard account was created.</p>` +
+    const html =
+      `<p>Your Phoenix Capital Dashboard account was created.</p>` +
         `<p>Please confirm your email and set your password:</p>` +
-        `<p><a href="${confirmUrl}">Confirm account</a></p>` +
+      `<p><a href="${confirmUrl}">Confirm account</a></p>` +
         `<p>This link expires in 24 hours.</p>` +
         `<p><b>Login:</b> ${loginUrl}<br/>` +
         `<b>Username:</b> ${String(username).trim()}<br/>` +
@@ -7790,7 +7798,7 @@ app.get('/api/par/branches', async (req, res) => {
     for (const branch of activeBranches) {
       const branchCode = String(branch.code ?? '').trim()
       if (!branchCode) continue
-
+      
       const agg = branchParMap[branchCode] || finalizeParTotals(createParTotals())
 
       branchData.push({
@@ -7812,9 +7820,9 @@ app.get('/api/par/branches', async (req, res) => {
 
     // Sort by PAR rate descending
     branchData.sort((a, b) => b.parRate - a.parRate)
-
+    
     if (!requestedTime && !countryParam) {
-      parBranchesCache = { time: latestPar.time, data: branchData }
+    parBranchesCache = { time: latestPar.time, data: branchData }
     }
 
     const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
@@ -7874,7 +7882,7 @@ app.get('/api/par/borrower-access', async (req, res) => {
           } catch {
             continue
           }
-
+          
           const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
           if (!borrowerAccessIds.length) continue
 
