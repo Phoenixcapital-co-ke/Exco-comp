@@ -51,8 +51,11 @@ if (Test-Path $envFile) {
     }
     Set-Content $envFile $content.TrimEnd() -Encoding UTF8 -NoNewline
     Add-Content $envFile '' -Encoding UTF8
-    pm2 restart exco-dashboard --update-env 2>$null
-    pm2 restart exco --update-env 2>$null
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    pm2 restart exco --update-env *> $null
+    if ($LASTEXITCODE -ne 0) { pm2 restart exco-dashboard --update-env *> $null }
+    $ErrorActionPreference = $prevEap
     Write-Host 'OK: .env updated for PORT, APP_BASE_URL, COOKIE_SECURE' -ForegroundColor Green
 }
 
