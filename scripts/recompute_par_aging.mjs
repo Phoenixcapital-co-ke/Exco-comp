@@ -6,15 +6,15 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import {
-  LOANDISK_LOAN_ROW_SELECT,
+  backfillLoandiskLoanTableFromJson,
+  buildLoandiskLoanSelectSql,
+  ensureLoandiskLoanTableColumns,
   parseLoandiskLoanRecord,
 } from '../lib/loandiskLoanSchema.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dbPath = path.join(__dirname, '..', 'data', 'app.db')
-const selectSql = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
-// Inline aggregation (mirrors server.js)
 function parseParLoanPrincipal(loan) {
   const raw =
     loan?.principal_balance_amount ??
@@ -60,6 +60,11 @@ function addParDelinquent(totals, loan, row) {
 
 const db = new Database(dbPath)
 const timeArg = process.argv[2]
+
+for (const table of ['Open_loans', 'Past_Missed_repayment']) {
+  ensureLoandiskLoanTableColumns(db, table)
+}
+
 const loanSnapshotTime = db.prepare('SELECT time FROM Open_loans ORDER BY time DESC LIMIT 1').get()?.time
 const latestParTime = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()?.time
 const snapshotTime = timeArg || loanSnapshotTime || latestParTime
@@ -69,9 +74,17 @@ if (!snapshotTime) {
   process.exit(1)
 }
 
-const openRows = db.prepare(`SELECT ${selectSql} FROM Open_loans WHERE time = ?`).all(snapshotTime)
+for (const table of ['Open_loans', 'Past_Missed_repayment']) {
+  const n = backfillLoandiskLoanTableFromJson(db, table, { time: snapshotTime })
+  if (n) console.log(`${table}: backfilled ${n} row(s) from loan_data @ ${snapshotTime}`)
+}
+
+const openSelect = buildLoandiskLoanSelectSql(db, 'Open_loans')
+const missedSelect = buildLoandiskLoanSelectSql(db, 'Past_Missed_repayment')
+
+const openRows = db.prepare(`SELECT ${openSelect} FROM Open_loans WHERE time = ?`).all(snapshotTime)
 const missedRows = db
-  .prepare(`SELECT ${selectSql} FROM Past_Missed_repayment WHERE time = ?`)
+  .prepare(`SELECT ${missedSelect} FROM Past_Missed_repayment WHERE time = ?`)
   .all(snapshotTime)
 
 const totals = createParTotals()
@@ -116,6 +129,6 @@ console.log(`  PAR 30 (1-30d):   ${pct(totals.par30)}%`)
 console.log(`  PAR 60 (31-60d):  ${pct(totals.par60)}%`)
 console.log(`  PAR 90 (61-90d):  ${pct(totals.par90)}%`)
 console.log(`  PAR 90+ (91+d):   ${pct(totals.par90Plus)}%`)
-console.log(`  Missed rows: ${missedRows.length}, with days_past_due in bucket: check DB`)
+console.log(`  Missed rows: ${missedRows.length}`)
 
 db.close()
