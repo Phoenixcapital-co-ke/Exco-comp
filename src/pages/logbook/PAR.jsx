@@ -847,6 +847,7 @@ function LogbookPAR({ country }) {
                 <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
@@ -861,6 +862,9 @@ function LogbookPAR({ country }) {
                           <p className="text-sm font-medium text-gray-900">{branch.name}</p>
                           <p className="text-xs text-gray-500">{branch.code}</p>
                         </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <ParRateBadge rate={branch.parRate ?? 0} />
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap text-right">
                         <ParRateBadge rate={branch.par30Rate ?? 0} />
@@ -878,7 +882,7 @@ function LogbookPAR({ country }) {
                   ))}
                   {branchData.length === 0 && (
                     <tr>
-                      <td className="px-6 py-6 text-center text-gray-500" colSpan={5}>
+                      <td className="px-6 py-6 text-center text-gray-500" colSpan={6}>
                         No branch aging data. Trigger a snapshot to fetch data.
                       </td>
                     </tr>
@@ -923,6 +927,7 @@ function LogbookPAR({ country }) {
                 <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan Officer</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
@@ -946,6 +951,9 @@ function LogbookPAR({ country }) {
                           </div>
                         </td>
                         <td className="px-4 py-4 whitespace-nowrap text-right">
+                          <ParRateBadge rate={entry.parRate ?? 0} />
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap text-right">
                           <ParRateBadge rate={entry.par30Rate ?? 0} />
                         </td>
                         <td className="px-4 py-4 whitespace-nowrap text-right">
@@ -962,7 +970,7 @@ function LogbookPAR({ country }) {
                   })}
                   {filteredBorrowerData.length === 0 && (
                     <tr>
-                      <td className="px-6 py-6 text-center text-gray-500" colSpan={5}>
+                      <td className="px-6 py-6 text-center text-gray-500" colSpan={6}>
                         No officer aging data. Trigger a snapshot to fetch data.
                       </td>
                     </tr>

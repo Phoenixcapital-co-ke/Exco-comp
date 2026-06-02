@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext.jsx'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { formatKES } from '../../utils/format.js'
 import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookWeeklyReportTemplate.js'
+import { DEFAULT_MAINTENANCE_MESSAGE } from '../../components/MaintenanceDownScreen.jsx'
 
 function DataOverview() {
   const [logs, setLogs] = useState([
@@ -14,6 +15,7 @@ function DataOverview() {
   const [error, setError] = useState(null)
   const [showSuccess, setShowSuccess] = useState(false)
   const [maintenance, setMaintenance] = useState(false)
+  const [maintenanceMessage, setMaintenanceMessage] = useState(DEFAULT_MAINTENANCE_MESSAGE)
   const [maintenanceLoading, setMaintenanceLoading] = useState(false)
   const [maintenanceError, setMaintenanceError] = useState(null)
   const [showDataManagement, setShowDataManagement] = useState(false)
@@ -135,9 +137,49 @@ function DataOverview() {
       if (!res.ok) throw new Error('Failed to fetch status')
       const data = await res.json()
       setMaintenance(Boolean(data.maintenance))
+      if (data.maintenanceMessage) {
+        setMaintenanceMessage(String(data.maintenanceMessage))
+      }
     } catch (e) {
       setMaintenanceError('Unable to load maintenance status')
     }
+  }
+
+  const postMaintenance = async ({ enabled, message }) => {
+    setMaintenanceLoading(true)
+    setMaintenanceError(null)
+    try {
+      const body = {}
+      if (typeof enabled === 'boolean') body.enabled = enabled
+      if (typeof message === 'string') body.message = message
+      const res = await fetch(API_URLS.system.maintenance, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        throw new Error(payload?.error || 'Failed to update maintenance mode')
+      }
+      const data = await res.json()
+      setMaintenance(Boolean(data.maintenance))
+      if (data.maintenanceMessage) {
+        setMaintenanceMessage(String(data.maintenanceMessage))
+      }
+    } catch (e) {
+      setMaintenanceError(e.message)
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }
+
+  const handleMaintenanceToggle = async (enabled) => {
+    await postMaintenance({ enabled, message: maintenanceMessage })
+  }
+
+  const handleMaintenanceMessageSave = async () => {
+    await postMaintenance({ message: maintenanceMessage })
   }
 
   useEffect(() => {
@@ -1340,29 +1382,6 @@ function DataOverview() {
     `
   }
 
-  const handleMaintenanceToggle = async (enabled) => {
-    setMaintenanceLoading(true)
-    setMaintenanceError(null)
-    try {
-      const res = await fetch(API_URLS.system.maintenance, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body?.error || 'Failed to update maintenance mode')
-      }
-      const data = await res.json()
-      setMaintenance(Boolean(data.maintenance))
-    } catch (e) {
-      setMaintenanceError(e.message)
-    } finally {
-      setMaintenanceLoading(false)
-    }
-  }
-
   return (
     <>
       {loading && (
@@ -1434,7 +1453,7 @@ function DataOverview() {
             </div>
             <div className="p-6">
               {user?.role?.toLowerCase() === 'superuser' && (
-                <div className="mb-6 pb-6 border-b border-gray-200">
+                <div className="mb-6 pb-6 border-b border-gray-200 space-y-4">
                   <div className="flex items-center justify-between flex-wrap gap-3">
                     <div className="text-sm">
                       <div className="font-semibold text-gray-800">Maintenance mode</div>
@@ -1452,8 +1471,36 @@ function DataOverview() {
                       {maintenanceLoading ? 'Updating...' : maintenance ? 'Disable' : 'Enable'}
                     </button>
                   </div>
+                  <div>
+                    <label htmlFor="maintenance-message" className="block text-sm font-semibold text-gray-800 mb-1">
+                      Error message shown to users
+                    </label>
+                    <p className="text-xs text-gray-500 mb-2">
+                      When maintenance is on, all non-superusers see a blank white screen with this message only.
+                    </p>
+                    <textarea
+                      id="maintenance-message"
+                      rows={3}
+                      maxLength={500}
+                      value={maintenanceMessage}
+                      onChange={(e) => setMaintenanceMessage(e.target.value)}
+                      placeholder={DEFAULT_MAINTENANCE_MESSAGE}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono text-gray-800 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
+                      <span className="text-xs text-gray-400">{maintenanceMessage.length}/500</span>
+                      <button
+                        type="button"
+                        onClick={handleMaintenanceMessageSave}
+                        disabled={maintenanceLoading || !maintenanceMessage.trim()}
+                        className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 bg-white text-gray-800 hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        Save message
+                      </button>
+                    </div>
+                  </div>
                   {maintenanceError && (
-                    <div className="mt-3 text-sm text-red-600">{maintenanceError}</div>
+                    <div className="text-sm text-red-600">{maintenanceError}</div>
                   )}
                 </div>
               )}

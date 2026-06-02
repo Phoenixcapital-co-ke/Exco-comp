@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar.jsx'
 import Header from './Header.jsx'
+import MaintenanceDownScreen, { DEFAULT_MAINTENANCE_MESSAGE } from './MaintenanceDownScreen.jsx'
 import { useBreakpoint } from '../hooks/useBreakpoint.js'
 import { useInactivityLogout } from '../hooks/useInactivityLogout.js'
 import { API_URLS } from '../utils/api.js'
@@ -15,6 +16,7 @@ function Layout({ children }) {
   const isDesktop = useBreakpoint(DESKTOP_BREAKPOINT)
   const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop)
   const [maintenance, setMaintenance] = useState(false)
+  const [maintenanceMessage, setMaintenanceMessage] = useState(DEFAULT_MAINTENANCE_MESSAGE)
   const [statusLoading, setStatusLoading] = useState(true)
   const location = useLocation()
   const { user, isLoading } = useAuth()
@@ -36,6 +38,9 @@ function Layout({ children }) {
         const data = await res.json()
         if (!cancelled) {
           setMaintenance(Boolean(data.maintenance))
+          if (data.maintenanceMessage) {
+            setMaintenanceMessage(String(data.maintenanceMessage))
+          }
         }
       } catch {
         if (!cancelled) {
@@ -59,53 +64,16 @@ function Layout({ children }) {
   const normalizedRole = String(user?.role || '').toLowerCase()
   const isSuperuser = normalizedRole === 'superuser'
   const isLoggedIn = !!user
-  const isOnLoginPage = location.pathname === '/login'
-  const isOnSuperuserPage = location.pathname === '/done'
+  const isOnSuperuserLoginPage = location.pathname === '/done'
   const isAuthFlowRoute = location.pathname.startsWith('/auth/')
   const isClientPerformanceRoute =
     location.pathname === '/boda/client-performance' || location.pathname === '/zidisha/client-performance'
 
-  // Show maintenance screen on /login when maintenance is ON (even if not logged in)
-  if (!statusLoading && maintenance && isOnLoginPage && !isLoggedIn) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center px-6">
-        <div className="max-w-xl w-full text-left text-gray-900">
-          <div className="mb-6 text-6xl leading-none select-none text-gray-400">:(</div>
-          <h1 className="text-2xl font-normal mb-3">This site can’t be reached</h1>
-          <p className="text-sm text-gray-700 mb-4">
-            <span className="font-mono">localhost</span> refused to connect.
-          </p>
-          <p className="text-sm text-gray-700 mb-1">Try:</p>
-          <ul className="list-disc list-inside text-sm text-gray-700 mb-4 space-y-0.5">
-            <li>Checking the connection</li>
-            <li>Checking the proxy and the firewall</li>
-          </ul>
-          <p className="text-xs text-gray-500 font-mono">ERR_CONNECTION_REFUSED</p>
-        </div>
-      </div>
-    )
-  }
-
-  // During maintenance, block all logged-in non-superusers with the
-  // connection-refused style page. /done route is always accessible for superuser login.
-  if (!statusLoading && maintenance && isLoggedIn && !isSuperuser) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center px-6">
-        <div className="max-w-xl w-full text-left text-gray-900">
-          <div className="mb-6 text-6xl leading-none select-none text-gray-400">:(</div>
-          <h1 className="text-2xl font-normal mb-3">This site can’t be reached</h1>
-          <p className="text-sm text-gray-700 mb-4">
-            <span className="font-mono">localhost</span> refused to connect.
-          </p>
-          <p className="text-sm text-gray-700 mb-1">Try:</p>
-          <ul className="list-disc list-inside text-sm text-gray-700 mb-4 space-y-0.5">
-            <li>Checking the connection</li>
-            <li>Checking the proxy and the firewall</li>
-          </ul>
-          <p className="text-xs text-gray-500 font-mono">ERR_CONNECTION_REFUSED</p>
-        </div>
-      </div>
-    )
+  // During maintenance: blank white crash screen for everyone except logged-in superusers
+  // and visitors on /done (superuser login entry).
+  const bypassMaintenance = isSuperuser || (isOnSuperuserLoginPage && !isLoggedIn)
+  if (!statusLoading && maintenance && !bypassMaintenance) {
+    return <MaintenanceDownScreen message={maintenanceMessage} />
   }
 
   if (NO_CHROME_ROUTES.includes(location.pathname) || isAuthFlowRoute) {

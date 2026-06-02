@@ -443,6 +443,15 @@ const setSetting = (key, value) => {
 
 const isMaintenanceEnabled = () => String(getSetting('maintenance_mode', '0')) === '1'
 
+const MAINTENANCE_MESSAGE_KEY = 'maintenance_display_message'
+const DEFAULT_MAINTENANCE_MESSAGE = 'A Fatal Exception 0D has occurred on 098B:00000218'
+
+const getMaintenanceDisplayMessage = () => {
+  const raw = getSetting(MAINTENANCE_MESSAGE_KEY, DEFAULT_MAINTENANCE_MESSAGE)
+  const trimmed = String(raw || '').trim()
+  return trimmed || DEFAULT_MAINTENANCE_MESSAGE
+}
+
 const signAuthToken = (user) =>
   jwt.sign(
     {
@@ -8290,7 +8299,10 @@ app.get('/api/data/last-refresh', (req, res) => {
 // System maintenance status (public)
 app.get('/api/system/status', (req, res) => {
   try {
-    res.json({ maintenance: isMaintenanceEnabled() })
+    res.json({
+      maintenance: isMaintenanceEnabled(),
+      maintenanceMessage: getMaintenanceDisplayMessage(),
+    })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -9119,10 +9131,20 @@ app.post('/api/system/maintenance', (req, res) => {
     if (!isSuperuser) {
       return res.status(403).json({ error: 'Forbidden' })
     }
-    const { enabled } = req.body || {}
-    const flag = enabled ? '1' : '0'
-    setSetting('maintenance_mode', flag)
-    res.json({ maintenance: flag === '1' })
+    const { enabled, message } = req.body || {}
+    if (typeof message === 'string') {
+      const trimmed = message.trim().slice(0, 500)
+      if (trimmed) {
+        setSetting(MAINTENANCE_MESSAGE_KEY, trimmed)
+      }
+    }
+    if (typeof enabled === 'boolean') {
+      setSetting('maintenance_mode', enabled ? '1' : '0')
+    }
+    res.json({
+      maintenance: isMaintenanceEnabled(),
+      maintenanceMessage: getMaintenanceDisplayMessage(),
+    })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
