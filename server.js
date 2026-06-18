@@ -2536,6 +2536,159 @@ app.get('/api/zidisha/data', requireAuth, (req, res) => {
   }
 })
 
+const ZIDISHA_CORE_PRODUCTS = [
+  'Zidisha Kifaru',
+  'Zidisha Nyati',
+  'Zidisha Simba',
+  'Zidisha Tembo',
+  'Zidisha Express',
+]
+
+function aggregateMtdBranchOfficerRows(flatRows, { targetRate = 0.95 } = {}) {
+  const byBranch = new Map()
+  for (const r of flatRows) {
+    const b = String(r.branch || '').trim() || 'Unknown'
+    const bKey = b.toLowerCase()
+    if (!bKey || bKey === 'unknown' || bKey === 'advans branch') continue
+
+    const officer = String(r.officer || 'Unknown').trim() || 'Unknown'
+    const expected = Number(r.expected || 0)
+    const collected =
+      r.collected != null
+        ? Number(r.collected || 0)
+        : Math.max(0, expected - Number(r.outstanding || 0))
+
+    if (!byBranch.has(b)) {
+      byBranch.set(b, { branch: b, expected: 0, outstanding: 0, collected: 0, officers: new Map() })
+    }
+    const branchEntry = byBranch.get(b)
+    branchEntry.expected += expected
+    branchEntry.collected += collected
+    branchEntry.outstanding += Number(r.outstanding || 0)
+
+    if (!branchEntry.officers.has(officer)) {
+      branchEntry.officers.set(officer, { officer, expected: 0, outstanding: 0, collected: 0 })
+    }
+    const officerEntry = branchEntry.officers.get(officer)
+    officerEntry.expected += expected
+    officerEntry.collected += collected
+    officerEntry.outstanding += Number(r.outstanding || 0)
+  }
+
+  return Array.from(byBranch.values())
+    .map((x) => {
+      const collected = Math.max(0, x.collected)
+      const ratePercent = x.expected > 0 ? (collected / x.expected) * 100 : 0
+      const targetGap = x.expected > 0 ? Math.max(0, targetRate * x.expected - collected) : 0
+      const officers = Array.from(x.officers.values())
+        .map((o) => {
+          const oCollected = Math.max(0, o.collected)
+          const oRate = o.expected > 0 ? (oCollected / o.expected) * 100 : 0
+          return {
+            officer: o.officer,
+            expected: o.expected,
+            outstanding: o.outstanding,
+            collected: oCollected,
+            ratePercent: oRate,
+            targetGap: o.expected > 0 ? Math.max(0, targetRate * o.expected - oCollected) : 0,
+          }
+        })
+        .sort((a, b) => {
+          if (b.ratePercent === a.ratePercent) return b.collected - a.collected
+          return b.ratePercent - a.ratePercent
+        })
+      return {
+        branch: x.branch,
+        expected: x.expected,
+        outstanding: x.outstanding,
+        collected,
+        ratePercent,
+        targetGap,
+        officers,
+      }
+    })
+    .sort((a, b) => {
+      if (b.ratePercent === a.ratePercent) return b.collected - a.collected
+      return b.ratePercent - a.ratePercent
+    })
+}
+
+// Zidisha productivity: MTD collection by branch + loan officer (single aggregated query)
+app.get('/api/zidisha/productivity/mtd-by-branch-officers', requireAuth, (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const cutoffDayRaw =
+      req.query.cutoffDay != null && String(req.query.cutoffDay).trim() !== ''
+        ? Number(req.query.cutoffDay)
+        : null
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (cutoffDayRaw == null || !Number.isFinite(cutoffDayRaw) || cutoffDayRaw < 1 || cutoffDayRaw > 31) {
+      return res.status(400).json({ error: 'cutoffDay (1-31) is required' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+    const maturity = zidishaExpectedMaturityExpr('z')
+
+    const allowed = getAllowedZidishaBranches(req)
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    if (authRole === 'custom' && allowed.length === 0) {
+      return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+    }
+
+    const where = [
+      `z."Product Name" COLLATE NOCASE IN (${ZIDISHA_CORE_PRODUCTS.map(() => '?').join(', ')})`,
+      `z."Branch Name" COLLATE NOCASE != ?`,
+      `${maturity} >= date(?)`,
+      `${maturity} < date(?)`,
+      `CAST(strftime('%d', ${maturity}) AS INTEGER) <= ?`,
+    ]
+    const params = [...ZIDISHA_CORE_PRODUCTS, 'Advans Branch', monthStart, monthEnd, cutoffDayRaw]
+
+    if (allowed.length > 0) {
+      if (branch && branch.toLowerCase() !== 'all') {
+        const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()))
+        if (!allowedNorm.has(branch.toLowerCase())) {
+          return res.status(403).json({ error: 'Branch not allowed for this user' })
+        }
+        where.push('z."Branch Name" COLLATE NOCASE = ?')
+        params.push(branch.trim())
+      } else {
+        where.push(`z."Branch Name" COLLATE NOCASE IN (${allowed.map(() => '?').join(', ')})`)
+        params.push(...allowed.map((b) => String(b || '').trim()))
+      }
+    } else if (branch && branch.toLowerCase() !== 'all') {
+      where.push('z."Branch Name" COLLATE NOCASE = ?')
+      params.push(branch.trim())
+    }
+
+    const rows = db
+      .prepare(
+        `SELECT
+           TRIM(z."Branch Name") AS branch,
+           TRIM(COALESCE(z."Loan Officer Name", 'Unknown')) AS officer,
+           COALESCE(CAST(z."Total Expected Repayment Derived" AS REAL), 0) AS expected,
+           COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0) AS collected
+         FROM zidisha_data z
+         WHERE ${where.join(' AND ')}`,
+      )
+      .all(...params)
+
+    const result = aggregateMtdBranchOfficerRows(rows, { targetRate: 0.95 })
+    res.json({ rows: result })
+  } catch (e) {
+    console.error('[Zidisha Productivity MTD API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Report generation endpoint - processes data and returns aggregated monthly report
 app.post('/api/reports/generate', requireAuth, async (req, res) => {
   try {
@@ -3263,6 +3416,17 @@ function ensureCreditIndexes() {
   } catch {}
   try {
     dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_zidisha_client ON zidisha_data("Client Id");`)
+  } catch {}
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_due ON boda_Schedule("Due Date");`)
+  } catch {}
+  try {
+    dbRW.exec(`CREATE INDEX IF NOT EXISTS idx_boda_schedule_loan ON boda_Schedule("Loan Id");`)
+  } catch {}
+  try {
+    dbRW.exec(
+      `CREATE INDEX IF NOT EXISTS idx_boda_schedule_product_due ON boda_Schedule("Product Name", "Due Date");`,
+    )
   } catch {}
 }
 
@@ -4290,6 +4454,74 @@ app.get('/api/boda/schedule/mtd-by-branch', requireAuth, (req, res) => {
     res.json({ rows: result })
   } catch (e) {
     console.error('[Boda Schedule MTD By Branch API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Boda schedule MTD by branch + loan officer (joins zidisha_data for officer name)
+app.get('/api/boda/schedule/mtd-by-branch-officers', requireAuth, (req, res) => {
+  try {
+    const productName = 'Zidisha Boda'
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const cutoffDayRaw = req.query.cutoffDay != null && String(req.query.cutoffDay).trim() !== '' ? Number(req.query.cutoffDay) : null
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (cutoffDayRaw == null || !Number.isFinite(cutoffDayRaw) || cutoffDayRaw < 1 || cutoffDayRaw > 31) {
+      return res.status(400).json({ error: 'cutoffDay (1-31) is required' })
+    }
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const where = [
+      `s."Due Date" >= ?`,
+      `s."Due Date" < ?`,
+      `COALESCE(TRIM(s."Product Name"), '') COLLATE NOCASE = ?`,
+      `CAST(strftime('%d', s."Due Date") AS INTEGER) <= ?`,
+    ]
+    const params = [monthStart, monthEnd, productName, cutoffDayRaw]
+
+    if (branch && branch.toLowerCase() !== 'all') {
+      where.push('s."Branch Name" COLLATE NOCASE = ?')
+      params.push(branch.trim())
+    } else if (allowedBoda.length > 0) {
+      where.push(`s."Branch Name" COLLATE NOCASE IN (${allowedBoda.map(() => '?').join(', ')})`)
+      params.push(...allowedBoda.map((b) => String(b || '').trim()))
+    }
+
+    const flatRows = db
+      .prepare(
+        `SELECT
+           TRIM(s."Branch Name") AS branch,
+           TRIM(COALESCE(z."Loan Officer Name", 'Unknown')) AS officer,
+           COALESCE(CAST(REPLACE(s."Total Expected", ',', '') AS REAL), 0) AS expected,
+           COALESCE(CAST(REPLACE(s."Total Outstanding", ',', '') AS REAL), 0) AS outstanding
+         FROM boda_Schedule s
+         LEFT JOIN zidisha_data z
+           ON TRIM(s."Loan Id") = TRIM(z."Loan ID")
+         WHERE ${where.join(' AND ')}`,
+      )
+      .all(...params)
+
+    const result = aggregateMtdBranchOfficerRows(flatRows, { targetRate: 0.97 })
+    res.json({ rows: result })
+  } catch (e) {
+    console.error('[Boda Schedule MTD By Branch Officers API] Error:', e)
     res.status(500).json({ error: e.message })
   }
 })

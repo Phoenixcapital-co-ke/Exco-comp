@@ -42,6 +42,7 @@ export const API_URLS = {
     data: `${API_BASE}/api/zidisha/data`,
     branches: `${API_BASE}/api/zidisha/branches`,
     branchesAll: `${API_BASE}/api/zidisha/branches/all`,
+    productivityMtdByBranchOfficers: `${API_BASE}/api/zidisha/productivity/mtd-by-branch-officers`,
   },
   boda: {
     repayments: `${API_BASE}/api/boda/repayments`,
@@ -53,6 +54,7 @@ export const API_URLS = {
     scheduleBranchSummary: `${API_BASE}/api/boda/schedule/branch-summary`,
     scheduleSummary: `${API_BASE}/api/boda/schedule/summary`,
     scheduleMtdByBranch: `${API_BASE}/api/boda/schedule/mtd-by-branch`,
+    scheduleMtdByBranchOfficers: `${API_BASE}/api/boda/schedule/mtd-by-branch-officers`,
     scheduleDaily: `${API_BASE}/api/boda/schedule/daily`,
   },
   events: `${API_BASE}/api/events`,

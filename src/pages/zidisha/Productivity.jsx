@@ -1,87 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Activity, Users, Target, Award, ChevronDown, ChevronRight, User } from 'lucide-react'
 import { formatKES } from '../../utils/format.js'
-import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
+import { API_URLS } from '../../utils/api.js'
 import { useZidishaBranch } from '../../context/ZidishaBranchContext.jsx'
 import ZidishaBranchFilter from '../../components/ZidishaBranchFilter.jsx'
 
-const ZIDISHA_PRODUCTS = [
-  'Zidisha Kifaru',
-  'Zidisha Nyati',
-  'Zidisha Simba',
-  'Zidisha Tembo',
-  'Zidisha Express',
-]
-
-function branchKey(name) {
-  return String(name || '').trim()
-}
-
-function isExcludedBranch(name) {
-  const b = branchKey(name).toLowerCase()
-  return !b || b === 'unknown' || b === 'advans branch'
-}
-
-function aggregateMtdByBranchAndOfficer(rows, selectedYear, selectedMonth) {
-  const today = new Date()
-  const isCurrentMonth =
-    selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
-  const cutoff = isCurrentMonth ? today : new Date(selectedYear, selectedMonth, 0)
-
-  const agg = new Map()
-
-  for (const r of rows) {
-    const exp = r['Expected Matured On Date'] || r.expected_matured_on_date
-    if (!exp) continue
-    const d = new Date(exp)
-    if (isNaN(d.getTime())) continue
-    if (d.getFullYear() !== selectedYear || d.getMonth() + 1 !== selectedMonth) continue
-    if (isCurrentMonth && d > cutoff) continue
-
-    const branch = branchKey(r['Branch Name'] || r.branch_name || 'Unknown')
-    if (isExcludedBranch(branch)) continue
-
-    const officer =
-      (r['Loan Officer Name'] || r.loan_officer_name || 'Unknown').trim() || 'Unknown'
-    const expAmt = Number(r['Total Expected Repayment Derived']) || 0
-    const repAmt = Number(r['Total Repayment Derived']) || 0
-
-    if (!agg.has(branch)) {
-      agg.set(branch, { branch, expected: 0, collected: 0, officers: new Map() })
-    }
-    const entry = agg.get(branch)
-    entry.expected += expAmt
-    entry.collected += repAmt
-
-    if (!entry.officers.has(officer)) {
-      entry.officers.set(officer, { officer, expected: 0, collected: 0 })
-    }
-    const officerEntry = entry.officers.get(officer)
-    officerEntry.expected += expAmt
-    officerEntry.collected += repAmt
-  }
-
-  return Array.from(agg.values())
-    .map((entry) => {
-      const rate = entry.expected > 0 ? (entry.collected / entry.expected) * 100 : 0
-      const to95 = entry.expected > 0 ? Math.max(0, 0.95 * entry.expected - entry.collected) : 0
-      const officers = Array.from(entry.officers.values())
-        .map((o) => ({
-          ...o,
-          rate: o.expected > 0 ? (o.collected / o.expected) * 100 : 0,
-          to95: o.expected > 0 ? Math.max(0, 0.95 * o.expected - o.collected) : 0,
-        }))
-        .sort((a, b) => {
-          if (b.rate === a.rate) return b.collected - a.collected
-          return b.rate - a.rate
-        })
-      return { ...entry, rate, to95, officers }
-    })
-    .sort((a, b) => {
-      if (b.rate === a.rate) return b.collected - a.collected
-      return b.rate - a.rate
-    })
-}
+const TARGET_RATE = 0.95
 
 function ZidishaProductivity() {
   const now = new Date()
@@ -90,39 +14,72 @@ function ZidishaProductivity() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [dataReady, setDataReady] = useState(false)
   const [expandedBranch, setExpandedBranch] = useState(null)
   const { selectedBranch } = useZidishaBranch()
 
   useEffect(() => {
-    const controller = new AbortController()
     const load = async () => {
+      setLoading(true)
+      setError(null)
       try {
-        setLoading(true)
-        setDataReady(false)
-        const filteredRows = await fetchAllZidishaRows({
-          signal: controller.signal,
-          products: ZIDISHA_PRODUCTS,
-          branch: selectedBranch !== 'All' ? selectedBranch : undefined,
-          excludeBranch: 'Advans Branch',
+        const today = new Date()
+        const isCurrentMonth =
+          selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1
+        const cutoffDay = isCurrentMonth
+          ? today.getDate()
+          : new Date(selectedYear, selectedMonth, 0).getDate()
+        const params = new URLSearchParams({
+          month: String(selectedMonth),
+          year: String(selectedYear),
+          cutoffDay: String(cutoffDay),
         })
-        setRows(filteredRows)
-        setDataReady(true)
-        setLoading(false)
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        const res = await fetch(
+          `${API_URLS.zidisha.productivityMtdByBranchOfficers}?${params.toString()}`,
+          { credentials: 'include' },
+        )
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body?.error || `Failed to load productivity data (${res.status})`)
+        }
+        const data = await res.json()
+        setRows(Array.isArray(data.rows) ? data.rows : [])
       } catch (e) {
-        if (e.name === 'AbortError') return
         setError(e.message)
-        setDataReady(false)
+        setRows([])
+      } finally {
         setLoading(false)
       }
     }
-    load()
-    return () => controller.abort()
-  }, [selectedBranch])
+    if (selectedMonth && selectedYear) load()
+  }, [selectedMonth, selectedYear, selectedBranch])
 
   const mtdBranchRows = useMemo(
-    () => aggregateMtdByBranchAndOfficer(rows, selectedYear, selectedMonth),
-    [rows, selectedYear, selectedMonth],
+    () =>
+      rows.map((r) => {
+        const expected = Number(r.expected || 0)
+        const collected = Number(r.collected || 0)
+        const rate = Number(r.ratePercent || 0)
+        const to95 = expected > 0 ? Math.max(0, TARGET_RATE * expected - collected) : 0
+        const officers = Array.isArray(r.officers)
+          ? r.officers.map((o) => {
+              const oExpected = Number(o.expected || 0)
+              const oCollected = Number(o.collected || 0)
+              const oRate = Number(o.ratePercent || 0)
+              return {
+                ...o,
+                expected: oExpected,
+                collected: oCollected,
+                rate: oRate,
+                to95: oExpected > 0 ? Math.max(0, TARGET_RATE * oExpected - oCollected) : 0,
+              }
+            })
+          : []
+        return { ...r, expected, collected, rate, to95, officers }
+      }),
+    [rows],
   )
 
   const summary = useMemo(() => {
@@ -131,21 +88,21 @@ function ZidishaProductivity() {
     const avgRate = totalExpected > 0 ? (totalCollected / totalExpected) * 100 : 0
 
     const officerSet = new Set()
-    for (const branch of mtdBranchRows) {
-      for (const o of branch.officers) officerSet.add(o.officer)
-    }
-
     let topOfficer = null
     for (const branch of mtdBranchRows) {
       for (const o of branch.officers) {
-        if (!topOfficer || o.rate > topOfficer.rate || (o.rate === topOfficer.rate && o.collected > topOfficer.collected)) {
+        officerSet.add(o.officer)
+        if (
+          !topOfficer ||
+          o.rate > topOfficer.rate ||
+          (o.rate === topOfficer.rate && o.collected > topOfficer.collected)
+        ) {
           topOfficer = o
         }
       }
     }
 
     return {
-      totalExpected,
       totalCollected,
       avgRate,
       activeOfficers: officerSet.size,
@@ -154,7 +111,7 @@ function ZidishaProductivity() {
     }
   }, [mtdBranchRows])
 
-  if (loading || !dataReady) {
+  if (loading) {
     return (
       <div className="h-64 flex flex-col items-center justify-center text-gray-600">
         <div className="inline-block h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
