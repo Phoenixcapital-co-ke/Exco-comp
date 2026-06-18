@@ -108,7 +108,7 @@ function Layout({ children }) {
             onClick={() => setSidebarOpen(false)}
           />
           <div
-            className={`fixed inset-y-0 left-0 z-40 w-64 transform bg-white shadow-2xl transition-transform duration-300 ${
+            className={`fixed inset-y-0 left-0 z-40 flex h-full max-h-[100dvh] w-64 flex-col overflow-hidden transform bg-white shadow-2xl transition-transform duration-300 ${
               sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
           >
@@ -117,6 +117,7 @@ function Layout({ children }) {
               onToggle={() => setSidebarOpen(false)}
               onNavigate={() => setSidebarOpen(false)}
               showUserInfo
+              fullHeight
             />
           </div>
         </>
@@ -128,6 +129,7 @@ function Layout({ children }) {
           onToggle={() => setSidebarOpen(!sidebarOpen)}
           onNavigate={() => {}}
           showUserInfo={false}
+          fullHeight
         />
       )}
 

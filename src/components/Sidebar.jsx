@@ -27,7 +27,7 @@ import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
 import { API_URLS } from '../utils/api.js'
 
-function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
+function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false, fullHeight = false }) {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuth()
@@ -255,9 +255,11 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
     ? expandedSection
     : filteredNavigation[0]?.id ?? null
 
+  const heightClass = fullHeight ? 'h-full min-h-0' : ''
+
   if (!isOpen) {
     return (
-      <div className="w-16 bg-white shadow-lg border-r border-gray-200 flex flex-col">
+      <div className={`w-16 bg-white shadow-lg border-r border-gray-200 flex flex-col ${heightClass}`}>
         <div className="p-4 flex justify-center">
           <img
             src={phoenixLogo}
@@ -266,7 +268,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
             draggable="false"
           />
         </div>
-        <div className="flex-1 py-4">
+        <div className="flex-1 min-h-0 py-4 overflow-y-auto">
           {filteredNavigation.map((item) => (
             <div key={item.id} className="px-3 py-2">
               <div className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200">
@@ -286,14 +288,14 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
   }
 
   return (
-    <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
+    <div className={`w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col ${heightClass}`}>
       {/* Logo */}
-      <div className="p-6 border-b border-gray-200 space-y-4">
+      <div className={`flex-shrink-0 border-b border-gray-200 space-y-4 ${showUserInfo ? 'p-4' : 'p-6'}`}>
         <div className="flex justify-center">
           <img
             src={phoenixLogo}
             alt="Phoenix Capital"
-            className="h-16 w-auto object-contain"
+            className={`w-auto object-contain ${showUserInfo ? 'h-12' : 'h-16'}`}
             draggable="false"
           />
         </div>
@@ -315,7 +317,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false }) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 overflow-y-auto">
+      <nav className="flex-1 min-h-0 py-4 overflow-y-auto overscroll-contain">
         {filteredNavigation.map((section) => (
           <div key={section.id} className="mb-2">
             {/* Section Header */}
