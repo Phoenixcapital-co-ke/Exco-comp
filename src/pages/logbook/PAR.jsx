@@ -1,26 +1,120 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react'
-import { AlertTriangle, TrendingUp, Loader2, Play } from 'lucide-react'
+import React, { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react'
+import {
+  AlertTriangle,
+  Loader2,
+  Play,
+  ShieldAlert,
+  CheckCircle2,
+  BarChart3,
+  Flame,
+} from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar,
+  Legend,
+} from 'recharts'
 
-function parRateBadgeClass(rate) {
-  if (rate >= 10) return 'bg-red-100 text-red-800'
-  if (rate >= 5) return 'bg-yellow-100 text-yellow-800'
+const PAR_COLORS = {
+  par30: '#f59e0b',
+  par60: '#fbbf24',
+  par90: '#10b981',
+  par90Plus: '#ef4444',
+  current: '#86efac',
+  trend: '#ef4444',
+}
+
+function parPillClass(rate) {
+  const n = Number(rate) || 0
+  if (n >= 20) return 'bg-red-100 text-red-800'
+  if (n >= 10) return 'bg-amber-100 text-amber-800'
+  if (n >= 5) return 'bg-yellow-100 text-yellow-800'
   return 'bg-green-100 text-green-800'
 }
 
-function ParRateBadge({ rate }) {
+function ParPill({ rate }) {
   const n = Number(rate) || 0
   return (
-    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${parRateBadgeClass(n)}`}>
+    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold min-w-[52px] text-center ${parPillClass(n)}`}>
       {n.toFixed(1)}%
     </span>
   )
 }
 
+function shortBranchLabel(name) {
+  return String(name || '')
+    .replace(/\s+Branch$/i, '')
+    .trim()
+}
+
+function CommentaryColumn({ title, emoji, items, dotClass }) {
+  return (
+    <div>
+      <h4 className="text-xs font-bold text-gray-700 mb-2">
+        {emoji} {title}
+      </h4>
+      <div className="space-y-2">
+        {(items || []).map((item, i) => (
+          <div key={i} className="flex gap-2 text-[12px] text-gray-600 leading-relaxed">
+            <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${dotClass}`} />
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KpiCard({ label, value, sub, accent = 'gray', valueClass = '', icon: Icon, loading, compactValue }) {
+  const accentMap = {
+    red: 'bg-red-500',
+    amber: 'bg-amber-500',
+    green: 'bg-green-500',
+    gray: 'bg-gray-400',
+    purple: 'bg-purple-500',
+  }
+  const iconBgMap = {
+    red: 'bg-red-50 text-red-600',
+    amber: 'bg-amber-50 text-amber-600',
+    green: 'bg-green-50 text-green-600',
+    gray: 'bg-gray-100 text-gray-600',
+    purple: 'bg-purple-50 text-purple-600',
+  }
+  return (
+    <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 px-4 py-3.5 sm:px-4 sm:py-4 relative overflow-hidden min-w-0">
+      <div className={`absolute top-0 left-0 right-0 h-[3px] ${accentMap[accent] || accentMap.gray}`} />
+      <div className={`absolute top-3.5 right-3.5 p-2 rounded-lg ${iconBgMap[accent] || iconBgMap.gray}`}>
+        {Icon ? <Icon size={16} /> : null}
+      </div>
+      <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide pr-9 leading-tight">{label}</p>
+      {loading ? (
+        <div className="h-8 bg-gray-100 rounded animate-pulse mt-2" />
+      ) : (
+        <p className={`font-bold mt-1.5 ${compactValue ? 'text-base sm:text-lg' : 'text-xl sm:text-2xl'} ${valueClass}`}>{value}</p>
+      )}
+      {sub && !loading ? <p className="text-[11px] text-gray-400 mt-1 leading-snug">{sub}</p> : null}
+    </div>
+  )
+}
+
 function LogbookPAR({ country }) {
-  const { convert, formatMoney } = useLogbookCurrency()
+  const { formatMoney } = useLogbookCurrency()
+  const formatCompact = useCallback(
+    (v) => formatMoney(v, { notation: 'compact', maximumFractionDigits: 1 }),
+    [formatMoney],
+  )
+
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState(null)
   const [history, setHistory] = useState([])
@@ -30,10 +124,27 @@ function LogbookPAR({ country }) {
   const [borrowerData, setBorrowerData] = useState([])
   const [borrowerLoading, setBorrowerLoading] = useState(true)
   const [borrowerBranchFilter, setBorrowerBranchFilter] = useState('ALL')
+  const [displayBranchFilter, setDisplayBranchFilter] = useState('ALL')
   const [progress, setProgress] = useState(null)
   const [lastRunTime, setLastRunTime] = useState(null)
   const [loanOfficers, setLoanOfficers] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
+  const [commentary, setCommentary] = useState(null)
+  const [commentaryLoading, setCommentaryLoading] = useState(false)
+  const [commentaryError, setCommentaryError] = useState(null)
+  const branchPanelRef = useRef(null)
+  const [matchedPanelHeight, setMatchedPanelHeight] = useState(null)
+
+  const syncMatchedPanelHeight = useCallback(() => {
+    const el = branchPanelRef.current
+    if (!el) return
+    const isWide = window.matchMedia('(min-width: 1280px)').matches
+    if (!isWide) {
+      setMatchedPanelHeight(null)
+      return
+    }
+    setMatchedPanelHeight(el.offsetHeight)
+  }, [])
 
   const loadLoanOfficers = useCallback(async () => {
     try {
@@ -45,7 +156,7 @@ function LogbookPAR({ country }) {
       console.error('Error loading loan officers:', e)
       setLoanOfficers([])
     }
-  }, [country])
+  }, [])
 
   const loadLastRunTime = useCallback(async () => {
     try {
@@ -65,9 +176,7 @@ function LogbookPAR({ country }) {
       const base = API_URLS.par.branches
       const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
       const res = await fetch(url, { credentials: 'include' })
-      if (!res.ok) {
-        throw new Error(`Failed to load branch data: ${res.status}`)
-      }
+      if (!res.ok) throw new Error(`Failed to load branch data: ${res.status}`)
       const data = await res.json()
       setBranchData(Array.isArray(data) ? data : [])
     } catch (e) {
@@ -98,33 +207,21 @@ function LogbookPAR({ country }) {
     try {
       setBorrowerLoading(true)
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 second timeout
-      
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
       const base = API_URLS.par.borrowerAccess
       const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
-      const res = await fetch(url, { 
-        credentials: 'include',
-        signal: controller.signal
-      })
+      const res = await fetch(url, { credentials: 'include', signal: controller.signal })
       clearTimeout(timeoutId)
-      
-      if (!res.ok) {
-        throw new Error(`Failed to load borrower access data: ${res.status}`)
-      }
+      if (!res.ok) throw new Error(`Failed to load borrower access data: ${res.status}`)
       const data = await res.json()
       setBorrowerData(Array.isArray(data) ? data : [])
     } catch (e) {
-      if (e.name === 'AbortError') {
-        console.error('Borrower access data request timed out')
-        setBorrowerData([])
-      } else {
-      console.error('Error loading borrower access data:', e)
+      if (e.name !== 'AbortError') console.error('Error loading borrower access data:', e)
       setBorrowerData([])
-      }
     } finally {
       setBorrowerLoading(false)
     }
-  }, [])
+  }, [country])
 
   const triggerSnapshot = async () => {
     let eventSource = null
@@ -132,8 +229,6 @@ function LogbookPAR({ country }) {
       setTriggerLoading(true)
       setTriggerMessage(null)
       setProgress({ current: 0, total: 0, branch: null, status: 'starting' })
-
-      // Connect to SSE for progress updates
       const progressBase = API_URLS.par.progress
       const progressUrl = country ? `${progressBase}?country=${encodeURIComponent(country)}` : progressBase
       eventSource = new EventSource(progressUrl, { withCredentials: true })
@@ -141,20 +236,13 @@ function LogbookPAR({ country }) {
         try {
           const data = JSON.parse(event.data)
           setProgress(data)
-          
-          if (data.status === 'completed' || data.status === 'error') {
-            eventSource.close()
-          }
+          if (data.status === 'completed' || data.status === 'error') eventSource.close()
         } catch (e) {
           console.error('Error parsing progress event:', e)
         }
       }
-      eventSource.onerror = (error) => {
-        console.error('SSE error:', error)
-        eventSource.close()
-      }
+      eventSource.onerror = () => eventSource?.close()
 
-      // Trigger the snapshot
       const snapshotBase = API_URLS.par.fetchSnapshot
       const snapshotUrl = country ? `${snapshotBase}?country=${encodeURIComponent(country)}` : snapshotBase
       const res = await fetch(snapshotUrl, { method: 'POST', credentials: 'include' })
@@ -162,39 +250,22 @@ function LogbookPAR({ country }) {
         const error = await res.json().catch(() => ({}))
         throw new Error(error?.error || `Request failed (${res.status})`)
       }
-      const data = await res.json()
-      // Reload all data after snapshot
       await Promise.all([loadHistory(), loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()])
-      
-      // Wait a bit for final progress event
-      setTimeout(() => {
-        setProgress(null)
-      }, 1000)
+      setTimeout(() => setProgress(null), 1000)
     } catch (err) {
       setTriggerMessage(`Error: ${err.message}`)
       setProgress(null)
       if (eventSource) eventSource.close()
     } finally {
       setTriggerLoading(false)
-      if (eventSource) {
-        setTimeout(() => eventSource.close(), 2000)
-      }
+      if (eventSource) setTimeout(() => eventSource.close(), 2000)
     }
   }
 
   useEffect(() => {
-    // Load all data in parallel for better performance
-    Promise.all([
-      loadHistory(),
-      loadBranchData(),
-      loadBorrowerData(),
-      loadLoanOfficers(),
-    loadLastRunTime()
-    ]).catch(e => {
-      console.error('Error loading initial data:', e)
-    })
-    
-    // Refresh last run time every 30 seconds
+    Promise.all([loadHistory(), loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()]).catch(
+      (e) => console.error('Error loading initial data:', e),
+    )
     const interval = setInterval(loadLastRunTime, 30000)
     return () => clearInterval(interval)
   }, [loadHistory, loadBranchData, loadBorrowerData, loadLoanOfficers, loadLastRunTime])
@@ -202,36 +273,33 @@ function LogbookPAR({ country }) {
   const latestPastMissed = history.length
     ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0)
     : null
-  const latestOpenLoans = history.length
-    ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0)
-    : null
+  const latestOpenLoans = history.length ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0) : null
 
-  // For country pages, compute totals from branch-level PAR (already country-filtered by backend)
   const countryTotals = useMemo(() => {
-    const open = Array.isArray(branchData)
-      ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
-      : 0
-    const missed = Array.isArray(branchData)
-      ? branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
-      : 0
+    const open = branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
+    const missed = branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
     return { openLoans: open, pastMissed: missed }
   }, [branchData])
 
   const scopedOpenLoans = country ? countryTotals.openLoans : latestOpenLoans
   const scopedPastMissed = country ? countryTotals.pastMissed : latestPastMissed
 
+  const filteredBranchData = useMemo(() => {
+    if (displayBranchFilter === 'ALL') return branchData
+    return branchData.filter((b) => String(b.code) === displayBranchFilter)
+  }, [branchData, displayBranchFilter])
+
   const parSummary = useMemo(() => {
-    const openFromBranches = Array.isArray(branchData)
-      ? branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
-      : 0
+    const source = filteredBranchData.length ? filteredBranchData : branchData
+    const openFromBranches = source.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
     const open = openFromBranches > 0 ? openFromBranches : Number(scopedOpenLoans) || 0
 
-    if (Array.isArray(branchData) && branchData.length > 0 && open > 0) {
-      const par30 = branchData.reduce((sum, b) => sum + (Number(b.par30) || 0), 0)
-      const par60 = branchData.reduce((sum, b) => sum + (Number(b.par60) || 0), 0)
-      const par90 = branchData.reduce((sum, b) => sum + (Number(b.par90) || 0), 0)
-      const par90Plus = branchData.reduce((sum, b) => sum + (Number(b.par90Plus) || 0), 0)
-      const pastMissed = branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
+    if (source.length > 0 && open > 0) {
+      const par30 = source.reduce((sum, b) => sum + (Number(b.par30) || 0), 0)
+      const par60 = source.reduce((sum, b) => sum + (Number(b.par60) || 0), 0)
+      const par90 = source.reduce((sum, b) => sum + (Number(b.par90) || 0), 0)
+      const par90Plus = source.reduce((sum, b) => sum + (Number(b.par90Plus) || 0), 0)
+      const pastMissed = source.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
       const pct = (n) => (open > 0 ? (n / open) * 100 : 0)
       return {
         openLoans: open,
@@ -262,21 +330,8 @@ function LogbookPAR({ country }) {
         totalParRate: pct(pastMissed),
       }
     }
-
-    if (scopedPastMissed != null && open > 0) {
-      const total = (scopedPastMissed / open) * 100
-      return {
-        openLoans: open,
-        pastMissed: scopedPastMissed,
-        par30Rate: 0,
-        par60Rate: 0,
-        par90Rate: 0,
-        par90PlusRate: 0,
-        totalParRate: total,
-      }
-    }
     return null
-  }, [branchData, history, scopedOpenLoans, scopedPastMissed])
+  }, [filteredBranchData, branchData, history, scopedOpenLoans, scopedPastMissed])
 
   const branchOptions = useMemo(() => {
     const options = [{ code: 'ALL', name: 'All Branches' }]
@@ -290,468 +345,554 @@ function LogbookPAR({ country }) {
     return options
   }, [branchData])
 
-  // Create a mapping from branch code to branch name
   const branchCodeToName = useMemo(() => {
     const map = new Map()
-    for (const branch of branchData) {
-      map.set(branch.code, branch.name || branch.code)
-    }
+    for (const branch of branchData) map.set(branch.code, branch.name || branch.code)
     return map
   }, [branchData])
 
   const filteredBorrowerData = useMemo(() => {
-    if (borrowerBranchFilter === 'ALL') return borrowerData
-    return borrowerData.filter(
-      (entry) => Array.isArray(entry.branches) && entry.branches.includes(borrowerBranchFilter)
-    )
-  }, [borrowerData, borrowerBranchFilter])
+    const filter = borrowerBranchFilter !== 'ALL' ? borrowerBranchFilter : displayBranchFilter
+    if (filter === 'ALL') return borrowerData
+    return borrowerData.filter((entry) => Array.isArray(entry.branches) && entry.branches.includes(filter))
+  }, [borrowerData, borrowerBranchFilter, displayBranchFilter])
 
   const loanOfficerMap = useMemo(() => {
     const map = new Map()
     for (const officer of loanOfficers) {
-      if (officer?.borrowerAccessId) {
-        map.set(String(officer.borrowerAccessId), officer.name || officer.borrowerAccessId)
-      }
+      if (officer?.borrowerAccessId) map.set(String(officer.borrowerAccessId), officer.name || officer.borrowerAccessId)
     }
     return map
   }, [loanOfficers])
 
-  // Extract available months from PAR history (use string month key derived from time column)
   const monthOptions = useMemo(() => {
     if (!history.length) return []
-    
     const map = new Map()
-
     for (const entry of history) {
       const rawTime = entry.time || entry.Time
       if (!rawTime) continue
-      const timeStr = String(rawTime)
-      // Expect ISO-like time, e.g. 2025-12-04T...
-      const key = timeStr.slice(0, 7) // YYYY-MM
+      const key = String(rawTime).slice(0, 7)
       if (!/^\d{4}-\d{2}$/.test(key)) continue
-
       if (!map.has(key)) {
-        // Build label strictly from the YYYY-MM key to avoid timezone shifts
         const [yearStr, monthStr] = key.split('-')
         const year = Number(yearStr)
         const monthIndex = Number(monthStr) - 1
         let label = key
-        if (Number.isFinite(year) && Number.isFinite(monthIndex) && monthIndex >= 0 && monthIndex <= 11) {
-          const d = new Date(Date.UTC(year, monthIndex, 1))
-          label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+        if (Number.isFinite(year) && monthIndex >= 0 && monthIndex <= 11) {
+          label = new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
         }
-        map.set(key, { value: key, label, sortKey: key })
+        map.set(key, { value: key, label })
       }
     }
-
-    return Array.from(map.values()).sort((a, b) => (a.sortKey < b.sortKey ? 1 : -1))
+    return Array.from(map.values()).sort((a, b) => (a.value < b.value ? 1 : -1))
   }, [history])
 
-  // Auto-select the latest month when options change
   useEffect(() => {
-    if (!selectedMonth && monthOptions.length) {
-      setSelectedMonth(monthOptions[0].value)
-    }
+    if (!selectedMonth && monthOptions.length) setSelectedMonth(monthOptions[0].value)
   }, [monthOptions, selectedMonth])
 
-  // Process history data for selected month daily PAR chart
+  const selectedMonthLabel = monthOptions.find((m) => m.value === selectedMonth)?.label || 'Selected month'
+
+  const prevMonthParRate = useMemo(() => {
+    if (!selectedMonth || !history.length) return null
+    const [y, m] = selectedMonth.split('-').map(Number)
+    const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
+    const monthRows = history.filter((e) => String(e.time || e.Time || '').slice(0, 7) === prev)
+    if (!monthRows.length) return null
+    const latest = monthRows[0]
+    const open = Number(latest.Open_loans || latest.open_loans || 0)
+    const missed = Number(latest.Past_Arrears_missed || latest.past_arrears_missed || 0)
+    return open > 0 ? (missed / open) * 100 : null
+  }, [history, selectedMonth])
+
   const dailyParData = useMemo(() => {
     if (!history.length || !selectedMonth) return []
-
     const monthKey = String(selectedMonth).trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return []
-
-    // Filter history to selected month using the month substring from the time column
-    const monthData = history.filter((entry) => {
-      const rawTime = entry.time || entry.Time
-      if (!rawTime) return false
-      const timeStr = String(rawTime)
-      return timeStr.slice(0, 7) === monthKey
-    })
-    
+    const monthData = history.filter((entry) => String(entry.time || entry.Time || '').slice(0, 7) === monthKey)
     if (!monthData.length) return []
-    
-    // Group by day and get the latest *valid* entry for each day.
-    // Occasionally a snapshot can be partial (e.g., openLoans = 0) which would create a false dip.
     const dayMap = new Map()
     for (const entry of monthData) {
-      const timeStr = entry.time || entry.Time
-      const entryDate = new Date(timeStr)
+      const entryDate = new Date(entry.time || entry.Time)
       const dayKey = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}-${String(entryDate.getDate()).padStart(2, '0')}`
-      
       const pastMissed = Number(entry.Past_Arrears_missed || entry.past_arrears_missed || 0)
       const openLoans = Number(entry.Open_loans || entry.open_loans || 0)
       const parRate = openLoans > 0 ? (pastMissed / openLoans) * 100 : 0
-      
       if (!dayMap.has(dayKey)) {
-        dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
+        dayMap.set(dayKey, { date: entryDate, time: entryDate, parRate })
       } else {
         const existing = dayMap.get(dayKey)
-        // Prefer the latest valid entry (openLoans > 0). Only replace a valid existing
-        // with another valid one that is later, or replace an invalid existing with a valid one.
         const existingValid = Number(existing.openLoans) > 0
         const currentValid = openLoans > 0
         if (currentValid && (!existingValid || entryDate > existing.time)) {
-          dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
-        } else if (!existingValid && !currentValid && entryDate > existing.time) {
-          // Both invalid: still keep the latest so the UI is deterministic.
-          dayMap.set(dayKey, { date: entryDate, time: entryDate, pastMissed, openLoans, parRate })
+          dayMap.set(dayKey, { date: entryDate, time: entryDate, parRate, openLoans, pastMissed })
         }
       }
     }
-    
-    // Convert to array and sort by date
     return Array.from(dayMap.values())
-      .map(({ date, parRate, pastMissed, openLoans }) => ({
-        day: date.getDate(),
+      .map(({ date, parRate }) => ({
         date: `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`,
         parRate: Number(parRate.toFixed(2)),
-        pastMissed,
-        openLoans
       }))
-      .sort((a, b) => a.day - b.day)
+      .sort((a, b) => a.date.localeCompare(b.date))
   }, [history, selectedMonth])
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Logbook PAR (Portfolio at Risk)</h1>
-        <p className="text-gray-600 mt-2">Monitor loans that are past due and assess risk levels</p>
-      </div>
+  const summaryLoading = country ? branchLoading : historyLoading || branchLoading
 
-      <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">Refresh PAR Snapshot</h2>
-          <p className="text-sm text-gray-600 mt-1">
-            Trigger a refresh to pull both past-missed repayments and open loans from Loandisk and store them in PAR history.
-            <span className="block mt-1 text-xs text-gray-500">
-              Auto-refreshes every hour automatically.
-            </span>
-          </p>
+  const donutData = useMemo(() => {
+    if (!parSummary) return []
+    const current = Math.max(0, 100 - parSummary.totalParRate)
+    return [
+      { name: 'PAR 90+', value: parSummary.par90PlusRate, color: PAR_COLORS.par90Plus },
+      { name: 'PAR 30', value: parSummary.par30Rate, color: PAR_COLORS.par30 },
+      { name: 'PAR 60', value: parSummary.par60Rate, color: PAR_COLORS.par60 },
+      { name: 'PAR 90', value: parSummary.par90Rate, color: PAR_COLORS.par90 },
+      { name: 'Current', value: current, color: PAR_COLORS.current },
+    ].filter((d) => d.value > 0.05)
+  }, [parSummary])
+
+  const branchChartData = useMemo(
+    () =>
+      filteredBranchData.map((b) => ({
+        name: shortBranchLabel(b.name || b.code),
+        par30: Number((b.par30Rate || 0).toFixed(1)),
+        par60: Number((b.par60Rate || 0).toFixed(1)),
+        par90: Number((b.par90Rate || 0).toFixed(1)),
+        par90Plus: Number((b.par90PlusRate || 0).toFixed(1)),
+      })),
+    [filteredBranchData],
+  )
+
+  const officerRows = useMemo(() => {
+    return filteredBorrowerData.map((entry) => {
+      const officerId = String(entry.officerId ?? '')
+      const officerName = loanOfficerMap.get(officerId) || officerId || 'Unknown Officer'
+      const branchNames =
+        entry.branches?.map((code) => branchCodeToName.get(code) || code).join(', ') || '—'
+      return { ...entry, officerName, branchNames }
+    })
+  }, [filteredBorrowerData, loanOfficerMap, branchCodeToName])
+
+  const commentaryPayload = useMemo(() => {
+    if (!parSummary) return null
+    const branches = filteredBranchData.slice(0, 15).map((b) => ({
+      name: b.name || b.code,
+      par: Number(b.parRate || 0).toFixed(1),
+      par30: Number(b.par30Rate || 0).toFixed(1),
+      par60: Number(b.par60Rate || 0).toFixed(1),
+      par90: Number(b.par90Rate || 0).toFixed(1),
+      par90plus: Number(b.par90PlusRate || 0).toFixed(1),
+      atRiskLabel: formatMoney(b.pastMissed),
+    }))
+    const loanOfficers = [...officerRows]
+      .sort((a, b) => (Number(b.parRate) || 0) - (Number(a.parRate) || 0))
+      .slice(0, 12)
+      .map((o) => ({
+        name: o.officerName,
+        branch: o.branchNames,
+        par: Number(o.parRate || 0).toFixed(1),
+        atRiskLabel: o.pastMissed ? formatMoney(o.pastMissed) : '—',
+      }))
+    return {
+      period: selectedMonthLabel,
+      summary: {
+        totalPAR: parSummary.totalParRate.toFixed(1),
+        par30: parSummary.par30Rate.toFixed(1),
+        par60: parSummary.par60Rate.toFixed(1),
+        par90: parSummary.par90Rate.toFixed(1),
+        par90plus: parSummary.par90PlusRate.toFixed(1),
+        openLoansLabel: formatMoney(parSummary.openLoans),
+        atRiskBalanceLabel: formatMoney(parSummary.pastMissed),
+      },
+      branches,
+      loanOfficers,
+    }
+  }, [parSummary, filteredBranchData, officerRows, selectedMonthLabel, formatMoney])
+
+  const commentaryFetchKey = useMemo(() => {
+    if (!commentaryPayload || !parSummary) return null
+    return `${selectedMonth}|${displayBranchFilter}|${parSummary.totalParRate.toFixed(1)}|${filteredBranchData.length}|${officerRows.length}`
+  }, [commentaryPayload, parSummary, selectedMonth, displayBranchFilter, filteredBranchData.length, officerRows.length])
+
+  useEffect(() => {
+    if (!commentaryFetchKey || !commentaryPayload) return undefined
+    if (summaryLoading || branchLoading || borrowerLoading) return undefined
+
+    let cancelled = false
+    const controller = new AbortController()
+
+    const loadCommentary = async () => {
+      setCommentaryLoading(true)
+      setCommentaryError(null)
+      try {
+        const res = await fetch(API_URLS.par.aiCommentary, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(commentaryPayload),
+          signal: controller.signal,
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.error || `Failed to load commentary (${res.status})`)
+        if (!cancelled) {
+          setCommentary({
+            highlights: data.highlights || [],
+            risks: data.risks || [],
+            actions: data.actions || [],
+            generatedAt: data.generatedAt,
+          })
+        }
+      } catch (e) {
+        if (!cancelled && e.name !== 'AbortError') {
+          setCommentary(null)
+          setCommentaryError(e.message || 'Failed to load commentary')
+        }
+      } finally {
+        if (!cancelled) setCommentaryLoading(false)
+      }
+    }
+
+    loadCommentary()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [commentaryFetchKey, commentaryPayload, summaryLoading, branchLoading, borrowerLoading])
+
+  useLayoutEffect(() => {
+    syncMatchedPanelHeight()
+    const el = branchPanelRef.current
+    if (!el) return undefined
+    const ro = new ResizeObserver(() => syncMatchedPanelHeight())
+    ro.observe(el)
+    window.addEventListener('resize', syncMatchedPanelHeight)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', syncMatchedPanelHeight)
+    }
+  }, [syncMatchedPanelHeight, filteredBranchData, branchLoading, displayBranchFilter, borrowerLoading])
+
+  const lastRefreshLabel = lastRunTime
+    ? new Date(lastRunTime).toLocaleString('en-KE', {
+        timeZone: 'Africa/Nairobi',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '—'
+
+  const parTrendDelta =
+    parSummary && prevMonthParRate != null ? parSummary.totalParRate - prevMonthParRate : null
+
+  return (
+    <div className="space-y-4 lg:space-y-5 min-w-0 w-full">
+      {/* Header — full width within content area */}
+      <div className="bg-white text-gray-900 border-b border-gray-200 -mx-4 md:-mx-5 lg:-mx-6 xl:-mx-8 px-4 md:px-5 lg:px-6 xl:px-8 py-3.5 sm:py-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3 sm:gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 shrink-0 rounded-lg bg-[#E04B2A] text-white flex items-center justify-center font-black text-sm">P</div>
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-bold truncate">Logbook PAR (Portfolio at Risk)</h1>
+            <p className="text-xs text-gray-500 mt-0.5 hidden sm:block">Monitor loans that are past due and assess risk levels</p>
+          </div>
         </div>
-        <div className="flex flex-col items-start md:items-end gap-2">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+          <span className="text-[11px] text-gray-500 whitespace-nowrap">Last refresh: {lastRefreshLabel}</span>
+          {monthOptions.length > 0 && (
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="rounded-md border border-gray-300 bg-white text-gray-900 text-xs px-2.5 py-1.5"
+            >
+              {monthOptions.map((opt) => (
+                <option key={opt.value} value={opt.value} className="text-gray-900">
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+          {branchOptions.length > 1 && (
+            <select
+              value={displayBranchFilter}
+              onChange={(e) => setDisplayBranchFilter(e.target.value)}
+              className="rounded-md border border-gray-300 bg-white text-gray-900 text-xs px-2.5 py-1.5"
+            >
+              {branchOptions.map((opt) => (
+                <option key={opt.code} value={opt.code} className="text-gray-900">
+                  {opt.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button
+            type="button"
             onClick={triggerSnapshot}
             disabled={triggerLoading}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#E04B2A] hover:bg-[#c94324] text-white text-xs font-semibold disabled:opacity-60"
           >
-            {triggerLoading ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
+            {triggerLoading ? <Loader2 className="animate-spin" size={14} /> : <Play size={14} />}
             Trigger Snapshot Fetch
           </button>
-          {lastRunTime && (() => {
-            const date = new Date(lastRunTime)
-            const formatted = date.toLocaleString('en-US', {
-              timeZone: 'Africa/Nairobi',
-              year: 'numeric',
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: true,
-            })
-            return (
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-blue-50 border border-blue-200">
-                <span className="text-xs font-medium text-blue-700">Last Run (Africa/Nairobi):</span>
-                <span className="text-xs text-blue-600">
-                  {formatted}
-                </span>
-              </div>
-            )
-          })()}
         </div>
       </div>
 
-      {/* Progress Bar */}
+      {triggerMessage && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2">{triggerMessage}</div>
+      )}
+
       {progress && (
-        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900">
-                  {progress.status === 'starting' && 'Starting snapshot...'}
-                  {progress.status === 'processing' && `Processing branch ${progress.branch}...`}
-                  {progress.status === 'completed' && progress.branch && `Completed branch ${progress.branch}`}
-                  {progress.status === 'failed' && `Failed branch ${progress.branch}`}
-                  {progress.status === 'saving' && 'Saving to database...'}
-                  {progress.status === 'completed' && !progress.branch && 'Snapshot completed!'}
-                  {progress.status === 'error' && 'Error occurred'}
-                </h3>
-                <p className="text-xs text-gray-600 mt-1">
-                  {progress.total > 0 ? `${progress.current} of ${progress.total} branches processed` : 'Initializing...'}
-                </p>
-              </div>
-              <div className="text-sm font-semibold text-gray-700">
-                {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : '0%'}
-              </div>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2.5">
-              <div
-                className={`h-2.5 rounded-full transition-all duration-300 ${
-                  progress.status === 'error' || progress.status === 'failed'
-                    ? 'bg-red-500'
-                    : progress.status === 'completed' && !progress.branch
-                    ? 'bg-green-500'
-                    : 'bg-blue-500'
-                }`}
-                style={{ width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : '0%' }}
-              />
-            </div>
-            {progress.branch && (
-              <p className="text-xs text-gray-500">
-                Current branch: {progress.branch}
-              </p>
-            )}
+        <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-2">
+          <div className="flex justify-between text-sm">
+            <span className="font-medium text-gray-900">
+              {progress.status === 'completed' && !progress.branch ? 'Snapshot completed' : `Processing${progress.branch ? `: ${progress.branch}` : '…'}`}
+            </span>
+            <span className="text-gray-600">
+              {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : '0%'}
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div
+              className="h-2 rounded-full bg-[#E04B2A] transition-all"
+              style={{ width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : '0%' }}
+            />
           </div>
         </div>
       )}
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">Total PAR</p>
-              {(country ? branchLoading : historyLoading) ? (
-                <div className="h-8 bg-gray-200 rounded animate-pulse mt-1" />
+      {/* KPI row — 7 cols only on very wide screens (matches HTML mockup) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7 gap-3 lg:gap-3.5">
+        <KpiCard
+          label="Total PAR"
+          accent="red"
+          icon={Flame}
+          loading={summaryLoading}
+          value={parSummary ? `${parSummary.totalParRate.toFixed(1)}%` : '—'}
+          valueClass={parSummary && parSummary.totalParRate >= 10 ? 'text-red-600' : 'text-gray-900'}
+          sub={
+            parTrendDelta != null
+              ? `${parTrendDelta >= 0 ? '▲' : '▼'} vs ${prevMonthParRate.toFixed(1)}% prior month`
+              : 'Portfolio at risk'
+          }
+        />
+        <KpiCard label="PAR 30" accent="amber" icon={AlertTriangle} loading={branchLoading} value={parSummary ? `${parSummary.par30Rate.toFixed(1)}%` : '—'} sub="1–30 days overdue" valueClass="text-amber-600" />
+        <KpiCard label="PAR 60" accent="amber" icon={AlertTriangle} loading={branchLoading} value={parSummary ? `${parSummary.par60Rate.toFixed(1)}%` : '—'} sub="31–60 days overdue" valueClass="text-amber-600" />
+        <KpiCard label="PAR 90" accent="green" icon={CheckCircle2} loading={branchLoading} value={parSummary ? `${parSummary.par90Rate.toFixed(1)}%` : '—'} sub="61–90 days overdue" valueClass="text-green-600" />
+        <KpiCard label="PAR 90+" accent="red" icon={ShieldAlert} loading={branchLoading} value={parSummary ? `${parSummary.par90PlusRate.toFixed(1)}%` : '—'} sub="Over 90 days overdue" valueClass="text-red-600" />
+        <KpiCard label="Open Loans" accent="gray" icon={BarChart3} loading={summaryLoading} compactValue value={scopedOpenLoans != null ? formatCompact(scopedOpenLoans) : '—'} sub="Active loan portfolio" valueClass="text-gray-900" />
+        <KpiCard
+          label="At-Risk Balance"
+          accent="red"
+          icon={AlertTriangle}
+          loading={summaryLoading}
+          compactValue
+          value={scopedPastMissed != null ? formatCompact(scopedPastMissed) : '—'}
+          sub={parSummary ? `${parSummary.totalParRate.toFixed(1)}% of portfolio` : 'Past due exposure'}
+          valueClass="text-red-600"
+        />
+      </div>
+
+      {/* Charts — cards share row height; chart areas grow to fill */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_340px_minmax(0,1fr)] gap-3.5 lg:gap-4 items-stretch">
+        <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0 lg:col-span-2 2xl:col-span-1 flex flex-col min-h-0 h-full">
+          <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+            <h3 className="text-[13px] font-bold text-gray-900 leading-snug">PAR % Daily Trend – {selectedMonthLabel}</h3>
+            {parSummary && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
+                {parSummary.totalParRate.toFixed(1)}% Current
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-h-[200px] w-full">
+            {dailyParData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyParData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="#9ca3af" interval="preserveStartEnd" height={28} />
+                  <YAxis tick={{ fontSize: 10 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} width={36} />
+                  <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, 'PAR %']} />
+                  <Area type="monotone" dataKey="parRate" stroke={PAR_COLORS.trend} fill="#fee2e2" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-sm text-gray-400">No trend data for this month</div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0 2xl:max-w-[340px] 2xl:mx-auto 2xl:w-full flex flex-col min-h-0 h-full">
+          <h3 className="text-[13px] font-bold text-gray-900 mb-3 shrink-0">PAR Age Composition</h3>
+          <div className="flex flex-col items-center flex-1 min-h-0">
+            <div className="shrink-0" style={{ width: 168, height: 168 }}>
+              {donutData.length > 0 ? (
+                <PieChart width={168} height={168}>
+                  <Pie
+                    data={donutData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx={84}
+                    cy={84}
+                    innerRadius={52}
+                    outerRadius={78}
+                    paddingAngle={1}
+                    stroke="#fff"
+                    strokeWidth={2}
+                  >
+                    {donutData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} />
+                </PieChart>
               ) : (
-                <>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {parSummary != null ? `${parSummary.totalParRate.toFixed(1)}%` : '—'}
-                  </p>
-                </>
+                <div className="w-full h-full flex items-center justify-center text-sm text-gray-400">No data</div>
               )}
             </div>
-            <div className="p-3 rounded-lg bg-orange-50 text-orange-600">
-              <AlertTriangle size={22} />
+            <div className="space-y-1.5 mt-3 w-full max-w-[220px] shrink-0">
+              {donutData.map((d) => (
+                <div key={d.name} className="flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-2 text-gray-600 min-w-0">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.color }} />
+                    <span className="truncate">{d.name}</span>
+                  </span>
+                  <span className="font-bold text-gray-900 shrink-0 ml-2">{d.value.toFixed(1)}%</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
-        {[
-          { key: 'par30Rate', label: 'PAR 30', color: 'bg-amber-50 text-amber-600' },
-          { key: 'par60Rate', label: 'PAR 60', color: 'bg-orange-50 text-orange-600' },
-          { key: 'par90Rate', label: 'PAR 90', color: 'bg-red-50 text-red-600' },
-          { key: 'par90PlusRate', label: 'PAR 90+', color: 'bg-rose-50 text-rose-700' },
-        ].map(({ key, label, color }) => (
-          <div key={key} className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <p className="text-sm font-medium text-gray-600">{label}</p>
-                {branchLoading ? (
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mt-1" />
-                ) : (
-                  <>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {parSummary != null ? `${parSummary[key].toFixed(1)}%` : '—'}
-                    </p>
-                  </>
-                )}
-              </div>
-              <div className={`p-3 rounded-lg ${color}`}>
-                <AlertTriangle size={22} />
-              </div>
-            </div>
+        <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0 lg:col-span-2 2xl:col-span-1 flex flex-col min-h-0 h-full">
+          <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+            <h3 className="text-[13px] font-bold text-gray-900">PAR % by Branch</h3>
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 shrink-0">MTD</span>
           </div>
-        ))}
-
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">Open Loans</p>
-              {(country ? branchLoading : historyLoading) ? (
-                <>
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1" />
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-40" />
-                </>
-              ) : (
-                <>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {scopedOpenLoans != null ? formatMoney(scopedOpenLoans) : '—'}
-                  </p>
-                </>
-              )}
-            </div>
-            <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
-              <TrendingUp size={22} />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-600">At-Risk Balance</p>
-              {(country ? branchLoading : historyLoading) ? (
-                <>
-                  <div className="h-8 bg-gray-200 rounded animate-pulse mb-2 mt-1" />
-                  <div className="h-4 bg-gray-200 rounded animate-pulse w-44" />
-                </>
-              ) : (
-                <>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {scopedPastMissed != null ? formatMoney(scopedPastMissed) : '—'}
-                  </p>
-                </>
-              )}
-            </div>
-            <div className="p-3 rounded-lg bg-red-50 text-red-600">
-              <AlertTriangle size={22} />
-            </div>
+          <div className="flex-1 min-h-[200px] w-full">
+            {branchChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={branchChartData} margin={{ top: 4, right: 8, left: -8, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 10 }}
+                    interval={0}
+                    angle={-35}
+                    textAnchor="end"
+                    height={36}
+                  />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} width={32} />
+                  <Tooltip formatter={(v) => `${v}%`} />
+                  <Legend
+                    verticalAlign="bottom"
+                    height={28}
+                    wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
+                    iconSize={10}
+                  />
+                  <Bar dataKey="par30" stackId="a" fill={PAR_COLORS.par30} name="PAR 30" />
+                  <Bar dataKey="par60" stackId="a" fill={PAR_COLORS.par60} name="PAR 60" />
+                  <Bar dataKey="par90" stackId="a" fill={PAR_COLORS.par90} name="PAR 90" />
+                  <Bar dataKey="par90Plus" stackId="a" fill={PAR_COLORS.par90Plus} name="PAR 90+" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-sm text-gray-400">No branch data</div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* PAR Tables Side by Side */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* PAR by Branch Table */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">PAR by Branch</h3>
+      {/* Tables — branch panel height drives matched officer panel */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3.5 lg:gap-4">
+        <div
+          ref={branchPanelRef}
+          className="bg-white rounded-[10px] shadow-sm border border-gray-200 overflow-hidden min-w-0"
+        >
+          <div className="px-4 sm:px-[18px] py-3.5 border-b border-gray-100 flex items-center justify-between gap-2 shrink-0">
+            <h3 className="text-[13px] font-bold text-gray-900">PAR by Branch</h3>
+            <span className="text-[11px] text-gray-400 shrink-0">
+              {displayBranchFilter === 'ALL' ? 'All Branches' : branchCodeToName.get(displayBranchFilter)}
+            </span>
           </div>
-          <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex-1 overflow-x-auto">
-              {branchLoading ? (
-                <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
-                  <Loader2 className="animate-spin mb-3" size={24} />
-                  <p className="text-sm">Loading branch data...</p>
-                </div>
-              ) : (
-                <table className="min-w-full w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Open Loans</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">At-Risk</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {branchData.map((branch) => (
-                      <tr key={branch.code} className="hover:bg-gray-50">
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{branch.name}</p>
-                            <p className="text-xs text-gray-500">{branch.code}</p>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatMoney(branch.openLoans)}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatMoney(branch.pastMissed)}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={branch.parRate} />
-                        </td>
-                      </tr>
-                    ))}
-                    {branchData.length === 0 && (
-                      <tr>
-                        <td className="px-6 py-6 text-center text-gray-500" colSpan={4}>
-                          No branch data available. Trigger a snapshot to fetch data.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* PAR by Borrower Access ID */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <h3 className="text-lg font-semibold text-gray-900">PAR per Borrower Access ID</h3>
-              <div className="flex items-center gap-2">
-                <label htmlFor="borrower-branch-filter" className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Branch
-                </label>
-                <select
-                  id="borrower-branch-filter"
-                  value={borrowerBranchFilter}
-                  onChange={(e) => setBorrowerBranchFilter(e.target.value)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                >
-                  {branchOptions.map((option) => (
-                    <option key={option.code} value={option.code}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 overflow-x-auto overflow-y-auto">
-            {borrowerLoading ? (
-              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
-                <Loader2 className="animate-spin mb-3" size={24} />
-                <p className="text-sm">Loading borrower access data...</p>
-              </div>
+          <div className="overflow-x-auto">
+            {branchLoading ? (
+              <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-gray-400" /></div>
             ) : (
-              <table className="min-w-full w-full divide-y divide-gray-200">
+              <table className="w-full min-w-[520px] text-[12px]">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Loan Officer
-                    </th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Open Loans
-                    </th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      At-Risk
-                    </th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      PAR Rate
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Branches
-                    </th>
+                    {['Branch', 'Open Loans', 'At-Risk', 'PAR', 'PAR 30', 'PAR 90+'].map((h, i) => (
+                      <th key={h} className={`px-2.5 py-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>
+                    ))}
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredBorrowerData.map((entry) => {
-                    const officerId = String(entry.officerId ?? '')
-                    const officerName = loanOfficerMap.get(officerId)
-                    return (
-                      <tr key={entry.officerId} className="hover:bg-gray-50">
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              {officerName || officerId || 'Unknown Officer'}
-                            </p>
-                            {officerId && (
-                              <p className="text-xs text-gray-500">
-                                {officerName ? `ID: ${officerId}` : officerId}
-                              </p>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-gray-900">
-                          {formatMoney(entry.openLoans)}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-semibold text-red-600">
-                          {formatMoney(entry.pastMissed)}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.parRate} />
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">
-                          {entry.branches && entry.branches.length
-                            ? entry.branches.map((code) => branchCodeToName.get(code) || code).join(', ')
-                            : '—'}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {filteredBorrowerData.length === 0 && (
-                    <tr>
-                      <td className="px-6 py-6 text-center text-gray-500" colSpan={5}>
-                        No borrower access data available. Trigger a snapshot to fetch data.
+                <tbody className="divide-y divide-gray-100">
+                  {filteredBranchData.map((branch) => (
+                    <tr key={branch.code} className="hover:bg-gray-50">
+                      <td className="px-2.5 py-2.5">
+                        <p className="font-semibold text-gray-900">{branch.name}</p>
+                        <p className="text-[10px] text-gray-400">#{branch.code}</p>
                       </td>
+                      <td className="px-2.5 py-2.5 text-right text-gray-700 whitespace-nowrap">{formatCompact(branch.openLoans)}</td>
+                      <td className="px-2.5 py-2.5 text-right font-semibold text-red-600 whitespace-nowrap">{formatCompact(branch.pastMissed)}</td>
+                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.parRate} /></td>
+                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par30Rate} /></td>
+                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par90PlusRate} /></td>
                     </tr>
+                  ))}
+                  {!filteredBranchData.length && (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No branch data. Trigger a snapshot.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="bg-white rounded-[10px] shadow-sm border border-gray-200 overflow-hidden min-w-0 flex flex-col"
+          style={matchedPanelHeight ? { height: matchedPanelHeight } : undefined}
+        >
+          <div className="px-4 sm:px-[18px] py-3.5 border-b border-gray-100 flex items-center justify-between gap-2 shrink-0">
+            <h3 className="text-[13px] font-bold text-gray-900">PAR per Loan Officer</h3>
+            <select
+              value={borrowerBranchFilter}
+              onChange={(e) => setBorrowerBranchFilter(e.target.value)}
+              className="text-[11px] border border-gray-200 rounded-md px-2 py-1 text-gray-700 max-w-[140px] truncate"
+            >
+              {branchOptions.map((opt) => (
+                <option key={opt.code} value={opt.code}>{opt.name}</option>
+              ))}
+            </select>
+          </div>
+          <div
+            className={`flex-1 min-h-0 overflow-y-auto overflow-x-auto ${matchedPanelHeight ? '' : 'max-h-[50vh] xl:max-h-none'}`}
+          >
+            {borrowerLoading ? (
+              <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-gray-400" /></div>
+            ) : (
+              <table className="w-full min-w-[480px] text-[12px]">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    {['Loan Officer', 'Open Loans', 'At-Risk', 'PAR', 'Branch'].map((h, i) => (
+                      <th key={h} className={`px-2.5 py-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide ${i === 0 || i === 4 ? 'text-left' : 'text-right'}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {officerRows.map((row) => (
+                    <tr key={row.officerId} className={`hover:bg-gray-50 ${(row.parRate || 0) >= 30 ? 'bg-red-50/50' : ''}`}>
+                      <td className="px-2.5 py-2.5">
+                        <p className="font-semibold text-gray-900">{row.officerName}</p>
+                        <p className="text-[10px] text-gray-400">ID: {row.officerId}</p>
+                      </td>
+                      <td className="px-2.5 py-2.5 text-right text-gray-700 whitespace-nowrap">{row.openLoans ? formatCompact(row.openLoans) : '—'}</td>
+                      <td className="px-2.5 py-2.5 text-right font-semibold text-red-600 whitespace-nowrap">{row.pastMissed ? formatCompact(row.pastMissed) : '—'}</td>
+                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={row.parRate} /></td>
+                      <td className="px-2.5 py-2.5 text-left text-gray-500 text-[11px] max-w-[140px]">{row.branchNames}</td>
+                    </tr>
+                  ))}
+                  {!officerRows.length && (
+                    <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No officer data. Trigger a snapshot.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -760,226 +901,38 @@ function LogbookPAR({ country }) {
         </div>
       </div>
 
-      {monthOptions.length > 0 && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Daily PAR Trend</h3>
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="par-month-filter"
-                className="text-xs font-medium text-gray-500 uppercase tracking-wide"
-              >
-                Month
-              </label>
-              <select
-                id="par-month-filter"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-              >
-                {monthOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {dailyParData.length > 0 ? (
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={dailyParData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
-                <YAxis
-                  stroke="#6b7280"
-                  tick={{ fontSize: 12 }}
-                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
-                />
-                <Tooltip
-                  formatter={(value, name) => {
-                    if (name === 'parRate') {
-                      return [`${value.toFixed(2)}%`, 'PAR %']
-                    }
-                    return [value, name]
-                  }}
-                  contentStyle={{
-                    backgroundColor: 'white',
-                    border: '2px solid #e5e7eb',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                  }}
-                />
-                <Legend />
-                <Area
-                  type="monotone"
-                  dataKey="parRate"
-                  name="PAR %"
-                  stroke="#ef4444"
-                  fill="#fee2e2"
-                  fillOpacity={0.6}
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          ) : (
-            <div className="h-72 flex items-center justify-center text-gray-500">
-              <p>No data available for the selected month.</p>
-            </div>
+      <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <h3 className="text-[13px] font-bold text-gray-900">Management Commentary</h3>
+          {commentary?.generatedAt && !commentaryLoading && (
+            <span className="text-[10px] text-gray-400">
+              Updated{' '}
+              {new Date(commentary.generatedAt).toLocaleString('en-KE', {
+                timeZone: 'Africa/Nairobi',
+                day: 'numeric',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
           )}
         </div>
-      )}
-
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">PAR Aging by Branch</h3>
+        {commentaryLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500">
+            <Loader2 className="animate-spin" size={16} />
+            Generating commentary…
           </div>
-          <div className="flex-1 overflow-x-auto overflow-y-auto">
-            {branchLoading ? (
-              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
-                <Loader2 className="animate-spin mb-3" size={24} />
-                <p className="text-sm">Loading branch aging data...</p>
-              </div>
-            ) : (
-              <table className="min-w-[720px] w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Branch</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90+</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {branchData.map((branch) => (
-                    <tr key={`aging-${branch.code}`} className="hover:bg-gray-50">
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">{branch.name}</p>
-                          <p className="text-xs text-gray-500">{branch.code}</p>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-right">
-                        <ParRateBadge rate={branch.parRate ?? 0} />
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-right">
-                        <ParRateBadge rate={branch.par30Rate ?? 0} />
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-right">
-                        <ParRateBadge rate={branch.par60Rate ?? 0} />
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-right">
-                        <ParRateBadge rate={branch.par90Rate ?? 0} />
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-right">
-                        <ParRateBadge rate={branch.par90PlusRate ?? 0} />
-                      </td>
-                    </tr>
-                  ))}
-                  {branchData.length === 0 && (
-                    <tr>
-                      <td className="px-6 py-6 text-center text-gray-500" colSpan={6}>
-                        No branch aging data. Trigger a snapshot to fetch data.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            )}
+        ) : commentaryError ? (
+          <p className="text-sm text-red-600 py-4">{commentaryError}</p>
+        ) : commentary ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 lg:gap-6">
+            <CommentaryColumn title="Highlights" emoji="✅" items={commentary.highlights} dotClass="bg-green-500" />
+            <CommentaryColumn title="Risks" emoji="⚠️" items={commentary.risks} dotClass="bg-amber-500" />
+            <CommentaryColumn title="Actions" emoji="🎯" items={commentary.actions} dotClass="bg-[#E04B2A]" />
           </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex flex-col">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <h3 className="text-lg font-semibold text-gray-900">PAR Aging per Borrower Access ID</h3>
-              <div className="flex items-center gap-2">
-                <label htmlFor="aging-borrower-branch-filter" className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Branch
-                </label>
-                <select
-                  id="aging-borrower-branch-filter"
-                  value={borrowerBranchFilter}
-                  onChange={(e) => setBorrowerBranchFilter(e.target.value)}
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                >
-                  {branchOptions.map((option) => (
-                    <option key={option.code} value={option.code}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 overflow-x-auto overflow-y-auto">
-            {borrowerLoading ? (
-              <div className="p-6 flex flex-col items-center justify-center text-gray-600 min-h-[400px]">
-                <Loader2 className="animate-spin mb-3" size={24} />
-                <p className="text-sm">Loading officer aging data...</p>
-              </div>
-            ) : (
-              <table className="min-w-[720px] w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan Officer</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 30</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 60</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">PAR 90+</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredBorrowerData.map((entry) => {
-                    const officerId = String(entry.officerId ?? '')
-                    const officerName = loanOfficerMap.get(officerId)
-                    return (
-                      <tr key={`aging-${entry.officerId}`} className="hover:bg-gray-50">
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              {officerName || officerId || 'Unknown Officer'}
-                            </p>
-                            {officerId && officerName && (
-                              <p className="text-xs text-gray-500">ID: {officerId}</p>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.parRate ?? 0} />
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.par30Rate ?? 0} />
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.par60Rate ?? 0} />
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.par90Rate ?? 0} />
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <ParRateBadge rate={entry.par90PlusRate ?? 0} />
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {filteredBorrowerData.length === 0 && (
-                    <tr>
-                      <td className="px-6 py-6 text-center text-gray-500" colSpan={6}>
-                        No officer aging data. Trigger a snapshot to fetch data.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
+        ) : (
+          <p className="text-sm text-gray-400 py-4">Commentary will appear once PAR data is loaded.</p>
+        )}
       </div>
     </div>
   )
