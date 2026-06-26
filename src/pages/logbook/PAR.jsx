@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   BarChart3,
   Flame,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
@@ -132,6 +134,7 @@ function LogbookPAR({ country }) {
   const [commentary, setCommentary] = useState(null)
   const [commentaryLoading, setCommentaryLoading] = useState(false)
   const [commentaryError, setCommentaryError] = useState(null)
+  const [expandedBranchCode, setExpandedBranchCode] = useState(null)
   const branchPanelRef = useRef(null)
   const [matchedPanelHeight, setMatchedPanelHeight] = useState(null)
 
@@ -390,6 +393,10 @@ function LogbookPAR({ country }) {
   useEffect(() => {
     if (!selectedMonth && monthOptions.length) setSelectedMonth(monthOptions[0].value)
   }, [monthOptions, selectedMonth])
+
+  useEffect(() => {
+    setExpandedBranchCode(null)
+  }, [displayBranchFilter])
 
   const selectedMonthLabel = monthOptions.find((m) => m.value === selectedMonth)?.label || 'Selected month'
 
@@ -817,30 +824,71 @@ function LogbookPAR({ country }) {
             {branchLoading ? (
               <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-gray-400" /></div>
             ) : (
-              <table className="w-full min-w-[520px] text-[12px]">
+              <table className="w-full min-w-[580px] text-[12px]">
                 <thead className="bg-gray-50">
                   <tr>
-                    {['Branch', 'Open Loans', 'At-Risk', 'PAR', 'PAR 30', 'PAR 90+'].map((h, i) => (
+                    {['Branch', 'Open Loans', 'At-Risk', 'PAR', 'PAR 30', 'PAR 60', 'PAR 90+'].map((h, i) => (
                       <th key={h} className={`px-2.5 py-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredBranchData.map((branch) => (
-                    <tr key={branch.code} className="hover:bg-gray-50">
-                      <td className="px-2.5 py-2.5">
-                        <p className="font-semibold text-gray-900">{branch.name}</p>
-                        <p className="text-[10px] text-gray-400">#{branch.code}</p>
-                      </td>
-                      <td className="px-2.5 py-2.5 text-right text-gray-700 whitespace-nowrap">{formatCompact(branch.openLoans)}</td>
-                      <td className="px-2.5 py-2.5 text-right font-semibold text-red-600 whitespace-nowrap">{formatCompact(branch.pastMissed)}</td>
-                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.parRate} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par30Rate} /></td>
-                      <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par90PlusRate} /></td>
-                    </tr>
-                  ))}
+                  {filteredBranchData.map((branch) => {
+                    const isExpanded = expandedBranchCode === branch.code
+                    return (
+                      <React.Fragment key={branch.code}>
+                        <tr className={isExpanded ? 'bg-gray-50' : 'hover:bg-gray-50'}>
+                          <td className="px-2.5 py-2.5">
+                            <div className="flex items-start gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedBranchCode(isExpanded ? null : branch.code)}
+                                className="p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-700 shrink-0 mt-0.5"
+                                aria-label={isExpanded ? 'Collapse branch details' : 'Expand branch details'}
+                              >
+                                {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                              </button>
+                              <div className="min-w-0">
+                                <p className="font-semibold text-gray-900">{branch.name}</p>
+                                <p className="text-[10px] text-gray-400">#{branch.code}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-2.5 py-2.5 text-right text-gray-700 whitespace-nowrap">{formatCompact(branch.openLoans)}</td>
+                          <td className="px-2.5 py-2.5 text-right font-semibold text-red-600 whitespace-nowrap">{formatCompact(branch.pastMissed)}</td>
+                          <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.parRate} /></td>
+                          <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par30Rate} /></td>
+                          <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par60Rate} /></td>
+                          <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par90PlusRate} /></td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-gray-50">
+                            <td colSpan={7} className="px-4 pb-3 pt-0">
+                              <div className="ml-6 grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2.5">
+                                <div>
+                                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">PAR 30</p>
+                                  <p className="text-[12px] font-semibold text-amber-600 mt-0.5">{formatMoney(branch.par30 || 0)}</p>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{Number(branch.par30Rate || 0).toFixed(1)}% of portfolio</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">PAR 60</p>
+                                  <p className="text-[12px] font-semibold text-amber-600 mt-0.5">{formatMoney(branch.par60 || 0)}</p>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{Number(branch.par60Rate || 0).toFixed(1)}% of portfolio</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">PAR 90</p>
+                                  <p className="text-[12px] font-semibold text-green-600 mt-0.5">{formatMoney(branch.par90 || 0)}</p>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{Number(branch.par90Rate || 0).toFixed(1)}% of portfolio</p>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    )
+                  })}
                   {!filteredBranchData.length && (
-                    <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No branch data. Trigger a snapshot.</td></tr>
+                    <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No branch data. Trigger a snapshot.</td></tr>
                   )}
                 </tbody>
               </table>
