@@ -62,6 +62,8 @@ export const API_URLS = {
   reports: {
     generate: `${API_BASE}/api/reports/generate`,
     bodaTopupQualifiers: `${API_BASE}/api/reports/boda-topup-qualifiers`,
+    director: `${API_BASE}/api/reports/director`,
+    directorDocx: `${API_BASE}/api/reports/director/docx`,
   },
   credit: {
     clientPerformance: (product) => `${API_BASE}/api/credit/client-performance?product=${encodeURIComponent(product || '')}`,

@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext.jsx'
 import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { formatKES } from '../../utils/format.js'
 import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookWeeklyReportTemplate.js'
+import { renderDirectorReportHTML } from '../../reports/directorReportTemplate.js'
 import { DEFAULT_MAINTENANCE_MESSAGE } from '../../components/MaintenanceDownScreen.jsx'
 
 function DataOverview() {
@@ -64,6 +65,19 @@ function DataOverview() {
   const [bodaTopupError, setBodaTopupError] = useState(null)
   const [showBodaTopupReport, setShowBodaTopupReport] = useState(false)
   const [showBodaTopupDownloadMenu, setShowBodaTopupDownloadMenu] = useState(false)
+
+  // Director Report State
+  const [directorAsAt, setDirectorAsAt] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  })
+  const [directorReportHtml, setDirectorReportHtml] = useState('')
+  const [directorReportPayload, setDirectorReportPayload] = useState(null)
+  const [directorLoading, setDirectorLoading] = useState(false)
+  const [directorError, setDirectorError] = useState(null)
+  const [showDirectorReport, setShowDirectorReport] = useState(false)
+  const [showDirectorDownloadMenu, setShowDirectorDownloadMenu] = useState(false)
+
   const [fromMonth, setFromMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -822,6 +836,40 @@ function DataOverview() {
     }
   }
 
+  const generateDirectorReport = async () => {
+    try {
+      setDirectorLoading(true)
+      setDirectorError(null)
+      setDirectorReportHtml('')
+      setDirectorReportPayload(null)
+
+      const res = await fetch(API_URLS.reports.director, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asAt: directorAsAt }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `Failed to generate report (${res.status})`)
+
+      const html = renderDirectorReportHTML({
+        summary: data.summary,
+        commentary: data.commentary,
+        generatedAt: data.generatedAt,
+      })
+      setDirectorReportHtml(html)
+      setDirectorReportPayload({
+        summary: data.summary,
+        commentary: data.commentary,
+        generatedAt: data.generatedAt,
+      })
+    } catch (e) {
+      setDirectorError(e.message || 'Failed to generate director report')
+    } finally {
+      setDirectorLoading(false)
+    }
+  }
+
 
   // Generic download functions
   const downloadXLSXGeneric = (report, reportName, fromMonthFilter, toMonthFilter, labelHeader = 'Month', labelKey = 'month') => {
@@ -1253,6 +1301,100 @@ function DataOverview() {
     const opt = {
       margin: [0, 0, 0, 0],
       filename: `${safeName}-${logbookWeeklyAsAt}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 1400,
+        windowHeight: element.scrollHeight,
+      },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'legacy'] },
+    }
+
+    await html2pdf().set(opt).from(element).save()
+    document.body.removeChild(iframe)
+  }
+
+  const downloadDirectorHTML = () => {
+    const safeName = 'board-report'
+    const blob = new Blob([directorReportHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeName}-${directorAsAt}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadDirectorDOCX = async () => {
+    const safeName = 'board-report'
+    if (!directorReportPayload?.summary) {
+      setDirectorError('Generate the board report before downloading Word.')
+      return
+    }
+    try {
+      const res = await fetch(API_URLS.reports.directorDocx, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          summary: directorReportPayload.summary,
+          commentary: directorReportPayload.commentary,
+          generatedAt: directorReportPayload.generatedAt,
+          asAt: directorAsAt,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `Word export failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${safeName}-${directorAsAt}.docx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setDirectorError(e.message || 'Failed to download Word document')
+    }
+  }
+
+  const downloadDirectorPDF = async () => {
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.open()
+      printWindow.document.write(directorReportHtml)
+      printWindow.document.close()
+      printWindow.onload = () => setTimeout(() => printWindow.print(), 500)
+      return
+    }
+
+    const html2pdf = (await import('html2pdf.js')).default
+    const safeName = 'board-report'
+    const iframe = document.createElement('iframe')
+    iframe.style.position = 'fixed'
+    iframe.style.top = '0'
+    iframe.style.left = '0'
+    iframe.style.width = '1400px'
+    iframe.style.height = '900px'
+    iframe.style.border = 'none'
+    iframe.style.zIndex = '9999'
+    document.body.appendChild(iframe)
+
+    iframe.contentDocument.open()
+    iframe.contentDocument.write(directorReportHtml)
+    iframe.contentDocument.close()
+
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+
+    const element = iframe.contentDocument.body
+    const opt = {
+      margin: [8, 8, 8, 8],
+      filename: `${safeName}-${directorAsAt}.pdf`,
       image: { type: 'jpeg', quality: 0.98 },
       html2canvas: {
         scale: 2,
@@ -2257,6 +2399,139 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Director Report Modal */}
+      {showDirectorReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowDirectorReport(false)
+              setShowDirectorDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Board Report</h2>
+              <button
+                onClick={() => {
+                  setShowDirectorReport(false)
+                  setShowDirectorDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">As at (Date)</label>
+                  <input
+                    type="date"
+                    value={directorAsAt}
+                    onChange={(e) => setDirectorAsAt(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={generateDirectorReport}
+                    disabled={directorLoading}
+                    className="px-4 py-2 rounded-lg bg-[#E04B2A] text-white text-sm font-semibold hover:bg-[#c94324] transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {directorLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                        Generating with Claude…
+                      </>
+                    ) : (
+                      'Generate Board Report'
+                    )}
+                  </button>
+
+                  {directorReportHtml && !directorLoading && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowDirectorDownloadMenu((v) => !v)}
+                        className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                      >
+                        Download
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showDirectorDownloadMenu && (
+                        <div className="absolute mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                          <button
+                            onClick={() => {
+                              setShowDirectorDownloadMenu(false)
+                              downloadDirectorDOCX()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download Word (.docx)
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowDirectorDownloadMenu(false)
+                              downloadDirectorHTML()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download HTML
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowDirectorDownloadMenu(false)
+                              downloadDirectorPDF()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download PDF
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {directorLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
+                  <p className="mt-4 text-sm text-gray-500">
+                    Aggregating Logbook, Zidisha, Boda &amp; Advans data and generating AI commentary…
+                  </p>
+                  <p className="mt-1 text-xs text-gray-400">This may take 30–60 seconds</p>
+                </div>
+              ) : directorError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {directorError}
+                </div>
+              ) : !directorReportHtml ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">
+                    Click &quot;Generate Board Report&quot; to build a cross-product board pack with Claude AI commentary.
+                  </p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <iframe
+                    title="Board Report Preview"
+                    style={{ width: '100%', height: '75vh', border: 0 }}
+                    srcDoc={directorReportHtml}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Boda Top Up Qualifiers Modal */}
       {showBodaTopupReport && (
         <div
@@ -2399,6 +2674,24 @@ function DataOverview() {
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Director Report Card */}
+          <button
+            onClick={() => setShowDirectorReport(true)}
+            className="bg-white rounded-lg border-2 border-[#E04B2A]/30 shadow-sm hover:shadow-md transition p-6 text-left md:col-span-2"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Board Report</h2>
+                <p className="text-sm text-gray-500">
+                  Board &amp; Management Performance Report — branch tables, PAR heat map, KPIs &amp; directives (matches board pack format)
+                </p>
+              </div>
+              <svg className="w-6 h-6 text-[#E04B2A]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
           {/* Zidisha Report Card */}
           <button
             onClick={() => setShowZidishaReport(true)}

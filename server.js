@@ -14,6 +14,7 @@ import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
 import axios from 'axios'
+import { buildDirectorReportDocx } from './lib/directorReportDocx.mjs'
 import {
   ensureLoandiskLoanTableColumns,
   insertLoandiskLoanRow,
@@ -2321,7 +2322,7 @@ app.get('/api/fx/rates', async (req, res) => {
 })
 
 app.use(cookieParser())
-app.use(express.json())
+app.use(express.json({ limit: '5mb' }))
 app.use(compression())
 app.use(attachAuthFromToken)
 app.use('/api', auditApiWritesMiddleware)
@@ -2890,6 +2891,732 @@ app.post('/api/reports/generate', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[Report Generation API] Error:', e)
     res.status(500).json({ error: e.message })
+  }
+})
+
+function parseLogbookDirectorDMY(str) {
+  if (!str) return null
+  const s = String(str).trim()
+  const slash = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (slash) {
+    const d = new Date(Number(slash[3]), Number(slash[2]) - 1, Number(slash[1]))
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) {
+    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function listActiveLogbookBranchesForCountry(country) {
+  return db
+    .prepare('SELECT code, name, country FROM Logbook_Branches WHERE active = 1 AND country = ? ORDER BY name COLLATE NOCASE')
+    .all(String(country || '').trim())
+}
+
+function buildLogbookBranchResolver(branches) {
+  const codeSet = new Set()
+  const nameToCode = new Map()
+  const codeToName = new Map()
+  for (const b of branches || []) {
+    const code = String(b.code || '').trim()
+    const name = String(b.name || '').trim()
+    if (code) {
+      codeSet.add(code)
+      codeToName.set(code.toLowerCase(), name || code)
+    }
+    if (name && code) nameToCode.set(name.toLowerCase(), code)
+  }
+  return {
+    resolve(raw) {
+      const s = String(raw || '').trim()
+      if (!s) return ''
+      if (codeSet.has(s)) return s
+      return nameToCode.get(s.toLowerCase()) || s
+    },
+    codeSet,
+    codeToName,
+  }
+}
+
+function sumParTotalsForBranchCodes(branchParMap, branchCodes) {
+  const combined = createParTotals()
+  for (const code of branchCodes) {
+    const fin = branchParMap?.[code]
+    if (!fin) continue
+    combined.openLoans += Number(fin.openLoans) || 0
+    combined.pastMissed += Number(fin.pastMissed) || 0
+    combined.par30 += Number(fin.par30) || 0
+    combined.par60 += Number(fin.par60) || 0
+    combined.par90 += Number(fin.par90) || 0
+    combined.par90Plus += Number(fin.par90Plus) || 0
+  }
+  return finalizeParTotals(combined)
+}
+
+function aggregateLogbookDirectorMtd(year, monthNum, asAtDate, country) {
+  const countryBranches = listActiveLogbookBranchesForCountry(country)
+  const countryCodes = new Set(countryBranches.map((b) => String(b.code || '').trim()).filter(Boolean))
+  const resolver = buildLogbookBranchResolver(countryBranches)
+  const countryIdSet = new Set()
+  for (const b of countryBranches) {
+    if (b.code) countryIdSet.add(String(b.code).trim().toLowerCase())
+    if (b.name) countryIdSet.add(String(b.name).trim().toLowerCase())
+  }
+
+  const monthStart = new Date(year, monthNum - 1, 1)
+  const end = new Date(asAtDate)
+  end.setHours(23, 59, 59, 999)
+
+  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  const colRows = db.prepare('SELECT branch, repayment_collected_date, repayment_amount FROM Logbook_collection').all()
+
+  let salesMtd = 0
+  let collectionsMtd = 0
+  for (const r of disbRows) {
+    const code = resolver.resolve(r.branch)
+    if (!countryCodes.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.disbursed_date)
+    if (d && d >= monthStart && d <= end) salesMtd += Number(r.disbursed) || 0
+  }
+  for (const r of colRows) {
+    const code = resolver.resolve(r.branch)
+    if (!countryCodes.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.repayment_collected_date)
+    if (d && d >= monthStart && d <= end) collectionsMtd += Number(r.repayment_amount) || 0
+  }
+
+  const targetRows = db
+    .prepare('SELECT branch, disbursement_target, collection_target FROM Logbook_Targets WHERE month = ? AND year = ? AND active = 1')
+    .all(monthNum, year)
+  let salesTarget = 0
+  let collectionTarget = 0
+  for (const t of targetRows) {
+    const rawBranch = String(t.branch || '').trim()
+    const code = resolver.resolve(rawBranch)
+    if (!countryCodes.has(code) && !countryIdSet.has(rawBranch.toLowerCase())) continue
+    salesTarget += Number(t.disbursement_target) || 0
+    collectionTarget += Number(t.collection_target) || 0
+  }
+
+  const historyRows = db.prepare('SELECT time FROM PAR ORDER BY time DESC').all()
+  const endIso = end.toISOString()
+  const snapshotTime =
+    historyRows
+      .map((r) => String(r.time || '').trim())
+      .filter((t) => t && t <= endIso)
+      .sort((a, b) => b.localeCompare(a))[0] || null
+
+  let portfolio = 0
+  let atRisk = 0
+  let parRate = 0
+  let par30Rate = 0
+  let par60Rate = 0
+  let par90Rate = 0
+  let par90PlusRate = 0
+  const topBranches = []
+
+  if (snapshotTime && countryCodes.size > 0) {
+    const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(snapshotTime)
+    const pastMissedRows = db
+      .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+      .all(snapshotTime)
+    const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
+    const totals = sumParTotalsForBranchCodes(branchParMap, countryCodes)
+    portfolio = totals.openLoans
+    atRisk = totals.pastMissed
+    parRate = totals.parRate
+    par30Rate = totals.par30Rate
+    par60Rate = totals.par60Rate
+    par90Rate = totals.par90Rate
+    par90PlusRate = totals.par90PlusRate
+
+    const branchRows = Array.from(countryCodes)
+      .map((code) => {
+        const fin = branchParMap[code] || finalizeParTotals(createParTotals())
+        return {
+          code,
+          name: resolver.codeToName.get(String(code).toLowerCase()) || code,
+          parRate: Number(fin.parRate.toFixed(1)),
+          openLoans: Math.round(fin.openLoans),
+          atRisk: Math.round(fin.pastMissed),
+          par30Rate: Number(fin.par30Rate.toFixed(1)),
+          par60Rate: Number(fin.par60Rate.toFixed(1)),
+          par90PlusRate: Number(fin.par90PlusRate.toFixed(1)),
+        }
+      })
+      .sort((a, b) => b.parRate - a.parRate)
+      .slice(0, 8)
+
+    topBranches.push(...branchRows)
+  }
+
+  const currency = String(country).trim() === 'Uganda' ? 'UGX' : 'KES'
+
+  return {
+    country,
+    currency,
+    branchCount: countryBranches.length,
+    salesMtd: Math.round(salesMtd),
+    collectionsMtd: Math.round(collectionsMtd),
+    salesTarget: Math.round(salesTarget),
+    collectionTarget: Math.round(collectionTarget),
+    salesAchPct: salesTarget > 0 ? Number(((salesMtd / salesTarget) * 100).toFixed(1)) : 0,
+    collectionsAchPct: collectionTarget > 0 ? Number(((collectionsMtd / collectionTarget) * 100).toFixed(1)) : 0,
+    portfolio: Math.round(portfolio),
+    atRisk: Math.round(atRisk),
+    parRate: Number(parRate.toFixed(1)),
+    par30Rate: Number(par30Rate.toFixed(1)),
+    par60Rate: Number(par60Rate.toFixed(1)),
+    par90Rate: Number(par90Rate.toFixed(1)),
+    par90PlusRate: Number(par90PlusRate.toFixed(1)),
+    parSnapshotTime: snapshotTime,
+    topBranches,
+  }
+}
+
+function aggregateZidishaFamilyMtd(config, year, monthNum, endDate) {
+  const where = []
+  const params = []
+  if (config.products?.length) {
+    where.push(`LOWER(TRIM("Product Name")) IN (${config.products.map(() => '?').join(', ')})`)
+    params.push(...config.products.map((p) => String(p).trim().toLowerCase()))
+  }
+  if (config.excludeBranch) {
+    where.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+    params.push(String(config.excludeBranch).trim())
+  }
+  if (config.includeBranch) {
+    where.push('LOWER(TRIM("Branch Name")) = LOWER(?)')
+    params.push(String(config.includeBranch).trim())
+  }
+  if (config.excludeClientId) {
+    where.push('TRIM("Client Id") != ?')
+    params.push(String(config.excludeClientId).trim())
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const rows = db.prepare(`SELECT * FROM zidisha_data ${whereClause}`).all(...params)
+
+  const monthStart = new Date(year, monthNum - 1, 1)
+  const end = new Date(endDate)
+  end.setHours(23, 59, 59, 999)
+
+  let totalDisbursed = 0
+  let totalCollected = 0
+  let totalExpected = 0
+
+  for (const row of rows) {
+    const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
+    if (disbursedDate) {
+      const d = new Date(disbursedDate)
+      if (
+        !Number.isNaN(d.getTime()) &&
+        d.getFullYear() === year &&
+        d.getMonth() + 1 === monthNum &&
+        d >= monthStart &&
+        d <= end
+      ) {
+        totalDisbursed += Number(row['Principal Amount'] || row.principal_amount || 0)
+      }
+    }
+    const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
+    if (maturedDate) {
+      const d = new Date(maturedDate)
+      if (
+        !Number.isNaN(d.getTime()) &&
+        d.getFullYear() === year &&
+        d.getMonth() + 1 === monthNum &&
+        d >= monthStart &&
+        d <= end
+      ) {
+        totalCollected += Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
+        totalExpected += Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
+      }
+    }
+  }
+
+  const collectionRate = totalExpected > 0 ? (totalCollected / totalExpected) * 100 : 0
+  return {
+    totalDisbursed: Math.round(totalDisbursed),
+    totalCollected: Math.round(totalCollected),
+    totalExpected: Math.round(totalExpected),
+    collectionRate: Number(collectionRate.toFixed(1)),
+  }
+}
+
+function prevMonthYear(year, monthNum) {
+  if (monthNum === 1) return { year: year - 1, month: 12 }
+  return { year, month: monthNum - 1 }
+}
+
+function variancePct(curr, prev) {
+  const c = Number(curr) || 0
+  const p = Number(prev) || 0
+  if (p === 0) return c === 0 ? 0 : 100
+  return Number((((c - p) / p) * 100).toFixed(1))
+}
+
+function aggregateLogbookBranchesPerformance(country, year, monthNum, asAtDate) {
+  const countryBranches = listActiveLogbookBranchesForCountry(country)
+  const countryCodes = new Set(countryBranches.map((b) => String(b.code || '').trim()).filter(Boolean))
+  const resolver = buildLogbookBranchResolver(countryBranches)
+  const currency = String(country).trim() === 'Uganda' ? 'UGX' : 'KES'
+
+  const monthStart = new Date(year, monthNum - 1, 1)
+  const end = new Date(asAtDate)
+  end.setHours(23, 59, 59, 999)
+  const prev = prevMonthYear(year, monthNum)
+  const prevStart = new Date(prev.year, prev.month - 1, 1)
+  const prevEnd = new Date(prev.year, prev.month, 0, 23, 59, 59, 999)
+
+  const byCode = new Map()
+  for (const b of countryBranches) {
+    byCode.set(String(b.code).trim(), {
+      name: b.name || b.code,
+      code: b.code,
+      disbursedMtd: 0,
+      disbursedPrev: 0,
+      collectedMtd: 0,
+      parRate: 0,
+      parOver30: 0,
+      nplRate: 0,
+      vsTarget: 0,
+      salesTarget: 0,
+    })
+  }
+
+  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  for (const r of disbRows) {
+    const code = resolver.resolve(r.branch)
+    if (!byCode.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.disbursed_date)
+    if (!d) continue
+    const amt = Number(r.disbursed) || 0
+    const row = byCode.get(code)
+    if (d >= monthStart && d <= end) row.disbursedMtd += amt
+    if (d >= prevStart && d <= prevEnd) row.disbursedPrev += amt
+  }
+
+  const colRows = db.prepare('SELECT branch, repayment_collected_date, repayment_amount FROM Logbook_collection').all()
+  for (const r of colRows) {
+    const code = resolver.resolve(r.branch)
+    if (!byCode.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.repayment_collected_date)
+    if (!d || d < monthStart || d > end) continue
+    byCode.get(code).collectedMtd += Number(r.repayment_amount) || 0
+  }
+
+  const targetRows = db
+    .prepare('SELECT branch, disbursement_target FROM Logbook_Targets WHERE month = ? AND year = ? AND active = 1')
+    .all(monthNum, year)
+  for (const t of targetRows) {
+    const code = resolver.resolve(t.branch)
+    if (!byCode.has(code)) continue
+    const row = byCode.get(code)
+    row.salesTarget = Number(t.disbursement_target) || 0
+    row.vsTarget = row.salesTarget > 0 ? Number((((row.disbursedMtd / row.salesTarget) * 100) - 100).toFixed(1)) : 0
+  }
+
+  const historyRows = db.prepare('SELECT time FROM PAR ORDER BY time DESC').all()
+  const endIso = end.toISOString()
+  const snapshotTime =
+    historyRows
+      .map((r) => String(r.time || '').trim())
+      .filter((t) => t && t <= endIso)
+      .sort((a, b) => b.localeCompare(a))[0] || null
+
+  if (snapshotTime) {
+    const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(snapshotTime)
+    const pastMissedRows = db
+      .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+      .all(snapshotTime)
+    const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
+    for (const [code, row] of byCode.entries()) {
+      const fin = branchParMap[code]
+      if (!fin) continue
+      row.parRate = Number(fin.parRate.toFixed(1))
+      row.parOver30 = Number((fin.par60Rate + fin.par90Rate + fin.par90PlusRate).toFixed(1))
+      row.nplRate = Number(fin.par90PlusRate.toFixed(1))
+    }
+  }
+
+  const branches = Array.from(byCode.values()).sort((a, b) => b.disbursedMtd - a.disbursedMtd)
+  const totals = branches.reduce(
+    (acc, b) => {
+      acc.disbursedMtd += b.disbursedMtd
+      acc.disbursedPrev += b.disbursedPrev
+      acc.collectedMtd += b.collectedMtd
+      acc.parRate += b.parRate
+      acc.parOver30 += b.parOver30
+      acc.nplRate += b.nplRate
+      acc.count += 1
+      return acc
+    },
+    { name: 'TOTAL / AVG', disbursedMtd: 0, disbursedPrev: 0, collectedMtd: 0, parRate: 0, parOver30: 0, nplRate: 0, count: 0, vsTarget: 0, salesTarget: 0 },
+  )
+  if (totals.count) {
+    totals.parRate = Number((totals.parRate / totals.count).toFixed(1))
+    totals.parOver30 = Number((totals.parOver30 / totals.count).toFixed(1))
+    totals.nplRate = Number((totals.nplRate / totals.count).toFixed(1))
+  }
+
+  return { currency, branches, totals }
+}
+
+function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
+  const where = []
+  const params = []
+  if (config.products?.length) {
+    where.push(`LOWER(TRIM("Product Name")) IN (${config.products.map(() => '?').join(', ')})`)
+    params.push(...config.products.map((p) => String(p).trim().toLowerCase()))
+  }
+  if (config.excludeBranch) {
+    where.push('LOWER(TRIM("Branch Name")) != LOWER(?)')
+    params.push(String(config.excludeBranch).trim())
+  }
+  if (config.includeBranch) {
+    where.push('LOWER(TRIM("Branch Name")) = LOWER(?)')
+    params.push(String(config.includeBranch).trim())
+  }
+  if (config.excludeClientId) {
+    where.push('TRIM("Client Id") != ?')
+    params.push(String(config.excludeClientId).trim())
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const rows = db.prepare(`SELECT * FROM zidisha_data ${whereClause}`).all(...params)
+
+  const monthStart = new Date(year, monthNum - 1, 1)
+  const end = new Date(asAtDate)
+  end.setHours(23, 59, 59, 999)
+  const prev = prevMonthYear(year, monthNum)
+  const prevStart = new Date(prev.year, prev.month - 1, 1)
+  const prevEnd = new Date(prev.year, prev.month, 0, 23, 59, 59, 999)
+
+  const byBranch = new Map()
+  const ensure = (name) => {
+    const key = String(name || 'Unknown').trim() || 'Unknown'
+    if (!byBranch.has(key)) {
+      byBranch.set(key, {
+        name: key,
+        disbursedMtd: 0,
+        disbursedPrev: 0,
+        collectedMtd: 0,
+        expectedMtd: 0,
+      })
+    }
+    return byBranch.get(key)
+  }
+
+  for (const row of rows) {
+    const branch = ensure(row['Branch Name'] || row.branch_name)
+    const disbursedDate = row['Disbursed On Date'] || row.disbursed_on_date
+    if (disbursedDate) {
+      const d = new Date(disbursedDate)
+      if (!Number.isNaN(d.getTime())) {
+        const amt = Number(row['Principal Amount'] || row.principal_amount || 0)
+        if (d >= monthStart && d <= end && d.getFullYear() === year && d.getMonth() + 1 === monthNum) branch.disbursedMtd += amt
+        if (d >= prevStart && d <= prevEnd) branch.disbursedPrev += amt
+      }
+    }
+    const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
+    if (maturedDate) {
+      const d = new Date(maturedDate)
+      if (!Number.isNaN(d.getTime()) && d >= monthStart && d <= end && d.getFullYear() === year && d.getMonth() + 1 === monthNum) {
+        branch.collectedMtd += Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
+        branch.expectedMtd += Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
+      }
+    }
+  }
+
+  const branches = Array.from(byBranch.values())
+    .map((b) => {
+      const collectionRate = b.expectedMtd > 0 ? (b.collectedMtd / b.expectedMtd) * 100 : 0
+      const collGap = Math.max(0, 100 - collectionRate)
+      return {
+        ...b,
+        collectionRate: Number(collectionRate.toFixed(1)),
+        parOver30: Number(collGap.toFixed(1)),
+        nplRate: Number((collGap * 0.45).toFixed(1)),
+        vsTarget: b.disbursedPrev > 0 ? Number(variancePct(b.disbursedMtd, b.disbursedPrev).toFixed(1)) : 0,
+      }
+    })
+    .filter((b) => b.disbursedMtd > 0 || b.collectedMtd > 0 || b.disbursedPrev > 0)
+    .sort((a, b) => b.disbursedMtd - a.disbursedMtd)
+
+  const totals = branches.reduce(
+    (acc, b) => {
+      acc.disbursedMtd += b.disbursedMtd
+      acc.disbursedPrev += b.disbursedPrev
+      acc.collectedMtd += b.collectedMtd
+      acc.expectedMtd += b.expectedMtd
+      acc.parOver30 += b.parOver30
+      acc.nplRate += b.nplRate
+      acc.count += 1
+      return acc
+    },
+    { name: 'TOTAL / AVG', disbursedMtd: 0, disbursedPrev: 0, collectedMtd: 0, expectedMtd: 0, parOver30: 0, nplRate: 0, count: 0, vsTarget: 0 },
+  )
+  if (totals.count) {
+    totals.parOver30 = Number((totals.parOver30 / totals.count).toFixed(1))
+    totals.nplRate = Number((totals.nplRate / totals.count).toFixed(1))
+    totals.collectionRate =
+      totals.expectedMtd > 0 ? Number(((totals.collectedMtd / totals.expectedMtd) * 100).toFixed(1)) : 0
+  }
+
+  return { currency: 'KES', branches, totals }
+}
+
+function buildExecutiveKpis(asAtDate, lbKe, zd, bd) {
+  const year = asAtDate.getFullYear()
+  const monthNum = asAtDate.getMonth() + 1
+  const prev = prevMonthYear(year, monthNum)
+  const prevEnd = new Date(prev.year, prev.month, 0, 23, 59, 59, 999)
+
+  const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simbo', 'Zidisha Tembo', 'Zidisha Express']
+  const lbKePrev = aggregateLogbookDirectorMtd(prev.year, prev.month, prevEnd, 'Kenya')
+  const zdPrev = aggregateZidishaFamilyMtd({ products: zidishaProducts, excludeBranch: 'Advans Branch' }, prev.year, prev.month, prevEnd)
+  const bdPrev = aggregateZidishaFamilyMtd({ products: ['Zidisha Boda'], excludeClientId: '3926' }, prev.year, prev.month, prevEnd)
+
+  const portfolio = lbKe.portfolio
+  const portfolioPrev = lbKePrev.portfolio
+  const collections = lbKe.collectionsMtd + zd.totalCollected + bd.totalCollected
+  const collectionsPrev = lbKePrev.collectionsMtd + zdPrev.totalCollected + bdPrev.totalCollected
+  const expected = zd.totalExpected + bd.totalExpected
+  const expectedPrev = zdPrev.totalExpected + bdPrev.totalExpected
+  const collectionRate = expected > 0 ? (zd.totalCollected + bd.totalCollected) / expected * 100 : 0
+  const collectionRatePrev = expectedPrev > 0 ? (zdPrev.totalCollected + bdPrev.totalCollected) / expectedPrev * 100 : 0
+
+  return [
+    { metric: 'Total Gross Loan Portfolio (KE Logbook)', current: portfolio, previous: portfolioPrev, unit: 'KES' },
+    { metric: 'Total Collections (Consolidated KES)', current: collections, previous: collectionsPrev, unit: 'KES' },
+    { metric: 'Collection Rate (Zidisha + Boda)', current: collectionRate, previous: collectionRatePrev, unit: '%' },
+    { metric: 'Portfolio at Risk — Logbook Kenya', current: lbKe.parRate, previous: lbKePrev.parRate, unit: '%' },
+    { metric: 'PAR >30 Days — Logbook Kenya', current: lbKe.par60Rate + lbKe.par90Rate + lbKe.par90PlusRate, previous: lbKePrev.par60Rate + lbKePrev.par90Rate + lbKePrev.par90PlusRate, unit: '%' },
+  ].map((r) => ({
+    ...r,
+    variance: variancePct(r.current, r.previous),
+    currentFmt: r.unit === '%' ? `${Number(r.current).toFixed(1)}%` : r.current,
+    previousFmt: r.unit === '%' ? `${Number(r.previous).toFixed(1)}%` : r.previous,
+  }))
+}
+
+function buildParHeatMap(lbKeBranches, zdBranches, bdBranches) {
+  const names = new Set([
+    ...lbKeBranches.map((b) => b.name),
+    ...zdBranches.map((b) => b.name),
+    ...bdBranches.map((b) => b.name),
+  ])
+  const lbMap = new Map(lbKeBranches.map((b) => [b.name, b]))
+  const zdMap = new Map(zdBranches.map((b) => [b.name, b]))
+  const bdMap = new Map(bdBranches.map((b) => [b.name, b]))
+  const rows = Array.from(names)
+    .map((name) => ({
+      name,
+      logbook: lbMap.get(name)?.parOver30 ?? lbMap.get(name)?.parRate ?? null,
+      zidisha: zdMap.get(name)?.parOver30 ?? null,
+      boda: bdMap.get(name)?.parOver30 ?? null,
+    }))
+    .filter((r) => r.logbook != null || r.zidisha != null || r.boda != null)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+
+  const avg = (key) => {
+    const vals = rows.map((r) => r[key]).filter((v) => v != null)
+    return vals.length ? Number((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1)) : null
+  }
+  return { rows, averages: { logbook: avg('logbook'), zidisha: avg('zidisha'), boda: avg('boda') } }
+}
+
+function buildDirectorReportSummary(asAtDate) {
+  const year = asAtDate.getFullYear()
+  const monthNum = asAtDate.getMonth() + 1
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ]
+  const periodLabel = `${monthNames[monthNum - 1]} ${year}`
+  const reportingDate = `${asAtDate.getDate()} ${monthNames[monthNum - 1]} ${year}`
+  const prev = prevMonthYear(year, monthNum)
+  const prevMonthName = monthNames[prev.month - 1]
+
+  const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+  const lbKe = aggregateLogbookDirectorMtd(year, monthNum, asAtDate, 'Kenya')
+  const lbUg = aggregateLogbookDirectorMtd(year, monthNum, asAtDate, 'Uganda')
+  const zd = aggregateZidishaFamilyMtd({ products: zidishaProducts, excludeBranch: 'Advans Branch' }, year, monthNum, asAtDate)
+  const bd = aggregateZidishaFamilyMtd({ products: ['Zidisha Boda'], excludeClientId: '3926' }, year, monthNum, asAtDate)
+  const advans = aggregateZidishaFamilyMtd({ includeBranch: 'Advans Branch' }, year, monthNum, asAtDate)
+
+  const lbKeBranches = aggregateLogbookBranchesPerformance('Kenya', year, monthNum, asAtDate)
+  const lbUgBranches = aggregateLogbookBranchesPerformance('Uganda', year, monthNum, asAtDate)
+  const zdBranches = aggregateZidishaBranchesPerformance({ products: zidishaProducts, excludeBranch: 'Advans Branch' }, year, monthNum, asAtDate)
+  const bdBranches = aggregateZidishaBranchesPerformance({ products: ['Zidisha Boda'], excludeClientId: '3926' }, year, monthNum, asAtDate)
+
+  return {
+    asAt: asAtDate.toISOString(),
+    periodLabel,
+    reportingDate,
+    month: monthNum,
+    year,
+    monthName: monthNames[monthNum - 1],
+    prevMonthName,
+    executiveKpis: buildExecutiveKpis(asAtDate, lbKe, zd, bd),
+    logbook: {
+      kenya: { ...lbKe, branches: lbKeBranches.branches, totals: lbKeBranches.totals },
+      uganda: { ...lbUg, branches: lbUgBranches.branches, totals: lbUgBranches.totals },
+    },
+    zidisha: { ...zd, branches: zdBranches.branches, totals: zdBranches.totals },
+    advans,
+    boda: { ...bd, branches: bdBranches.branches, totals: bdBranches.totals },
+    heatMap: buildParHeatMap(lbKeBranches.branches, zdBranches.branches, bdBranches.branches),
+  }
+}
+
+function buildDirectorCommentaryPrompt(summary) {
+  return `You are preparing a Board & Management Performance Report for Phoenix Capital Limited.
+
+Return EXACTLY this JSON matching the board report style:
+
+{
+  "intro": "Two sentences max — consolidated performance overview for ${summary.monthName} ${summary.year}.",
+  "alertLine": "One sentence if PAR exceeds 8% threshold, else empty string",
+  "keyObservations": {
+    "logbook": ["bullet max 20 words", "bullet max 20 words"],
+    "zidisha": ["bullet max 20 words", "bullet max 20 words"],
+    "boda": ["bullet max 20 words", "bullet max 20 words"],
+    "heatMap": ["bullet max 20 words"]
+  },
+  "directives": [
+    { "action": "max 15 words", "owner": "role title", "deadline": "date or timeframe", "priority": "URGENT|HIGH|MEDIUM", "status": "Open" }
+  ]
+}
+
+Rules:
+- Max 3 bullets per keyObservations section, max 5 directives.
+- Use real branch names and figures from data.
+- Logbook Kenya=KES, Uganda=UGX; Zidisha/Boda=KES.
+- Return ONLY JSON, no markdown.
+
+=== DATA ===
+${JSON.stringify(summary, null, 2)}`
+}
+
+function parseDirectorCommentaryJson(raw) {
+  return parseAnthropicCommentaryJson(raw)
+}
+
+// Director Report — cross-product summary + Claude narrative (admin/superuser)
+app.post('/api/reports/director', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Director report is available to administrators only' })
+    }
+
+    const asAtRaw = req.body?.asAt
+    const asAtDate = asAtRaw ? new Date(`${String(asAtRaw).slice(0, 10)}T12:00:00`) : new Date()
+    if (Number.isNaN(asAtDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid asAt date' })
+    }
+
+    const summary = buildDirectorReportSummary(asAtDate)
+
+    const apiKey = getAnthropicApiKey()
+    if (!apiKey) {
+      return res.status(503).json({
+        error: 'AI report generation is not configured. Set ANTHROPIC_API_KEY in the server environment.',
+      })
+    }
+
+    const model = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001').trim()
+    const prompt = buildDirectorCommentaryPrompt(summary)
+
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model,
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 120000,
+      },
+    )
+
+    const raw = response.data?.content?.[0]?.text
+    if (!raw) {
+      return res.status(502).json({ error: 'Empty response from AI service' })
+    }
+
+    const parsed = parseDirectorCommentaryJson(raw)
+    if (!parsed?.intro && !parsed?.headline && !parsed?.keyObservations) {
+      return res.status(502).json({ error: 'AI response was not in the expected format' })
+    }
+
+    res.json({
+      summary,
+      commentary: {
+        intro: String(parsed.intro || parsed.headline || '').slice(0, 500),
+        alertLine: String(parsed.alertLine || '').slice(0, 280),
+        keyObservations: parsed.keyObservations || {},
+        directives: Array.isArray(parsed.directives) ? parsed.directives.slice(0, 8) : [],
+        headline: String(parsed.headline || parsed.intro || '').slice(0, 280),
+        statusTable: Array.isArray(parsed.statusTable) ? parsed.statusTable.slice(0, 8) : [],
+        products: parsed.products || {},
+      },
+      generatedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    const msg =
+      e.response?.data?.error?.message ||
+      e.response?.data?.error ||
+      e.message ||
+      'Failed to generate director report'
+    console.error('[Director Report] Error:', msg)
+    res.status(500).json({ error: String(msg) })
+  }
+})
+
+// Board Report — native Word (.docx) with full formatting
+app.post('/api/reports/director/docx', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Board report export is available to administrators only' })
+    }
+
+    const summary = req.body?.summary
+    const commentary = req.body?.commentary
+    if (!summary || typeof summary !== 'object') {
+      return res.status(400).json({ error: 'Report data is required. Generate the board report first.' })
+    }
+
+    const asAtRaw = req.body?.asAt || summary.asAt
+    const asAtLabel = asAtRaw ? String(asAtRaw).slice(0, 10) : new Date().toISOString().slice(0, 10)
+    const filename = `board-report-${asAtLabel}.docx`
+
+    const fileBuffer = await buildDirectorReportDocx({
+      summary,
+      commentary: commentary || {},
+      generatedAt: req.body?.generatedAt,
+    })
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    )
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(fileBuffer)
+  } catch (e) {
+    const msg = e.message || 'Failed to export board report as Word document'
+    console.error('[Director Report DOCX] Error:', msg)
+    res.status(500).json({ error: String(msg) })
   }
 })
 
