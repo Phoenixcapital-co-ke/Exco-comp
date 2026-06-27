@@ -14,7 +14,6 @@ import cron from 'node-cron'
 import nodemailer from 'nodemailer'
 import dotenv from 'dotenv'
 import axios from 'axios'
-import { buildDirectorReportDocx } from './lib/directorReportDocx.mjs'
 import {
   ensureLoandiskLoanTableColumns,
   insertLoandiskLoanRow,
@@ -3601,6 +3600,7 @@ app.post('/api/reports/director/docx', requireAuth, async (req, res) => {
     const asAtLabel = asAtRaw ? String(asAtRaw).slice(0, 10) : new Date().toISOString().slice(0, 10)
     const filename = `board-report-${asAtLabel}.docx`
 
+    const { buildDirectorReportDocx } = await import('./lib/directorReportDocx.mjs')
     const fileBuffer = await buildDirectorReportDocx({
       summary,
       commentary: commentary || {},
