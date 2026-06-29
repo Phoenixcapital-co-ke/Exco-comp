@@ -867,9 +867,9 @@ function LogbookCollection({ country }) {
         {(() => {
           const proc = data.processor
           const months = [null, 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-          const now = new Date()
-          const y = now.getFullYear()
+          const y = selectedYear
           const monthly = Array(13).fill(0)
+          const monthlyTarget = Array(13).fill(0)
           if (proc && proc.repaymentsData) {
             for (const r of proc.repaymentsData) {
               const s = r.repayment_collected_date || ''
@@ -881,18 +881,46 @@ function LogbookCollection({ country }) {
               }
             }
           }
+          if (Array.isArray(targets) && targets.length) {
+            for (const t of targets) {
+              if (!t.active) continue
+              if (Number(t.year) !== y) continue
+              const m = Number(t.month)
+              if (m >= 1 && m <= 12) {
+                monthlyTarget[m] += Number(t.collectionTarget) || 0
+              }
+            }
+          }
           const series = []
-          for (let i = 1; i <= 12; i++) series.push({ month: months[i], amount: monthly[i] })
+          for (let i = 1; i <= 12; i++) {
+            series.push({ month: months[i], amount: monthly[i], target: monthlyTarget[i] })
+          }
+          const selectedMonthTarget = monthlyTarget[selectedMonth] || 0
           return (
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={series}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip formatter={(v) => [formatMoney(v), 'Collected']} />
-                <Bar dataKey="amount" fill="#3b82f6" name="Collected" />
-              </BarChart>
-            </ResponsiveContainer>
+            <>
+              {selectedMonthTarget > 0 && (
+                <p className="text-sm text-gray-600 mb-3">
+                  {monthLabel} {y} target (all branches):{' '}
+                  <span className="font-semibold text-gray-900">{formatMoney(selectedMonthTarget)}</span>
+                </p>
+              )}
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={series}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      if (name === 'Target') return [formatMoney(value), 'Target']
+                      return [formatMoney(value), 'Collected']
+                    }}
+                  />
+                  <Legend />
+                  <Bar dataKey="amount" fill="#3b82f6" name="Collected" />
+                  <Bar dataKey="target" fill="#f59e0b" name="Target" />
+                </BarChart>
+              </ResponsiveContainer>
+            </>
           )
         })()}
       </div>
