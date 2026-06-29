@@ -15,7 +15,8 @@ import {
   Legend, 
   ResponsiveContainer,
   AreaChart,
-  Area
+  Area,
+  LabelList
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { formatKES } from '../../utils/format.js'
@@ -893,7 +894,10 @@ function LogbookCollection({ country }) {
           }
           const series = []
           for (let i = 1; i <= 12; i++) {
-            series.push({ month: months[i], amount: monthly[i], target: monthlyTarget[i] })
+            const amount = monthly[i]
+            const target = monthlyTarget[i]
+            const pctOfTarget = target > 0 ? (amount / target) * 100 : null
+            series.push({ month: months[i], amount, target, pctOfTarget })
           }
           const selectedMonthTarget = monthlyTarget[selectedMonth] || 0
           return (
@@ -910,13 +914,26 @@ function LogbookCollection({ country }) {
                   <XAxis dataKey="month" />
                   <YAxis />
                   <Tooltip
-                    formatter={(value, name) => {
+                    formatter={(value, name, entry) => {
                       if (name === 'Target') return [formatMoney(value), 'Target']
-                      return [formatMoney(value), 'Collected']
+                      const pct = entry?.payload?.pctOfTarget
+                      const label =
+                        pct != null
+                          ? `${formatMoney(value)} (${pct.toFixed(1)}% of target)`
+                          : formatMoney(value)
+                      return [label, 'Collected']
                     }}
                   />
                   <Legend />
-                  <Bar dataKey="amount" fill="#3b82f6" name="Collected" />
+                  <Bar dataKey="amount" fill="#3b82f6" name="Collected">
+                    <LabelList
+                      dataKey="pctOfTarget"
+                      position="top"
+                      formatter={(v) => (v == null ? '' : `${Number(v).toFixed(1)}%`)}
+                      fill="#1e40af"
+                      fontSize={11}
+                    />
+                  </Bar>
                   <Bar dataKey="target" fill="#f59e0b" name="Target" />
                 </BarChart>
               </ResponsiveContainer>
