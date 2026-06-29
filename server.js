@@ -3600,12 +3600,14 @@ app.post('/api/reports/director/docx', requireAuth, async (req, res) => {
     const asAtLabel = asAtRaw ? String(asAtRaw).slice(0, 10) : new Date().toISOString().slice(0, 10)
     const filename = `board-report-${asAtLabel}.docx`
 
-    const { buildDirectorReportDocx } = await import('./lib/directorReportDocx.mjs')
-    const fileBuffer = await buildDirectorReportDocx({
+    const { buildDirectorReportDocxBuffer } = await import('./lib/directorReportDocx.mjs')
+    const fileBuffer = await buildDirectorReportDocxBuffer({
       summary,
       commentary: commentary || {},
       generatedAt: req.body?.generatedAt,
     })
+
+    console.log(`[Director Report DOCX] Generated ${filename} (${fileBuffer.length} bytes)`)
 
     res.setHeader(
       'Content-Type',

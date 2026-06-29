@@ -1336,22 +1336,12 @@ function DataOverview() {
       return
     }
     try {
-      const res = await fetch(API_URLS.reports.directorDocx, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          summary: directorReportPayload.summary,
-          commentary: directorReportPayload.commentary,
-          generatedAt: directorReportPayload.generatedAt,
-          asAt: directorAsAt,
-        }),
+      const { buildDirectorReportDocxBlob } = await import('../../../lib/directorReportDocx.mjs')
+      const blob = await buildDirectorReportDocxBlob({
+        summary: directorReportPayload.summary,
+        commentary: directorReportPayload.commentary,
+        generatedAt: directorReportPayload.generatedAt,
       })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || `Word export failed (${res.status})`)
-      }
-      const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
