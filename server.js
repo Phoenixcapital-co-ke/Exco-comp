@@ -3180,6 +3180,7 @@ function aggregateLogbookBranchesPerformance(country, year, monthNum, asAtDate) 
       disbursedPrev: 0,
       collectedMtd: 0,
       parRate: 0,
+      par30Rate: 0,
       parOver30: 0,
       nplRate: 0,
       vsTarget: 0,
@@ -3227,18 +3228,22 @@ function aggregateLogbookBranchesPerformance(country, year, monthNum, asAtDate) 
       .filter((t) => t && t <= endIso)
       .sort((a, b) => b.localeCompare(a))[0] || null
 
+  let globalPar = null
   if (snapshotTime) {
     const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(snapshotTime)
     const pastMissedRows = db
       .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
       .all(snapshotTime)
     const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
+    globalPar = sumParTotalsForBranchCodes(branchParMap, countryCodes)
     for (const [code, row] of byCode.entries()) {
       const fin = branchParMap[code]
       if (!fin) continue
       row.parRate = Number(fin.parRate.toFixed(1))
+      row.par30Rate = Number(fin.par30Rate.toFixed(1))
       row.parOver30 = Number((fin.par60Rate + fin.par90Rate + fin.par90PlusRate).toFixed(1))
       row.nplRate = Number(fin.par90PlusRate.toFixed(1))
+      row.openLoans = Math.round(fin.openLoans)
     }
   }
 
@@ -3248,21 +3253,171 @@ function aggregateLogbookBranchesPerformance(country, year, monthNum, asAtDate) 
       acc.disbursedMtd += b.disbursedMtd
       acc.disbursedPrev += b.disbursedPrev
       acc.collectedMtd += b.collectedMtd
-      acc.parRate += b.parRate
-      acc.parOver30 += b.parOver30
-      acc.nplRate += b.nplRate
-      acc.count += 1
       return acc
     },
-    { name: 'TOTAL / AVG', disbursedMtd: 0, disbursedPrev: 0, collectedMtd: 0, parRate: 0, parOver30: 0, nplRate: 0, count: 0, vsTarget: 0, salesTarget: 0 },
+    {
+      name: 'TOTAL / AVG',
+      disbursedMtd: 0,
+      disbursedPrev: 0,
+      collectedMtd: 0,
+      parRate: 0,
+      par30Rate: 0,
+      parOver30: 0,
+      nplRate: 0,
+      vsTarget: 0,
+      salesTarget: 0,
+    },
   )
-  if (totals.count) {
-    totals.parRate = Number((totals.parRate / totals.count).toFixed(1))
-    totals.parOver30 = Number((totals.parOver30 / totals.count).toFixed(1))
-    totals.nplRate = Number((totals.nplRate / totals.count).toFixed(1))
+  if (globalPar) {
+    totals.parRate = Number(globalPar.parRate.toFixed(1))
+    totals.par30Rate = Number(globalPar.par30Rate.toFixed(1))
+    totals.parOver30 = Number(
+      (globalPar.par60Rate + globalPar.par90Rate + globalPar.par90PlusRate).toFixed(1),
+    )
+    totals.nplRate = Number(globalPar.par90PlusRate.toFixed(1))
   }
 
   return { currency, branches, totals }
+}
+
+function isBodaDirectorConfig(config) {
+  const products = Array.isArray(config?.products) ? config.products : []
+  return products.length === 1 && String(products[0] || '').trim().toLowerCase() === 'zidisha boda'
+}
+
+/** Zidisha MTD collection by branch — matches /api/zidisha/productivity/mtd-by-branch-officers. */
+function fetchZidishaMtdCollectionByBranch(config, year, monthNum, cutoffDay) {
+  const monthStart = `${year}-${String(monthNum).padStart(2, '0')}-01`
+  const nextMonth = monthNum === 12 ? 1 : monthNum + 1
+  const nextYear = monthNum === 12 ? year + 1 : year
+  const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+  const maturity = zidishaExpectedMaturityExpr('z')
+
+  const where = [
+    `${maturity} >= date(?)`,
+    `${maturity} < date(?)`,
+    `CAST(strftime('%d', ${maturity}) AS INTEGER) <= ?`,
+  ]
+  const params = [monthStart, monthEnd, cutoffDay]
+
+  if (config.products?.length) {
+    where.unshift(`z."Product Name" COLLATE NOCASE IN (${config.products.map(() => '?').join(', ')})`)
+    params.unshift(...config.products.map((p) => String(p).trim()))
+  }
+  if (config.excludeBranch) {
+    where.push('z."Branch Name" COLLATE NOCASE != ?')
+    params.push(String(config.excludeBranch).trim())
+  }
+  if (config.includeBranch) {
+    where.push('z."Branch Name" COLLATE NOCASE = ?')
+    params.push(String(config.includeBranch).trim())
+  }
+  if (config.excludeClientId) {
+    where.push('TRIM(z."Client Id") != ?')
+    params.push(String(config.excludeClientId).trim())
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT
+         TRIM(z."Branch Name") AS branch,
+         COALESCE(CAST(z."Total Expected Repayment Derived" AS REAL), 0) AS expected,
+         COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0) AS collected
+       FROM zidisha_data z
+       WHERE ${where.join(' AND ')}`,
+    )
+    .all(...params)
+
+  const byBranch = new Map()
+  for (const r of rows) {
+    const b = String(r.branch || '').trim() || 'Unknown'
+    if (!byBranch.has(b)) byBranch.set(b, { expected: 0, collected: 0 })
+    const cur = byBranch.get(b)
+    cur.expected += Number(r.expected || 0)
+    cur.collected += Number(r.collected || 0)
+  }
+  return byBranch
+}
+
+/** Boda MTD collection by branch — matches /api/boda/schedule/mtd-by-branch. */
+function fetchBodaMtdCollectionByBranch(year, monthNum, cutoffDay, excludeClientId = null) {
+  const productName = 'Zidisha Boda'
+  const monthStart = `${year}-${String(monthNum).padStart(2, '0')}-01`
+  const nextMonth = monthNum === 12 ? 1 : monthNum + 1
+  const nextYear = monthNum === 12 ? year + 1 : year
+  const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+  const where = [
+    `"Due Date" >= ?`,
+    `"Due Date" < ?`,
+    `COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = ?`,
+    `CAST(strftime('%d', "Due Date") AS INTEGER) <= ?`,
+  ]
+  const params = [monthStart, monthEnd, productName, cutoffDay]
+  if (excludeClientId) {
+    where.push('TRIM("Client Id") != ?')
+    params.push(String(excludeClientId).trim())
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0) AS expected,
+         COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0) AS outstanding
+       FROM boda_Schedule
+       WHERE ${where.join(' AND ')}`,
+    )
+    .all(...params)
+
+  const byBranch = new Map()
+  for (const r of rows) {
+    const b = String(r.branch || '').trim() || 'Unknown'
+    const expected = Number(r.expected || 0)
+    const outstanding = Number(r.outstanding || 0)
+    if (!byBranch.has(b)) byBranch.set(b, { expected: 0, collected: 0 })
+    const cur = byBranch.get(b)
+    cur.expected += expected
+    cur.collected += Math.max(0, expected - outstanding)
+  }
+  return byBranch
+}
+
+/** Boda portfolio PAR by branch — matches /boda/dashboard (outstanding with overdue / total outstanding). */
+function computeBodaPortfolioParByBranch(rows) {
+  const byBranch = new Map()
+  let totalOutstandingAll = 0
+  let totalOutstandingAtRisk = 0
+
+  for (const row of rows) {
+    const branch = String(row['Branch Name'] || row.branch_name || 'Unknown').trim() || 'Unknown'
+    const outstanding = Number(row['Principal Outstanding Derived'] || row.principal_outstanding_derived || 0)
+    const overdue = Number(row['Principal Overdue Derived'] || row.principal_overdue_derived || 0)
+    if (outstanding <= 0) continue
+
+    totalOutstandingAll += outstanding
+    if (overdue > 0) totalOutstandingAtRisk += outstanding
+
+    if (!byBranch.has(branch)) {
+      byBranch.set(branch, { outstandingAll: 0, outstandingAtRisk: 0 })
+    }
+    const entry = byBranch.get(branch)
+    entry.outstandingAll += outstanding
+    if (overdue > 0) entry.outstandingAtRisk += outstanding
+  }
+
+  const branchPar = new Map()
+  for (const [branch, v] of byBranch) {
+    branchPar.set(
+      branch,
+      v.outstandingAll > 0 ? Number(((v.outstandingAtRisk / v.outstandingAll) * 100).toFixed(1)) : 0,
+    )
+  }
+
+  const globalPar =
+    totalOutstandingAll > 0 ? Number(((totalOutstandingAtRisk / totalOutstandingAll) * 100).toFixed(1)) : 0
+
+  return { byBranch: branchPar, globalPar }
 }
 
 function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
@@ -3293,6 +3448,8 @@ function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
   const prev = prevMonthYear(year, monthNum)
   const prevStart = new Date(prev.year, prev.month - 1, 1)
   const prevEnd = new Date(prev.year, prev.month, 0, 23, 59, 59, 999)
+  const cutoffDay = asAtDate.getDate()
+  const isBoda = isBodaDirectorConfig(config)
 
   const byBranch = new Map()
   const ensure = (name) => {
@@ -3320,29 +3477,37 @@ function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
         if (d >= prevStart && d <= prevEnd) branch.disbursedPrev += amt
       }
     }
-    const maturedDate = row['Expected Matured On Date'] || row.expected_matured_on_date
-    if (maturedDate) {
-      const d = new Date(maturedDate)
-      if (!Number.isNaN(d.getTime()) && d >= monthStart && d <= end && d.getFullYear() === year && d.getMonth() + 1 === monthNum) {
-        branch.collectedMtd += Number(row['Total Repayment Derived'] || row.total_repayment_derived || 0)
-        branch.expectedMtd += Number(row['Total Expected Repayment Derived'] || row.total_expected_repayment_derived || 0)
-      }
-    }
+  }
+
+  const collectionByBranch = isBoda
+    ? fetchBodaMtdCollectionByBranch(year, monthNum, cutoffDay, config.excludeClientId)
+    : fetchZidishaMtdCollectionByBranch(config, year, monthNum, cutoffDay)
+
+  for (const [branchName, coll] of collectionByBranch) {
+    const branch = ensure(branchName)
+    branch.collectedMtd = coll.collected
+    branch.expectedMtd = coll.expected
+  }
+
+  const bodaPar = isBoda ? computeBodaPortfolioParByBranch(rows) : null
+  if (bodaPar) {
+    for (const branchName of bodaPar.byBranch.keys()) ensure(branchName)
   }
 
   const branches = Array.from(byBranch.values())
     .map((b) => {
       const collectionRate = b.expectedMtd > 0 ? (b.collectedMtd / b.expectedMtd) * 100 : 0
-      const collGap = Math.max(0, 100 - collectionRate)
+      const parGap = Number(Math.max(0, 100 - collectionRate).toFixed(1))
+      const branchParRate = isBoda ? (bodaPar?.byBranch.get(b.name) ?? 0) : undefined
       return {
         ...b,
         collectionRate: Number(collectionRate.toFixed(1)),
-        parOver30: Number(collGap.toFixed(1)),
-        nplRate: Number((collGap * 0.45).toFixed(1)),
-        vsTarget: b.disbursedPrev > 0 ? Number(variancePct(b.disbursedMtd, b.disbursedPrev).toFixed(1)) : 0,
+        par30Rate: isBoda ? undefined : parGap,
+        parRate: isBoda ? branchParRate : undefined,
+        parOver30: isBoda ? branchParRate : parGap,
       }
     })
-    .filter((b) => b.disbursedMtd > 0 || b.collectedMtd > 0 || b.disbursedPrev > 0)
+    .filter((b) => b.disbursedMtd > 0 || b.collectedMtd > 0 || b.disbursedPrev > 0 || (isBoda && b.parRate > 0))
     .sort((a, b) => b.disbursedMtd - a.disbursedMtd)
 
   const totals = branches.reduce(
@@ -3351,18 +3516,19 @@ function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
       acc.disbursedPrev += b.disbursedPrev
       acc.collectedMtd += b.collectedMtd
       acc.expectedMtd += b.expectedMtd
-      acc.parOver30 += b.parOver30
-      acc.nplRate += b.nplRate
-      acc.count += 1
       return acc
     },
-    { name: 'TOTAL / AVG', disbursedMtd: 0, disbursedPrev: 0, collectedMtd: 0, expectedMtd: 0, parOver30: 0, nplRate: 0, count: 0, vsTarget: 0 },
+    { name: 'TOTAL / AVG', disbursedMtd: 0, disbursedPrev: 0, collectedMtd: 0, expectedMtd: 0 },
   )
-  if (totals.count) {
-    totals.parOver30 = Number((totals.parOver30 / totals.count).toFixed(1))
-    totals.nplRate = Number((totals.nplRate / totals.count).toFixed(1))
-    totals.collectionRate =
-      totals.expectedMtd > 0 ? Number(((totals.collectedMtd / totals.expectedMtd) * 100).toFixed(1)) : 0
+  totals.collectionRate =
+    totals.expectedMtd > 0 ? Number(((totals.collectedMtd / totals.expectedMtd) * 100).toFixed(1)) : 0
+  if (isBoda && bodaPar) {
+    totals.parRate = bodaPar.globalPar
+    totals.parOver30 = bodaPar.globalPar
+  } else {
+    const totalParGap = Number(Math.max(0, 100 - totals.collectionRate).toFixed(1))
+    totals.parOver30 = totalParGap
+    totals.par30Rate = totalParGap
   }
 
   return { currency: 'KES', branches, totals }
@@ -3402,7 +3568,7 @@ function buildExecutiveKpis(asAtDate, lbKe, zd, bd) {
   }))
 }
 
-function buildParHeatMap(lbKeBranches, zdBranches, bdBranches) {
+function buildParHeatMap(lbKeBranches, zdBranches, bdBranches, { logbookGlobalPar = null, zidishaGlobalPar = null, bodaGlobalPar = null } = {}) {
   const names = new Set([
     ...lbKeBranches.map((b) => b.name),
     ...zdBranches.map((b) => b.name),
@@ -3411,21 +3577,36 @@ function buildParHeatMap(lbKeBranches, zdBranches, bdBranches) {
   const lbMap = new Map(lbKeBranches.map((b) => [b.name, b]))
   const zdMap = new Map(zdBranches.map((b) => [b.name, b]))
   const bdMap = new Map(bdBranches.map((b) => [b.name, b]))
+
+  const logbookParFor = (name) => {
+    const b = lbMap.get(name)
+    if (!b || !(Number(b.openLoans) > 0)) return null
+    return b.parRate ?? null
+  }
+
   const rows = Array.from(names)
     .map((name) => ({
       name,
-      logbook: lbMap.get(name)?.parOver30 ?? lbMap.get(name)?.parRate ?? null,
+      logbook: logbookParFor(name),
       zidisha: zdMap.get(name)?.parOver30 ?? null,
-      boda: bdMap.get(name)?.parOver30 ?? null,
+      boda: bdMap.get(name)?.parRate ?? bdMap.get(name)?.parOver30 ?? null,
     }))
     .filter((r) => r.logbook != null || r.zidisha != null || r.boda != null)
     .sort((a, b) => String(a.name).localeCompare(String(b.name)))
 
-  const avg = (key) => {
+  const branchAvg = (key) => {
     const vals = rows.map((r) => r[key]).filter((v) => v != null)
     return vals.length ? Number((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1)) : null
   }
-  return { rows, averages: { logbook: avg('logbook'), zidisha: avg('zidisha'), boda: avg('boda') } }
+
+  return {
+    rows,
+    averages: {
+      logbook: logbookGlobalPar != null ? Number(logbookGlobalPar.toFixed(1)) : branchAvg('logbook'),
+      zidisha: zidishaGlobalPar != null ? Number(zidishaGlobalPar.toFixed(1)) : branchAvg('zidisha'),
+      boda: bodaGlobalPar != null ? Number(bodaGlobalPar.toFixed(1)) : branchAvg('boda'),
+    },
+  }
 }
 
 function buildDirectorReportSummary(asAtDate) {
@@ -3468,7 +3649,11 @@ function buildDirectorReportSummary(asAtDate) {
     zidisha: { ...zd, branches: zdBranches.branches, totals: zdBranches.totals },
     advans,
     boda: { ...bd, branches: bdBranches.branches, totals: bdBranches.totals },
-    heatMap: buildParHeatMap(lbKeBranches.branches, zdBranches.branches, bdBranches.branches),
+    heatMap: buildParHeatMap(lbKeBranches.branches, zdBranches.branches, bdBranches.branches, {
+      logbookGlobalPar: lbKe.parRate,
+      zidishaGlobalPar: zdBranches.totals?.par30Rate ?? zdBranches.totals?.parOver30,
+      bodaGlobalPar: bdBranches.totals?.parRate,
+    }),
   }
 }
 

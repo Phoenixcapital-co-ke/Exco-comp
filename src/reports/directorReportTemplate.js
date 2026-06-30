@@ -51,12 +51,40 @@ function pctCell(v) {
   return `<td class="num">${Number(v).toFixed(1)}%</td>`
 }
 
-function branchPerfTable({ branches, totals, currency, currLabel, prevLabel, showCollectionRate = false }) {
+function branchPerfTable({
+  branches,
+  totals,
+  currency,
+  currLabel,
+  prevLabel,
+  showCollectionRate = false,
+  logbookParColumns = false,
+  productColumnMode = null,
+}) {
+  const parColLabel =
+    productColumnMode === 'zidisha' ? 'PAR 30' : productColumnMode === 'boda' ? 'PAR' : logbookParColumns ? 'PAR 30' : 'PAR&gt;30%'
+  const lastColLabel = logbookParColumns ? 'Total PAR' : 'Vs Target'
+  const slimProduct = productColumnMode === 'zidisha' || productColumnMode === 'boda'
+  const parVal = (b) => {
+    if (productColumnMode === 'zidisha') return b.par30Rate
+    if (productColumnMode === 'boda') return b.parRate
+    return logbookParColumns ? b.par30Rate : b.parOver30 ?? b.parRate
+  }
+  const lastVal = (b) => (logbookParColumns ? b.parRate : null)
+  const parTotalVal = (t) => {
+    if (productColumnMode === 'zidisha') return t.par30Rate
+    if (productColumnMode === 'boda') return t.parRate
+    return logbookParColumns ? t.par30Rate : t.parOver30 ?? t.parRate
+  }
+  const lastTotalVal = (t) => (logbookParColumns ? t.parRate : null)
+
   const collRateCol = showCollectionRate
     ? (b) => pctCell(b.collectionRate)
     : () => ''
   const collRateHead = showCollectionRate ? '<th class="num">Collection<br>Rate</th>' : ''
   const collRateTotal = showCollectionRate ? pctCell(totals?.collectionRate) : ''
+  const nplHead = slimProduct ? '' : '<th class="num">NPL%</th>'
+  const lastHead = slimProduct ? '' : `<th class="num">${lastColLabel}</th>`
 
   const body = (branches || [])
     .map(
@@ -66,9 +94,15 @@ function branchPerfTable({ branches, totals, currency, currLabel, prevLabel, sho
         <td class="num">${fmt(b.disbursedPrev, currency)}</td>
         <td class="num">${fmt(b.collectedMtd, currency)}</td>
         ${collRateCol(b)}
-        ${parCell(b.parOver30 ?? b.parRate)}
-        ${parCell(b.nplRate)}
-        <td class="num">${b.vsTarget != null ? `${b.vsTarget > 0 ? '+' : ''}${Number(b.vsTarget).toFixed(1)}%` : '—'}</td>
+        ${parCell(parVal(b))}
+        ${slimProduct ? '' : parCell(b.nplRate)}
+        ${
+          slimProduct
+            ? ''
+            : logbookParColumns
+              ? parCell(lastVal(b))
+              : `<td class="num">${b.vsTarget != null ? `${b.vsTarget > 0 ? '+' : ''}${Number(b.vsTarget).toFixed(1)}%` : '—'}</td>`
+        }
       </tr>`,
     )
     .join('')
@@ -79,9 +113,9 @@ function branchPerfTable({ branches, totals, currency, currLabel, prevLabel, sho
     <td class="num"><strong>${fmt(t.disbursedPrev, currency)}</strong></td>
     <td class="num"><strong>${fmt(t.collectedMtd, currency)}</strong></td>
     ${collRateTotal}
-    ${parCell(t.parOver30 ?? t.parRate)}
-    ${parCell(t.nplRate)}
-    <td class="num">—</td>
+    ${parCell(parTotalVal(t))}
+    ${slimProduct ? '' : parCell(t.nplRate)}
+    ${slimProduct ? '' : logbookParColumns ? parCell(lastTotalVal(t)) : '<td class="num">—</td>'}
   </tr>`
   return `<table class="board-table">
     <thead>
@@ -91,9 +125,9 @@ function branchPerfTable({ branches, totals, currency, currLabel, prevLabel, sho
         <th class="num">Disbursed<br>${escapeHtml(prevLabel)}</th>
         <th class="num">Collected</th>
         ${collRateHead}
-        <th class="num">PAR&gt;30%</th>
-        <th class="num">NPL%</th>
-        <th class="num">Vs Target</th>
+        <th class="num">${parColLabel}</th>
+        ${nplHead}
+        ${lastHead}
       </tr>
     </thead>
     <tbody>${body}${totalRow}</tbody>
@@ -116,9 +150,9 @@ function heatMapTable(heatMap) {
     <thead>
       <tr>
         <th>Branch</th>
-        <th class="num">Logbook PAR&gt;30%</th>
+        <th class="num">Logbook PAR</th>
         <th class="num">Zidisha Stress*</th>
-        <th class="num">Boda Stress*</th>
+        <th class="num">Boda PAR</th>
       </tr>
     </thead>
     <tbody>
@@ -131,7 +165,7 @@ function heatMapTable(heatMap) {
       </tr>
     </tbody>
   </table>
-  <p class="footnote">* Zidisha/Boda stress derived from collection shortfall (100% − collection rate).</p>
+  <p class="footnote">Logbook PAR from PAR snapshot (past missed ÷ open loans). * Zidisha stress derived from collection shortfall (100% − collection rate). Boda PAR uses principal outstanding with any overdue.</p>
   <p class="legend">Green ≤ 6% &nbsp;|&nbsp; Amber 6.1–8.0% &nbsp;|&nbsp; Red &gt; 8.0% (institutional threshold)</p>`
 }
 
@@ -246,7 +280,7 @@ export function renderDirectorReportHTML({ summary, commentary, generatedAt }) {
   <div class="section">
     <h2>2. Logbook Loans — Kenya Branch Performance</h2>
     <p class="lead">Branch-level performance for Logbook Kenya (${escapeHtml(s.monthName || '')} MTD vs ${escapeHtml(s.prevMonthName || '')} full month).</p>
-    ${branchPerfTable({ branches: lbKe.branches, totals: lbKe.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)` })}
+    ${branchPerfTable({ branches: lbKe.branches, totals: lbKe.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, logbookParColumns: true })}
     ${obsList(c.keyObservations?.logbook)}
   </div>
 
@@ -255,7 +289,7 @@ export function renderDirectorReportHTML({ summary, commentary, generatedAt }) {
       ? `<div class="section">
     <h2>2b. Logbook Loans — Uganda Branch Performance</h2>
     <p class="lead">Uganda operations (UGX). Do not combine with Kenya KES figures.</p>
-    ${branchPerfTable({ branches: lbUg.branches, totals: lbUg.totals, currency: 'UGX', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)` })}
+    ${branchPerfTable({ branches: lbUg.branches, totals: lbUg.totals, currency: 'UGX', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, logbookParColumns: true })}
   </div>`
       : ''
   }
@@ -263,14 +297,14 @@ export function renderDirectorReportHTML({ summary, commentary, generatedAt }) {
   <div class="section">
     <h2>3. Zidisha (Biashara Loans) — Branch Performance</h2>
     <p class="lead">SME and micro-enterprise loan performance by branch (KES).</p>
-    ${branchPerfTable({ branches: zd.branches, totals: zd.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, showCollectionRate: true })}
+    ${branchPerfTable({ branches: zd.branches, totals: zd.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, showCollectionRate: true, productColumnMode: 'zidisha' })}
     ${obsList(c.keyObservations?.zidisha)}
   </div>
 
   <div class="section">
     <h2>4. Bodaboda Financing — Branch Performance</h2>
     <p class="lead">Boda product branch performance (KES).</p>
-    ${branchPerfTable({ branches: bd.branches, totals: bd.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, showCollectionRate: true })}
+    ${branchPerfTable({ branches: bd.branches, totals: bd.totals, currency: 'KES', currLabel: `${s.monthName} MTD`, prevLabel: `${s.prevMonthName} (full)`, showCollectionRate: true, productColumnMode: 'boda' })}
     ${obsList(c.keyObservations?.boda)}
   </div>
 
