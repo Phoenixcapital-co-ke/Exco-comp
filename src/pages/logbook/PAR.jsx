@@ -60,7 +60,7 @@ function shortBranchLabel(name) {
     .trim()
 }
 
- label, value, sub, accent = 'gray', valueClass = '', icon: Icon, loading, compactValue }) {
+function KpiCard({ label, value, sub, accent = 'gray', valueClass = '', icon: Icon, loading, compactValue }) {
   const accentMap = {
     red: 'bg-red-500',
     amber: 'bg-amber-500',
