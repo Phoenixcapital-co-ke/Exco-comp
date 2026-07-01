@@ -60,25 +60,7 @@ function shortBranchLabel(name) {
     .trim()
 }
 
-function CommentaryColumn({ title, emoji, items, dotClass }) {
-  return (
-    <div>
-      <h4 className="text-xs font-bold text-gray-700 mb-2">
-        {emoji} {title}
-      </h4>
-      <div className="space-y-2">
-        {(items || []).map((item, i) => (
-          <div key={i} className="flex gap-2 text-[12px] text-gray-600 leading-relaxed">
-            <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${dotClass}`} />
-            <span>{item}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function KpiCard({ label, value, sub, accent = 'gray', valueClass = '', icon: Icon, loading, compactValue }) {
+ label, value, sub, accent = 'gray', valueClass = '', icon: Icon, loading, compactValue }) {
   const accentMap = {
     red: 'bg-red-500',
     amber: 'bg-amber-500',
@@ -131,9 +113,6 @@ function LogbookPAR({ country }) {
   const [lastRunTime, setLastRunTime] = useState(null)
   const [loanOfficers, setLoanOfficers] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
-  const [commentary, setCommentary] = useState(null)
-  const [commentaryLoading, setCommentaryLoading] = useState(false)
-  const [commentaryError, setCommentaryError] = useState(null)
   const [expandedBranchCode, setExpandedBranchCode] = useState(null)
   const branchPanelRef = useRef(null)
   const [matchedPanelHeight, setMatchedPanelHeight] = useState(null)
@@ -479,92 +458,6 @@ function LogbookPAR({ country }) {
       return { ...entry, officerName, branchNames }
     })
   }, [filteredBorrowerData, loanOfficerMap, branchCodeToName])
-
-  const commentaryPayload = useMemo(() => {
-    if (!parSummary) return null
-    const branches = filteredBranchData.slice(0, 15).map((b) => ({
-      name: b.name || b.code,
-      par: Number(b.parRate || 0).toFixed(1),
-      par30: Number(b.par30Rate || 0).toFixed(1),
-      par60: Number(b.par60Rate || 0).toFixed(1),
-      par90: Number(b.par90Rate || 0).toFixed(1),
-      par90plus: Number(b.par90PlusRate || 0).toFixed(1),
-      atRiskLabel: formatMoney(b.pastMissed),
-    }))
-    const loanOfficers = [...officerRows]
-      .sort((a, b) => (Number(b.parRate) || 0) - (Number(a.parRate) || 0))
-      .slice(0, 12)
-      .map((o) => ({
-        name: o.officerName,
-        branch: o.branchNames,
-        par: Number(o.parRate || 0).toFixed(1),
-        atRiskLabel: o.pastMissed ? formatMoney(o.pastMissed) : '—',
-      }))
-    return {
-      period: selectedMonthLabel,
-      summary: {
-        totalPAR: parSummary.totalParRate.toFixed(1),
-        par30: parSummary.par30Rate.toFixed(1),
-        par60: parSummary.par60Rate.toFixed(1),
-        par90: parSummary.par90Rate.toFixed(1),
-        par90plus: parSummary.par90PlusRate.toFixed(1),
-        openLoansLabel: formatMoney(parSummary.openLoans),
-        atRiskBalanceLabel: formatMoney(parSummary.pastMissed),
-      },
-      branches,
-      loanOfficers,
-    }
-  }, [parSummary, filteredBranchData, officerRows, selectedMonthLabel, formatMoney])
-
-  const commentaryFetchKey = useMemo(() => {
-    if (!commentaryPayload || !parSummary) return null
-    return `${selectedMonth}|${displayBranchFilter}|${parSummary.totalParRate.toFixed(1)}|${filteredBranchData.length}|${officerRows.length}`
-  }, [commentaryPayload, parSummary, selectedMonth, displayBranchFilter, filteredBranchData.length, officerRows.length])
-
-  useEffect(() => {
-    if (!commentaryFetchKey || !commentaryPayload) return undefined
-    if (summaryLoading || branchLoading || borrowerLoading) return undefined
-
-    let cancelled = false
-    const controller = new AbortController()
-
-    const loadCommentary = async () => {
-      setCommentaryLoading(true)
-      setCommentaryError(null)
-      try {
-        const res = await fetch(API_URLS.par.aiCommentary, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(commentaryPayload),
-          signal: controller.signal,
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(data.error || `Failed to load commentary (${res.status})`)
-        if (!cancelled) {
-          setCommentary({
-            highlights: data.highlights || [],
-            risks: data.risks || [],
-            actions: data.actions || [],
-            generatedAt: data.generatedAt,
-          })
-        }
-      } catch (e) {
-        if (!cancelled && e.name !== 'AbortError') {
-          setCommentary(null)
-          setCommentaryError(e.message || 'Failed to load commentary')
-        }
-      } finally {
-        if (!cancelled) setCommentaryLoading(false)
-      }
-    }
-
-    loadCommentary()
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-  }, [commentaryFetchKey, commentaryPayload, summaryLoading, branchLoading, borrowerLoading])
 
   useLayoutEffect(() => {
     syncMatchedPanelHeight()
@@ -952,40 +845,6 @@ function LogbookPAR({ country }) {
             )}
           </div>
         </div>
-      </div>
-
-      <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-          <h3 className="text-[13px] font-bold text-gray-900">Management Commentary</h3>
-          {commentary?.generatedAt && !commentaryLoading && (
-            <span className="text-[10px] text-gray-400">
-              Updated{' '}
-              {new Date(commentary.generatedAt).toLocaleString('en-KE', {
-                timeZone: 'Africa/Nairobi',
-                day: 'numeric',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
-          )}
-        </div>
-        {commentaryLoading ? (
-          <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500">
-            <Loader2 className="animate-spin" size={16} />
-            Generating commentary…
-          </div>
-        ) : commentaryError ? (
-          <p className="text-sm text-red-600 py-4">{commentaryError}</p>
-        ) : commentary ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 lg:gap-6">
-            <CommentaryColumn title="Highlights" emoji="✅" items={commentary.highlights} dotClass="bg-green-500" />
-            <CommentaryColumn title="Risks" emoji="⚠️" items={commentary.risks} dotClass="bg-amber-500" />
-            <CommentaryColumn title="Actions" emoji="🎯" items={commentary.actions} dotClass="bg-[#E04B2A]" />
-          </div>
-        ) : (
-          <p className="text-sm text-gray-400 py-4">Commentary will appear once PAR data is loaded.</p>
-        )}
       </div>
     </div>
   )

@@ -77,8 +77,6 @@ export const API_URLS = {
     progress: `${API_BASE}/api/par/progress`,
     borrowerAccess: `${API_BASE}/api/par/borrower-access`,
     lastRun: `${API_BASE}/api/par/last-run`,
-    aiCommentary: `${API_BASE}/api/par/ai-commentary`,
-    aiCommentaryStatus: `${API_BASE}/api/par/ai-commentary/status`,
   },
   branches: {
     list: `${API_BASE}/api/logbook/branches`,
