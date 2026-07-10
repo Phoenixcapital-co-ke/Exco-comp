@@ -78,6 +78,19 @@ function DataOverview() {
   const [showDirectorReport, setShowDirectorReport] = useState(false)
   const [showDirectorDownloadMenu, setShowDirectorDownloadMenu] = useState(false)
 
+  // Consolidated repayments by month (all products)
+  const [repaymentsFromMonth, setRepaymentsFromMonth] = useState('2025-07')
+  const [repaymentsToMonth, setRepaymentsToMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [repaymentsReport, setRepaymentsReport] = useState([])
+  const [repaymentsMeta, setRepaymentsMeta] = useState(null)
+  const [repaymentsLoading, setRepaymentsLoading] = useState(false)
+  const [repaymentsError, setRepaymentsError] = useState(null)
+  const [showRepaymentsReport, setShowRepaymentsReport] = useState(false)
+  const [showRepaymentsDownloadMenu, setShowRepaymentsDownloadMenu] = useState(false)
+
   const [fromMonth, setFromMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -327,6 +340,65 @@ function DataOverview() {
       setBodaReportLoading(false)
     }
   }
+
+  const generateRepaymentsReport = async () => {
+    try {
+      setRepaymentsLoading(true)
+      setRepaymentsError(null)
+      setRepaymentsReport([])
+      setRepaymentsMeta(null)
+
+      const res = await fetch(API_URLS.reports.repaymentsByMonth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          fromMonth: repaymentsFromMonth,
+          toMonth: repaymentsToMonth,
+        }),
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.error || 'Failed to generate repayments report')
+      }
+
+      const result = await res.json()
+      setRepaymentsReport(result.data || [])
+      setRepaymentsMeta(result.meta || null)
+    } catch (e) {
+      setRepaymentsError(e.message)
+    } finally {
+      setRepaymentsLoading(false)
+    }
+  }
+
+  const repaymentsTotals = useMemo(() => {
+    return (repaymentsReport || []).reduce(
+      (acc, row) => ({
+        logbook: acc.logbook + (Number(row.logbook) || 0),
+        zidisha: acc.zidisha + (Number(row.zidisha) || 0),
+        zidishaOtc: acc.zidishaOtc + (Number(row.zidishaOtc) || 0),
+        boda: acc.boda + (Number(row.boda) || 0),
+        bodaOtc: acc.bodaOtc + (Number(row.bodaOtc) || 0),
+        advans: acc.advans + (Number(row.advans) || 0),
+        advansOtc: acc.advansOtc + (Number(row.advansOtc) || 0),
+        total: acc.total + (Number(row.total) || 0),
+        totalOtc: acc.totalOtc + (Number(row.totalOtc) || 0),
+      }),
+      {
+        logbook: 0,
+        zidisha: 0,
+        zidishaOtc: 0,
+        boda: 0,
+        bodaOtc: 0,
+        advans: 0,
+        advansOtc: 0,
+        total: 0,
+        totalOtc: 0,
+      },
+    )
+  }, [repaymentsReport])
 
   const parseDMY = (str) => {
     const m = String(str || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
@@ -1105,6 +1177,28 @@ function DataOverview() {
   const downloadBodaXLSX = () => downloadXLSXGeneric(bodaReport, 'Boda', bodaFromMonth, bodaToMonth)
   const downloadBodaHTML = () => downloadHTMLGeneric(bodaReport, 'Boda', bodaFromMonth, bodaToMonth)
   const downloadBodaPDF = () => downloadPDFGeneric(bodaReport, 'Boda', bodaFromMonth, bodaToMonth)
+
+  const downloadRepaymentsXLSX = () => {
+    import('xlsx').then((XLSX) => {
+      const ws = XLSX.utils.json_to_sheet(
+        repaymentsReport.map((row) => ({
+          Month: row.month,
+          Logbook: row.logbook,
+          Zidisha: row.zidisha,
+          'Zidisha OTC': row.zidishaOtc,
+          Boda: row.boda,
+          'Boda OTC': row.bodaOtc,
+          Advans: row.advans,
+          'Advans OTC': row.advansOtc,
+          Total: row.total,
+          'Total OTC': row.totalOtc,
+        })),
+      )
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Repayments')
+      XLSX.writeFile(wb, `repayments-by-month-${repaymentsFromMonth}-to-${repaymentsToMonth}.xlsx`)
+    })
+  }
 
   // Zidisha Branchwise download functions
   const downloadZidishaBranchwiseXLSX = () =>
@@ -2656,6 +2750,168 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Consolidated Repayments Report Modal */}
+      {showRepaymentsReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Repayments by Month (All Products)</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Logbook, Zidisha, Boda &amp; Advans — amounts per month</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRepaymentsReport(false)}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">From (Month/Year)</label>
+                  <input
+                    type="month"
+                    value={repaymentsFromMonth}
+                    onChange={(e) => setRepaymentsFromMonth(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">To (Month/Year)</label>
+                  <input
+                    type="month"
+                    value={repaymentsToMonth}
+                    onChange={(e) => setRepaymentsToMonth(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={generateRepaymentsReport}
+                  disabled={repaymentsLoading}
+                  className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {repaymentsLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                      Generating report...
+                    </>
+                  ) : (
+                    'Generate Report'
+                  )}
+                </button>
+                {repaymentsReport.length > 0 && !repaymentsLoading && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowRepaymentsDownloadMenu((v) => !v)}
+                      className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                    >
+                      Download
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {showRepaymentsDownloadMenu && (
+                      <div className="absolute mt-2 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowRepaymentsDownloadMenu(false)
+                            downloadRepaymentsXLSX()
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Download XLSX
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {repaymentsMeta?.notes && (
+                <p className="mb-4 text-xs text-gray-500 leading-relaxed">
+                  Product columns match Collection Total Collected. OTC columns (Zidisha / Boda / Advans) are actual cash
+                  from boda_repayments split by Product Name.
+                </p>
+              )}
+
+              {repaymentsLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
+                  <p className="mt-4 text-sm text-gray-500">Processing report...</p>
+                </div>
+              ) : repaymentsError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {repaymentsError}
+                </div>
+              ) : repaymentsReport.length === 0 ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to view repayments for the selected period.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Month</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Logbook</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha OTC</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda OTC</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans OTC</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total OTC</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {repaymentsReport.map((row) => (
+                        <tr key={row.key} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.month}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.logbook)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.zidisha)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.zidishaOtc)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.boda)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.bodaOtc)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.advans)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.advansOtc)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.total)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-700">{formatKES(row.totalOtc)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-gray-50 border-t-2 border-gray-300">
+                      <tr>
+                        <td className="px-4 py-3 text-sm font-bold text-gray-900">TOTAL</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.logbook)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.zidisha)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.zidishaOtc)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.boda)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.bodaOtc)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.advans)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.advansOtc)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.total)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.totalOtc)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reports Section - Main Content */}
       <div className="space-y-6">
         <div className="mb-6">
@@ -2677,6 +2933,25 @@ function DataOverview() {
                 </p>
               </div>
               <svg className="w-6 h-6 text-[#E04B2A]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Consolidated Repayments Report Card */}
+          <button
+            type="button"
+            onClick={() => setShowRepaymentsReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left md:col-span-2"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Repayments by Month</h2>
+                <p className="text-sm text-gray-500">
+                  Consolidated repayments for Logbook, Zidisha, Boda &amp; Advans — amounts per month (from Jul 2025, adjustable)
+                </p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
             </div>

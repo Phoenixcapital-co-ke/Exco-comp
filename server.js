@@ -2893,6 +2893,213 @@ app.post('/api/reports/generate', requireAuth, async (req, res) => {
   }
 })
 
+function enumerateMonthKeys(fromMonth, toMonth) {
+  const [fromYear, fromMonthNum] = fromMonth.split('-').map(Number)
+  const [toYear, toMonthNum] = toMonth.split('-').map(Number)
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const out = []
+  let y = fromYear
+  let m = fromMonthNum
+  while (y < toYear || (y === toYear && m <= toMonthNum)) {
+    const key = `${y}-${String(m).padStart(2, '0')}`
+    out.push({
+      key,
+      year: y,
+      monthNum: m,
+      month: `${monthNames[m - 1]}-${y}`,
+      logbook: 0,
+      zidisha: 0,
+      zidishaOtc: 0,
+      boda: 0,
+      bodaOtc: 0,
+      advans: 0,
+      advansOtc: 0,
+      total: 0,
+      totalOtc: 0,
+    })
+    m++
+    if (m > 12) {
+      m = 1
+      y++
+    }
+  }
+  return out
+}
+
+function buildRepaymentsByMonthReport(fromMonth, toMonth) {
+  const months = enumerateMonthKeys(fromMonth, toMonth)
+  const byKey = new Map(months.map((row) => [row.key, { ...row }]))
+
+  const addAmount = (key, field, amt, { otc = false } = {}) => {
+    if (!byKey.has(key)) return
+    const row = byKey.get(key)
+    const n = Number(amt) || 0
+    row[field] += n
+    if (otc) row.totalOtc += n
+    else row.total += n
+  }
+
+  // Logbook Kenya — Collection "Total Collected" (Logbook_collection)
+  const kenyaBranches = listActiveLogbookBranchesForCountry('Kenya')
+  const kenyaCodes = new Set(kenyaBranches.map((b) => String(b.code || '').trim()).filter(Boolean))
+  const kenyaResolver = buildLogbookBranchResolver(kenyaBranches)
+  const colRows = db.prepare('SELECT branch, repayment_collected_date, repayment_amount FROM Logbook_collection').all()
+  for (const r of colRows) {
+    const code = kenyaResolver.resolve(r.branch)
+    if (!kenyaCodes.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.repayment_collected_date)
+    if (!d) continue
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    addAmount(key, 'logbook', r.repayment_amount)
+  }
+
+  const [fromYear, fromMonthNum] = fromMonth.split('-').map(Number)
+  const [toYear, toMonthNum] = toMonth.split('-').map(Number)
+  const rangeStart = `${fromYear}-${String(fromMonthNum).padStart(2, '0')}-01`
+  const nextAfterTo =
+    toMonthNum === 12 ? `${toYear + 1}-01-01` : `${toYear}-${String(toMonthNum + 1).padStart(2, '0')}-01`
+
+  // Boda — Collection "EOM Total Collected" (schedule Expected − Outstanding)
+  const bodaScheduleRows = db
+    .prepare(
+      `SELECT
+         strftime('%Y-%m', date("Due Date")) AS monthKey,
+         SUM(COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0)) AS expected,
+         SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS outstanding
+       FROM boda_Schedule
+       WHERE "Due Date" IS NOT NULL
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = 'Zidisha Boda'
+         AND date("Due Date") >= date(?)
+         AND date("Due Date") < date(?)
+       GROUP BY monthKey`,
+    )
+    .all(rangeStart, nextAfterTo)
+  for (const r of bodaScheduleRows) {
+    if (!r.monthKey) continue
+    const net = Math.max(0, Number(r.expected || 0) - Number(r.outstanding || 0))
+    addAmount(r.monthKey, 'boda', net)
+  }
+
+  const mat = zidishaExpectedMaturityExpr('z')
+  const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+  const advansOtcProducts = ['Salary Advans', 'Advans Emergency Loan']
+
+  // Zidisha — Collection "Total Collected" (maturity-month Total Repayment Derived)
+  const zidishaRows = db
+    .prepare(
+      `SELECT
+         strftime('%Y-%m', ${mat}) AS monthKey,
+         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
+       FROM zidisha_data z
+       WHERE z."Product Name" COLLATE NOCASE IN (${zidishaProducts.map(() => '?').join(', ')})
+         AND z."Branch Name" COLLATE NOCASE != 'Advans Branch'
+         AND ${mat} >= date(?)
+         AND ${mat} < date(?)
+       GROUP BY monthKey`,
+    )
+    .all(...zidishaProducts, rangeStart, nextAfterTo)
+  for (const r of zidishaRows) {
+    if (r.monthKey) addAmount(r.monthKey, 'zidisha', r.total)
+  }
+
+  // Advans — Collection "Total Collected"
+  const advansRows = db
+    .prepare(
+      `SELECT
+         strftime('%Y-%m', ${mat}) AS monthKey,
+         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
+       FROM zidisha_data z
+       WHERE z."Branch Name" COLLATE NOCASE = 'Advans Branch'
+         AND ${mat} >= date(?)
+         AND ${mat} < date(?)
+       GROUP BY monthKey`,
+    )
+    .all(rangeStart, nextAfterTo)
+  for (const r of advansRows) {
+    if (r.monthKey) addAmount(r.monthKey, 'advans', r.total)
+  }
+
+  // OTC from boda_repayments (actual Transaction Amount by Submitted On Date), split by Product Name
+  const otcRows = db
+    .prepare(
+      `SELECT
+         strftime('%Y-%m', date("Submitted On Date")) AS monthKey,
+         TRIM("Product Name") AS product,
+         SUM(CAST("Transaction Amount" AS REAL)) AS total
+       FROM boda_repayments
+       WHERE "Submitted On Date" IS NOT NULL
+         AND date("Submitted On Date") >= date(?)
+         AND date("Submitted On Date") < date(?)
+         AND CAST("Transaction Amount" AS REAL) > 0
+         AND NOT (
+           COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = 'Zidisha Boda'
+           AND TRIM(COALESCE("Client Id", '')) = '3926'
+         )
+       GROUP BY monthKey, product`,
+    )
+    .all(rangeStart, nextAfterTo)
+
+  const zidishaProductSet = new Set(zidishaProducts.map((p) => p.toLowerCase()))
+  const advansProductSet = new Set(advansOtcProducts.map((p) => p.toLowerCase()))
+
+  for (const r of otcRows) {
+    if (!r.monthKey) continue
+    const product = String(r.product || '').trim().toLowerCase()
+    if (product === 'zidisha boda') {
+      addAmount(r.monthKey, 'bodaOtc', r.total, { otc: true })
+    } else if (zidishaProductSet.has(product)) {
+      addAmount(r.monthKey, 'zidishaOtc', r.total, { otc: true })
+    } else if (advansProductSet.has(product) || product.includes('advans')) {
+      addAmount(r.monthKey, 'advansOtc', r.total, { otc: true })
+    }
+  }
+
+  return Array.from(byKey.values()).map((row) => ({
+    ...row,
+    logbook: Math.round(row.logbook),
+    zidisha: Math.round(row.zidisha),
+    zidishaOtc: Math.round(row.zidishaOtc),
+    boda: Math.round(row.boda),
+    bodaOtc: Math.round(row.bodaOtc),
+    advans: Math.round(row.advans),
+    advansOtc: Math.round(row.advansOtc),
+    total: Math.round(row.total),
+    totalOtc: Math.round(row.totalOtc),
+  }))
+}
+
+app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
+  try {
+    const { fromMonth, toMonth } = req.body || {}
+    if (!fromMonth || !toMonth) {
+      return res.status(400).json({ error: 'fromMonth and toMonth are required (YYYY-MM)' })
+    }
+    if (!/^\d{4}-\d{2}$/.test(String(fromMonth)) || !/^\d{4}-\d{2}$/.test(String(toMonth))) {
+      return res.status(400).json({ error: 'fromMonth and toMonth must be YYYY-MM' })
+    }
+    const data = buildRepaymentsByMonthReport(fromMonth, toMonth)
+    res.json({
+      data,
+      meta: {
+        fromMonth,
+        toMonth,
+        notes: {
+          logbook: 'Collection Total Collected (Logbook_collection by payment date, Kenya)',
+          zidisha: 'Collection Total Collected (maturity-month Total Repayment Derived)',
+          zidishaOtc: 'OTC from boda_repayments (core Zidisha products)',
+          boda: 'Collection EOM Total Collected (boda_Schedule Expected − Outstanding)',
+          bodaOtc: 'OTC from boda_repayments (Zidisha Boda)',
+          advans: 'Collection Total Collected (Advans Branch maturity-month)',
+          advansOtc: 'OTC from boda_repayments (Salary Advans / Advans Emergency Loan)',
+        },
+      },
+    })
+  } catch (e) {
+    console.error('[Repayments By Month API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 function parseLogbookDirectorDMY(str) {
   if (!str) return null
   const s = String(str).trim()

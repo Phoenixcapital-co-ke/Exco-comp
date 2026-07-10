@@ -61,6 +61,7 @@ export const API_URLS = {
   ingest: `${API_BASE}/api/ingest`,
   reports: {
     generate: `${API_BASE}/api/reports/generate`,
+    repaymentsByMonth: `${API_BASE}/api/reports/repayments-by-month`,
     bodaTopupQualifiers: `${API_BASE}/api/reports/boda-topup-qualifiers`,
     director: `${API_BASE}/api/reports/director`,
     directorDocx: `${API_BASE}/api/reports/director/docx`,
