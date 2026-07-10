@@ -86,6 +86,7 @@ function DataOverview() {
   })
   const [repaymentsReport, setRepaymentsReport] = useState([])
   const [repaymentsMeta, setRepaymentsMeta] = useState(null)
+  const [repaymentsPortfolio, setRepaymentsPortfolio] = useState(null)
   const [repaymentsLoading, setRepaymentsLoading] = useState(false)
   const [repaymentsError, setRepaymentsError] = useState(null)
   const [showRepaymentsReport, setShowRepaymentsReport] = useState(false)
@@ -347,6 +348,7 @@ function DataOverview() {
       setRepaymentsError(null)
       setRepaymentsReport([])
       setRepaymentsMeta(null)
+      setRepaymentsPortfolio(null)
 
       const res = await fetch(API_URLS.reports.repaymentsByMonth, {
         method: 'POST',
@@ -366,6 +368,7 @@ function DataOverview() {
       const result = await res.json()
       setRepaymentsReport(result.data || [])
       setRepaymentsMeta(result.meta || null)
+      setRepaymentsPortfolio(result.portfolio || null)
     } catch (e) {
       setRepaymentsError(e.message)
     } finally {
@@ -1180,22 +1183,33 @@ function DataOverview() {
 
   const downloadRepaymentsXLSX = () => {
     import('xlsx').then((XLSX) => {
-      const ws = XLSX.utils.json_to_sheet(
-        repaymentsReport.map((row) => ({
-          Month: row.month,
-          Logbook: row.logbook,
-          Zidisha: row.zidisha,
-          'Zidisha OTC': row.zidishaOtc,
-          Boda: row.boda,
-          'Boda OTC': row.bodaOtc,
-          Advans: row.advans,
-          'Advans OTC': row.advansOtc,
-          Total: row.total,
-          'Total OTC': row.totalOtc,
-        })),
-      )
       const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'Repayments')
+      const monthly = repaymentsReport.map((row) => ({
+        Month: row.month,
+        Logbook: row.logbook,
+        Zidisha: row.zidisha,
+        'Zidisha OTC': row.zidishaOtc,
+        Boda: row.boda,
+        'Boda OTC': row.bodaOtc,
+        Advans: row.advans,
+        'Advans OTC': row.advansOtc,
+        Total: row.total,
+        'Total OTC': row.totalOtc,
+      }))
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthly), 'Repayments')
+      if (repaymentsPortfolio) {
+        const portfolioSheet = XLSX.utils.json_to_sheet([
+          {
+            AsOf: repaymentsPortfolio.asOf || '',
+            Logbook: repaymentsPortfolio.logbook,
+            Zidisha: repaymentsPortfolio.zidisha,
+            Boda: repaymentsPortfolio.boda,
+            Advans: repaymentsPortfolio.advans,
+            Total: repaymentsPortfolio.total,
+          },
+        ])
+        XLSX.utils.book_append_sheet(wb, portfolioSheet, 'Portfolio As Of Today')
+      }
       XLSX.writeFile(wb, `repayments-by-month-${repaymentsFromMonth}-to-${repaymentsToMonth}.xlsx`)
     })
   }
@@ -2840,8 +2854,28 @@ function DataOverview() {
               {repaymentsMeta?.notes && (
                 <p className="mb-4 text-xs text-gray-500 leading-relaxed">
                   Product columns match Collection Total Collected. OTC columns (Zidisha / Boda / Advans) are actual cash
-                  from boda_repayments split by Product Name.
+                  from boda_repayments split by Product Name. Portfolio is outstanding as of today (not monthly).
                 </p>
+              )}
+
+              {repaymentsPortfolio && !repaymentsLoading && (
+                <div className="mb-6">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Portfolio as of today</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    {[
+                      { label: 'Logbook', value: repaymentsPortfolio.logbook },
+                      { label: 'Zidisha', value: repaymentsPortfolio.zidisha },
+                      { label: 'Boda', value: repaymentsPortfolio.boda },
+                      { label: 'Advans', value: repaymentsPortfolio.advans },
+                      { label: 'Total', value: repaymentsPortfolio.total },
+                    ].map((card) => (
+                      <div key={card.label} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{card.label}</p>
+                        <p className="mt-1 text-lg font-bold text-gray-900">{formatKES(card.value)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {repaymentsLoading ? (

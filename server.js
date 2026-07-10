@@ -3068,6 +3068,73 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
   }))
 }
 
+/** Portfolio outstanding as of latest data (point-in-time, not monthly). */
+function buildPortfolioAsOfToday() {
+  const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+
+  // Logbook Kenya — matches Dashboard "Portfolio" (open loan principal from latest PAR snapshot)
+  let logbook = 0
+  let logbookAsOf = null
+  const kenyaBranches = listActiveLogbookBranchesForCountry('Kenya')
+  const kenyaCodes = new Set(kenyaBranches.map((b) => String(b.code || '').trim()).filter(Boolean))
+  const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+  if (latestPar?.time && kenyaCodes.size > 0) {
+    logbookAsOf = latestPar.time
+    const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestPar.time)
+    const pastMissedRows = db
+      .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+      .all(latestPar.time)
+    const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
+    const totals = sumParTotalsForBranchCodes(branchParMap, kenyaCodes)
+    logbook = Math.round(totals.openLoans || 0)
+  }
+
+  // Zidisha — Principal Outstanding Derived (core products, excl. Advans Branch)
+  const zidishaRow = db
+    .prepare(
+      `SELECT SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Product Name" COLLATE NOCASE IN (${zidishaProducts.map(() => '?').join(', ')})
+         AND "Branch Name" COLLATE NOCASE != 'Advans Branch'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0`,
+    )
+    .get(...zidishaProducts)
+  const zidisha = Math.round(Number(zidishaRow?.portfolio || 0))
+
+  // Boda — matches /boda/dashboard "Portfolio size"
+  const bodaRow = db
+    .prepare(
+      `SELECT SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Product Name" COLLATE NOCASE = 'Zidisha Boda'
+         AND TRIM(COALESCE("Client Id", '')) != '3926'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0`,
+    )
+    .get()
+  const boda = Math.round(Number(bodaRow?.portfolio || 0))
+
+  // Advans — Principal Outstanding Derived for Advans Branch
+  const advansRow = db
+    .prepare(
+      `SELECT SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Branch Name" COLLATE NOCASE = 'Advans Branch'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0`,
+    )
+    .get()
+  const advans = Math.round(Number(advansRow?.portfolio || 0))
+
+  return {
+    asOf: new Date().toISOString(),
+    logbookAsOf,
+    logbook,
+    zidisha,
+    boda,
+    advans,
+    total: Math.round(logbook + zidisha + boda + advans),
+  }
+}
+
 app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
   try {
     const { fromMonth, toMonth } = req.body || {}
@@ -3078,8 +3145,10 @@ app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
       return res.status(400).json({ error: 'fromMonth and toMonth must be YYYY-MM' })
     }
     const data = buildRepaymentsByMonthReport(fromMonth, toMonth)
+    const portfolio = buildPortfolioAsOfToday()
     res.json({
       data,
+      portfolio,
       meta: {
         fromMonth,
         toMonth,
@@ -3091,6 +3160,8 @@ app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
           bodaOtc: 'OTC from boda_repayments (Zidisha Boda)',
           advans: 'Collection Total Collected (Advans Branch maturity-month)',
           advansOtc: 'OTC from boda_repayments (Salary Advans / Advans Emergency Loan)',
+          portfolio:
+            'As-of-today outstanding: Logbook = open loan principal (latest PAR); Zidisha/Boda/Advans = Principal Outstanding Derived',
         },
       },
     })
