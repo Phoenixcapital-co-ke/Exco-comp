@@ -3135,6 +3135,268 @@ function buildPortfolioAsOfToday() {
   }
 }
 
+/** Branchwise collected (selected period) + portfolio (as of today) for all products. */
+function buildRepaymentsByBranchReport(fromMonth, toMonth) {
+  const byBranch = new Map()
+  const ensure = (name) => {
+    const key = String(name || 'Unknown').trim() || 'Unknown'
+    if (!byBranch.has(key)) {
+      byBranch.set(key, {
+        branch: key,
+        logbook: 0,
+        zidisha: 0,
+        zidishaOtc: 0,
+        boda: 0,
+        bodaOtc: 0,
+        advans: 0,
+        advansOtc: 0,
+        total: 0,
+        totalOtc: 0,
+        portfolioLogbook: 0,
+        portfolioZidisha: 0,
+        portfolioBoda: 0,
+        portfolioAdvans: 0,
+        portfolioTotal: 0,
+      })
+    }
+    return byBranch.get(key)
+  }
+
+  const [fromYear, fromMonthNum] = fromMonth.split('-').map(Number)
+  const [toYear, toMonthNum] = toMonth.split('-').map(Number)
+  const rangeStart = `${fromYear}-${String(fromMonthNum).padStart(2, '0')}-01`
+  const nextAfterTo =
+    toMonthNum === 12 ? `${toYear + 1}-01-01` : `${toYear}-${String(toMonthNum + 1).padStart(2, '0')}-01`
+
+  const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
+  const advansOtcProducts = ['Salary Advans', 'Advans Emergency Loan']
+  const zidishaProductSet = new Set(zidishaProducts.map((p) => p.toLowerCase()))
+  const advansProductSet = new Set(advansOtcProducts.map((p) => p.toLowerCase()))
+
+  // Logbook Kenya collected by branch
+  const kenyaBranches = listActiveLogbookBranchesForCountry('Kenya')
+  const kenyaCodes = new Set(kenyaBranches.map((b) => String(b.code || '').trim()).filter(Boolean))
+  const kenyaResolver = buildLogbookBranchResolver(kenyaBranches)
+  const colRows = db.prepare('SELECT branch, repayment_collected_date, repayment_amount FROM Logbook_collection').all()
+  for (const r of colRows) {
+    const code = kenyaResolver.resolve(r.branch)
+    if (!kenyaCodes.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.repayment_collected_date)
+    if (!d) continue
+    const y = d.getFullYear()
+    const m = d.getMonth() + 1
+    if (y < fromYear || (y === fromYear && m < fromMonthNum)) continue
+    if (y > toYear || (y === toYear && m > toMonthNum)) continue
+    const name = kenyaResolver.codeToName.get(String(code).toLowerCase()) || code
+    const row = ensure(name)
+    const amt = Number(r.repayment_amount) || 0
+    row.logbook += amt
+    row.total += amt
+  }
+
+  // Boda collected by branch (schedule Expected − Outstanding for period)
+  const bodaScheduleRows = db
+    .prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         SUM(COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0)) AS expected,
+         SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS outstanding
+       FROM boda_Schedule
+       WHERE "Due Date" IS NOT NULL
+         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = 'Zidisha Boda'
+         AND date("Due Date") >= date(?)
+         AND date("Due Date") < date(?)
+       GROUP BY TRIM("Branch Name")`,
+    )
+    .all(rangeStart, nextAfterTo)
+  for (const r of bodaScheduleRows) {
+    const row = ensure(r.branch || 'Unknown')
+    const net = Math.max(0, Number(r.expected || 0) - Number(r.outstanding || 0))
+    row.boda += net
+    row.total += net
+  }
+
+  const mat = zidishaExpectedMaturityExpr('z')
+
+  // Zidisha collected by branch
+  const zidishaRows = db
+    .prepare(
+      `SELECT
+         TRIM(z."Branch Name") AS branch,
+         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
+       FROM zidisha_data z
+       WHERE z."Product Name" COLLATE NOCASE IN (${zidishaProducts.map(() => '?').join(', ')})
+         AND z."Branch Name" COLLATE NOCASE != 'Advans Branch'
+         AND ${mat} >= date(?)
+         AND ${mat} < date(?)
+       GROUP BY TRIM(z."Branch Name")`,
+    )
+    .all(...zidishaProducts, rangeStart, nextAfterTo)
+  for (const r of zidishaRows) {
+    const row = ensure(r.branch || 'Unknown')
+    const amt = Number(r.total) || 0
+    row.zidisha += amt
+    row.total += amt
+  }
+
+  // Advans collected (single branch)
+  const advansRows = db
+    .prepare(
+      `SELECT
+         TRIM(z."Branch Name") AS branch,
+         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
+       FROM zidisha_data z
+       WHERE z."Branch Name" COLLATE NOCASE = 'Advans Branch'
+         AND ${mat} >= date(?)
+         AND ${mat} < date(?)
+       GROUP BY TRIM(z."Branch Name")`,
+    )
+    .all(rangeStart, nextAfterTo)
+  for (const r of advansRows) {
+    const row = ensure(r.branch || 'Advans Branch')
+    const amt = Number(r.total) || 0
+    row.advans += amt
+    row.total += amt
+  }
+
+  // OTC by branch: map Loan Id → Branch Name in memory (avoids slow TRIM JOIN)
+  const loanBranchMap = new Map()
+  const loanBranchRows = db.prepare(`SELECT TRIM("Loan ID") AS loanId, TRIM("Branch Name") AS branch FROM zidisha_data`).all()
+  for (const r of loanBranchRows) {
+    if (!r.loanId) continue
+    if (!loanBranchMap.has(r.loanId)) loanBranchMap.set(r.loanId, r.branch || 'Unknown')
+  }
+  const otcRows = db
+    .prepare(
+      `SELECT
+         TRIM(r."Loan Id") AS loanId,
+         TRIM(r."Product Name") AS product,
+         CAST(r."Transaction Amount" AS REAL) AS amount,
+         TRIM(COALESCE(r."Client Id", '')) AS clientId
+       FROM boda_repayments r
+       WHERE r."Submitted On Date" IS NOT NULL
+         AND date(r."Submitted On Date") >= date(?)
+         AND date(r."Submitted On Date") < date(?)
+         AND CAST(r."Transaction Amount" AS REAL) > 0`,
+    )
+    .all(rangeStart, nextAfterTo)
+
+  for (const r of otcRows) {
+    const product = String(r.product || '').trim().toLowerCase()
+    if (product === 'zidisha boda' && r.clientId === '3926') continue
+    const amt = Number(r.amount) || 0
+    if (amt <= 0) continue
+    const branch = loanBranchMap.get(String(r.loanId || '').trim()) || 'Unknown'
+    const row = ensure(branch)
+    if (product === 'zidisha boda') {
+      row.bodaOtc += amt
+      row.totalOtc += amt
+    } else if (zidishaProductSet.has(product)) {
+      row.zidishaOtc += amt
+      row.totalOtc += amt
+    } else if (advansProductSet.has(product) || product.includes('advans')) {
+      row.advansOtc += amt
+      row.totalOtc += amt
+    }
+  }
+
+  // Portfolio by branch — Logbook Kenya
+  const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+  if (latestPar?.time && kenyaCodes.size > 0) {
+    const openLoansRows = db.prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`).all(latestPar.time)
+    const pastMissedRows = db
+      .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+      .all(latestPar.time)
+    const { branches: branchParMap } = aggregateParFromSnapshotLoanRows(openLoansRows, pastMissedRows)
+    for (const code of kenyaCodes) {
+      const fin = branchParMap[code]
+      if (!fin) continue
+      const name = kenyaResolver.codeToName.get(String(code).toLowerCase()) || code
+      const row = ensure(name)
+      row.portfolioLogbook = Math.round(Number(fin.openLoans) || 0)
+    }
+  }
+
+  // Portfolio by branch — Zidisha
+  const zidishaPortRows = db
+    .prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Product Name" COLLATE NOCASE IN (${zidishaProducts.map(() => '?').join(', ')})
+         AND "Branch Name" COLLATE NOCASE != 'Advans Branch'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0
+       GROUP BY TRIM("Branch Name")`,
+    )
+    .all(...zidishaProducts)
+  for (const r of zidishaPortRows) {
+    const row = ensure(r.branch || 'Unknown')
+    row.portfolioZidisha = Math.round(Number(r.portfolio) || 0)
+  }
+
+  // Portfolio by branch — Boda
+  const bodaPortRows = db
+    .prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Product Name" COLLATE NOCASE = 'Zidisha Boda'
+         AND TRIM(COALESCE("Client Id", '')) != '3926'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0
+       GROUP BY TRIM("Branch Name")`,
+    )
+    .all()
+  for (const r of bodaPortRows) {
+    const row = ensure(r.branch || 'Unknown')
+    row.portfolioBoda = Math.round(Number(r.portfolio) || 0)
+  }
+
+  // Portfolio by branch — Advans
+  const advansPortRows = db
+    .prepare(
+      `SELECT
+         TRIM("Branch Name") AS branch,
+         SUM(COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0)) AS portfolio
+       FROM zidisha_data
+       WHERE "Branch Name" COLLATE NOCASE = 'Advans Branch'
+         AND COALESCE(CAST("Principal Outstanding Derived" AS REAL), 0) > 0
+       GROUP BY TRIM("Branch Name")`,
+    )
+    .all()
+  for (const r of advansPortRows) {
+    const row = ensure(r.branch || 'Advans Branch')
+    row.portfolioAdvans = Math.round(Number(r.portfolio) || 0)
+  }
+
+  return Array.from(byBranch.values())
+    .map((row) => {
+      row.portfolioTotal = Math.round(
+        row.portfolioLogbook + row.portfolioZidisha + row.portfolioBoda + row.portfolioAdvans,
+      )
+      return {
+        ...row,
+        logbook: Math.round(row.logbook),
+        zidisha: Math.round(row.zidisha),
+        zidishaOtc: Math.round(row.zidishaOtc),
+        boda: Math.round(row.boda),
+        bodaOtc: Math.round(row.bodaOtc),
+        advans: Math.round(row.advans),
+        advansOtc: Math.round(row.advansOtc),
+        total: Math.round(row.total),
+        totalOtc: Math.round(row.totalOtc),
+      }
+    })
+    .filter(
+      (r) =>
+        r.total > 0 ||
+        r.totalOtc > 0 ||
+        r.portfolioTotal > 0,
+    )
+    .sort((a, b) => b.total - a.total || b.portfolioTotal - a.portfolioTotal || a.branch.localeCompare(b.branch))
+}
+
 app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
   try {
     const { fromMonth, toMonth } = req.body || {}
@@ -3146,9 +3408,11 @@ app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
     }
     const data = buildRepaymentsByMonthReport(fromMonth, toMonth)
     const portfolio = buildPortfolioAsOfToday()
+    const byBranch = buildRepaymentsByBranchReport(fromMonth, toMonth)
     res.json({
       data,
       portfolio,
+      byBranch,
       meta: {
         fromMonth,
         toMonth,
@@ -3162,6 +3426,7 @@ app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
           advansOtc: 'OTC from boda_repayments (Salary Advans / Advans Emergency Loan)',
           portfolio:
             'As-of-today outstanding: Logbook = open loan principal (latest PAR); Zidisha/Boda/Advans = Principal Outstanding Derived',
+          byBranch: 'Branchwise collected for selected period + portfolio as of today for all products',
         },
       },
     })

@@ -87,6 +87,7 @@ function DataOverview() {
   const [repaymentsReport, setRepaymentsReport] = useState([])
   const [repaymentsMeta, setRepaymentsMeta] = useState(null)
   const [repaymentsPortfolio, setRepaymentsPortfolio] = useState(null)
+  const [repaymentsByBranch, setRepaymentsByBranch] = useState([])
   const [repaymentsLoading, setRepaymentsLoading] = useState(false)
   const [repaymentsError, setRepaymentsError] = useState(null)
   const [showRepaymentsReport, setShowRepaymentsReport] = useState(false)
@@ -349,6 +350,7 @@ function DataOverview() {
       setRepaymentsReport([])
       setRepaymentsMeta(null)
       setRepaymentsPortfolio(null)
+      setRepaymentsByBranch([])
 
       const res = await fetch(API_URLS.reports.repaymentsByMonth, {
         method: 'POST',
@@ -369,6 +371,7 @@ function DataOverview() {
       setRepaymentsReport(result.data || [])
       setRepaymentsMeta(result.meta || null)
       setRepaymentsPortfolio(result.portfolio || null)
+      setRepaymentsByBranch(Array.isArray(result.byBranch) ? result.byBranch : [])
     } catch (e) {
       setRepaymentsError(e.message)
     } finally {
@@ -402,6 +405,43 @@ function DataOverview() {
       },
     )
   }, [repaymentsReport])
+
+  const repaymentsBranchTotals = useMemo(() => {
+    return (repaymentsByBranch || []).reduce(
+      (acc, row) => ({
+        logbook: acc.logbook + (Number(row.logbook) || 0),
+        zidisha: acc.zidisha + (Number(row.zidisha) || 0),
+        zidishaOtc: acc.zidishaOtc + (Number(row.zidishaOtc) || 0),
+        boda: acc.boda + (Number(row.boda) || 0),
+        bodaOtc: acc.bodaOtc + (Number(row.bodaOtc) || 0),
+        advans: acc.advans + (Number(row.advans) || 0),
+        advansOtc: acc.advansOtc + (Number(row.advansOtc) || 0),
+        total: acc.total + (Number(row.total) || 0),
+        totalOtc: acc.totalOtc + (Number(row.totalOtc) || 0),
+        portfolioLogbook: acc.portfolioLogbook + (Number(row.portfolioLogbook) || 0),
+        portfolioZidisha: acc.portfolioZidisha + (Number(row.portfolioZidisha) || 0),
+        portfolioBoda: acc.portfolioBoda + (Number(row.portfolioBoda) || 0),
+        portfolioAdvans: acc.portfolioAdvans + (Number(row.portfolioAdvans) || 0),
+        portfolioTotal: acc.portfolioTotal + (Number(row.portfolioTotal) || 0),
+      }),
+      {
+        logbook: 0,
+        zidisha: 0,
+        zidishaOtc: 0,
+        boda: 0,
+        bodaOtc: 0,
+        advans: 0,
+        advansOtc: 0,
+        total: 0,
+        totalOtc: 0,
+        portfolioLogbook: 0,
+        portfolioZidisha: 0,
+        portfolioBoda: 0,
+        portfolioAdvans: 0,
+        portfolioTotal: 0,
+      },
+    )
+  }, [repaymentsByBranch])
 
   const parseDMY = (str) => {
     const m = String(str || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
@@ -1209,6 +1249,28 @@ function DataOverview() {
           },
         ])
         XLSX.utils.book_append_sheet(wb, portfolioSheet, 'Portfolio As Of Today')
+      }
+      if (repaymentsByBranch.length > 0) {
+        const branchSheet = XLSX.utils.json_to_sheet(
+          repaymentsByBranch.map((row) => ({
+            Branch: row.branch,
+            Logbook: row.logbook,
+            Zidisha: row.zidisha,
+            'Zidisha OTC': row.zidishaOtc,
+            Boda: row.boda,
+            'Boda OTC': row.bodaOtc,
+            Advans: row.advans,
+            'Advans OTC': row.advansOtc,
+            Total: row.total,
+            'Total OTC': row.totalOtc,
+            'Portfolio Logbook': row.portfolioLogbook,
+            'Portfolio Zidisha': row.portfolioZidisha,
+            'Portfolio Boda': row.portfolioBoda,
+            'Portfolio Advans': row.portfolioAdvans,
+            'Portfolio Total': row.portfolioTotal,
+          })),
+        )
+        XLSX.utils.book_append_sheet(wb, branchSheet, 'Branchwise')
       }
       XLSX.writeFile(wb, `repayments-by-month-${repaymentsFromMonth}-to-${repaymentsToMonth}.xlsx`)
     })
@@ -2767,11 +2829,11 @@ function DataOverview() {
       {/* Consolidated Repayments Report Modal */}
       {showRepaymentsReport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+          <div className="bg-white rounded-xl shadow-2xl max-w-7xl w-full max-h-[90vh] overflow-y-auto relative">
             <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Repayments by Month (All Products)</h2>
-                <p className="text-sm text-gray-500 mt-0.5">Logbook, Zidisha, Boda &amp; Advans — amounts per month</p>
+                <p className="text-sm text-gray-500 mt-0.5">Logbook, Zidisha, Boda &amp; Advans — monthly + branchwise</p>
               </div>
               <button
                 type="button"
@@ -2854,7 +2916,8 @@ function DataOverview() {
               {repaymentsMeta?.notes && (
                 <p className="mb-4 text-xs text-gray-500 leading-relaxed">
                   Product columns match Collection Total Collected. OTC columns (Zidisha / Boda / Advans) are actual cash
-                  from boda_repayments split by Product Name. Portfolio is outstanding as of today (not monthly).
+                  from boda_repayments split by Product Name. Portfolio is outstanding as of today (not monthly). Branchwise
+                  table shows the same products per branch for the selected period.
                 </p>
               )}
 
@@ -2892,53 +2955,130 @@ function DataOverview() {
                   <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to view repayments for the selected period.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Month</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Logbook</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha OTC</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda OTC</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans OTC</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total</th>
-                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total OTC</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {repaymentsReport.map((row) => (
-                        <tr key={row.key} className="hover:bg-gray-50">
-                          <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.month}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.logbook)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.zidisha)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.zidishaOtc)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.boda)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.bodaOtc)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.advans)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.advansOtc)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.total)}</td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-700">{formatKES(row.totalOtc)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="bg-gray-50 border-t-2 border-gray-300">
-                      <tr>
-                        <td className="px-4 py-3 text-sm font-bold text-gray-900">TOTAL</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.logbook)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.zidisha)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.zidishaOtc)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.boda)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.bodaOtc)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.advans)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.advansOtc)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.total)}</td>
-                        <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.totalOtc)}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                <div className="space-y-8">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 mb-3">Collected by month</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-gray-50 border-b border-gray-200">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Month</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Logbook</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha OTC</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda OTC</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans OTC</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total OTC</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {repaymentsReport.map((row) => (
+                            <tr key={row.key} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.month}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.logbook)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.zidisha)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.zidishaOtc)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.boda)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.bodaOtc)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.advans)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.advansOtc)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.total)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-700">{formatKES(row.totalOtc)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot className="bg-gray-50 border-t-2 border-gray-300">
+                          <tr>
+                            <td className="px-4 py-3 text-sm font-bold text-gray-900">TOTAL</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.logbook)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.zidisha)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.zidishaOtc)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.boda)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.bodaOtc)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.advans)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.advansOtc)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.total)}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.totalOtc)}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+
+                  {repaymentsByBranch.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 mb-1">Branchwise — all products</h3>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Collected for selected period + portfolio outstanding as of today
+                      </p>
+                      <div className="overflow-x-auto max-h-[55vh] overflow-y-auto border border-gray-200 rounded-lg">
+                        <table className="w-full min-w-[1100px]">
+                          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-[1]">
+                            <tr>
+                              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Branch</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Logbook</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Z OTC</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">B OTC</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">A OTC</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Tot OTC</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Port. LB</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Port. Z</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Port. B</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Port. A</th>
+                              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Port. Tot</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {repaymentsByBranch.map((row) => (
+                              <tr key={row.branch} className="hover:bg-gray-50">
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm font-medium text-gray-900">{row.branch}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.logbook)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.zidisha)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.zidishaOtc)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.boda)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.bodaOtc)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.advans)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.advansOtc)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.total)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm font-semibold text-right text-gray-700">{formatKES(row.totalOtc)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-700">{formatKES(row.portfolioLogbook)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-700">{formatKES(row.portfolioZidisha)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-700">{formatKES(row.portfolioBoda)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm text-right text-gray-700">{formatKES(row.portfolioAdvans)}</td>
+                                <td className="px-3 py-2.5 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.portfolioTotal)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot className="bg-gray-50 border-t-2 border-gray-300 sticky bottom-0">
+                            <tr>
+                              <td className="px-3 py-3 text-sm font-bold text-gray-900">TOTAL</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.logbook)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.zidisha)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.zidishaOtc)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.boda)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.bodaOtc)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.advans)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.advansOtc)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.total)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.totalOtc)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.portfolioLogbook)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.portfolioZidisha)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.portfolioBoda)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsBranchTotals.portfolioAdvans)}</td>
+                              <td className="px-3 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsBranchTotals.portfolioTotal)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2982,7 +3122,7 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Repayments by Month</h2>
                 <p className="text-sm text-gray-500">
-                  Consolidated repayments for Logbook, Zidisha, Boda &amp; Advans — amounts per month (from Jul 2025, adjustable)
+                  Consolidated repayments for Logbook, Zidisha, Boda &amp; Advans — monthly + branchwise (from Jul 2025, adjustable)
                 </p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
