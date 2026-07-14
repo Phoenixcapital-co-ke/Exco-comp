@@ -336,6 +336,30 @@ function getLatestCollectionDate(db) {
   return row?.date ? String(row.date) : null
 }
 
+/**
+ * Atomically replace a live table only after the new dataset is ready.
+ * Readers keep seeing the previous snapshot until this transaction commits.
+ * Empty results are skipped so a failed/empty export cannot wipe good data.
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} tableSqlName SQL table reference (quote if needed, e.g. `"Zidisha_Daily"`)
+ * @param {any[]} rows
+ * @param {(row: any) => void} insertOne
+ * @returns {boolean} true if replaced
+ */
+function replaceTableContents(db, tableSqlName, rows, insertOne) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.warn(`[Ingest] Keeping existing ${tableSqlName}: empty fetch result (not truncating)`)
+    return false
+  }
+  const del = db.prepare(`DELETE FROM ${tableSqlName}`)
+  const tx = db.transaction((rs) => {
+    del.run()
+    for (const r of rs) insertOne(r)
+  })
+  tx(rows)
+  return true
+}
+
 // === Collections helpers ===
 // Unique key is repayment_id (Loandisk transaction ID). Do not use (loan_id, date) – same-day duplicates and backdates would break.
 function initCollectionsTable(db) {
@@ -445,21 +469,47 @@ async function fetchBorrowersOnce(branchCode, payload) {
 
 async function fetchAllBorrowers(db) {
   initBorrowersTable(db)
-  // Clear existing borrowers table as requested
-  db.exec(`DELETE FROM ${BORROWERS_TABLE}`)
+  // Load into a staging table first so live Logbook_borrowers stays readable until swap.
+  const STAGING = `${BORROWERS_TABLE}__ingest`
+  db.exec(`DROP TABLE IF EXISTS ${STAGING}`)
+  db.exec(`
+    CREATE TABLE ${STAGING} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      borrower_id INTEGER,
+      branch TEXT,
+      borrower_country TEXT,
+      borrower_firstname TEXT,
+      borrower_lastname TEXT,
+      borrower_business_name TEXT,
+      borrower_unique_number TEXT,
+      borrower_gender TEXT,
+      borrower_dob TEXT,
+      borrower_address TEXT,
+      borrower_city TEXT,
+      borrower_province TEXT,
+      borrower_zipcode TEXT,
+      borrower_landline TEXT,
+      borrower_mobile TEXT,
+      borrower_email TEXT,
+      national_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(borrower_id, branch)
+    );
+  `)
   const count = 1000
   const payloadBase = {
     from: 1,
     count,
     borrower_type: 'Noloans||Notactive||8||1||18||10||5||16||6||2||3||55222||55219||55220||55224||55223||55225||55226||55221||248404||490046||9||17',
   }
-  const insert = db.prepare(`
-    INSERT INTO ${BORROWERS_TABLE} (
+  const insertCols = `
       borrower_id, branch, borrower_country, borrower_firstname, borrower_lastname,
       borrower_business_name, borrower_unique_number, borrower_gender, borrower_dob,
       borrower_address, borrower_city, borrower_province, borrower_zipcode, borrower_landline,
       borrower_mobile, borrower_email, national_id
-    ) VALUES (
+  `
+  const insert = db.prepare(`
+    INSERT INTO ${STAGING} (${insertCols}) VALUES (
       @borrower_id, @branch, @borrower_country, @borrower_firstname, @borrower_lastname,
       @borrower_business_name, @borrower_unique_number, @borrower_gender, @borrower_dob,
       @borrower_address, @borrower_city, @borrower_province, @borrower_zipcode, @borrower_landline,
@@ -490,48 +540,68 @@ async function fetchAllBorrowers(db) {
       .join(', ')}`
   )
 
-  for (const { code: branchCode, name: branchName } of branchList) {
-    console.info(`[Borrowers] Fetching borrowers for branch ${branchCode} (${branchName})`)
-    let page = 1
-    let total = null
-    let branchInserted = 0
-    while (true) {
-      const payload = { ...payloadBase, from: page }
-      const { meta, results } = await fetchBorrowersOnce(branchCode, payload)
-      if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
-      if (!results.length) break
-      const mapped = results.map(r => ({
-        borrower_id: r.borrower_id ?? null,
-        branch: String(branchCode),
-        borrower_country: r.borrower_country ?? null,
-        borrower_firstname: r.borrower_firstname ?? null,
-        borrower_lastname: r.borrower_lastname ?? null,
-        borrower_business_name: r.borrower_business_name ?? null,
-        borrower_unique_number: r.borrower_unique_number ?? null,
-        borrower_gender: r.borrower_gender ?? null,
-        borrower_dob: r.borrower_dob ?? null,
-        borrower_address: r.borrower_address ?? null,
-        borrower_city: r.borrower_city ?? null,
-        borrower_province: r.borrower_province ?? null,
-        borrower_zipcode: r.borrower_zipcode ?? null,
-        borrower_landline: r.borrower_landline ?? null,
-        borrower_mobile: r.borrower_mobile ?? null,
-        borrower_email: r.borrower_email ?? null,
-        national_id: r.custom_field_23167 ?? null,
-      }))
-      db.transaction((rows) => {
-        for (const row of rows) insert.run(row)
-      })(mapped)
-      branchInserted += mapped.length
-      page += 1
-      const pageSize = payloadBase.count
-      if (!pageSize || results.length < pageSize) break
+  try {
+    for (const { code: branchCode, name: branchName } of branchList) {
+      console.info(`[Borrowers] Fetching borrowers for branch ${branchCode} (${branchName})`)
+      let page = 1
+      let total = null
+      let branchInserted = 0
+      while (true) {
+        const payload = { ...payloadBase, from: page }
+        const { meta, results } = await fetchBorrowersOnce(branchCode, payload)
+        if (total == null && meta?.TotalResults != null) total = Number(meta.TotalResults)
+        if (!results.length) break
+        const mapped = results.map(r => ({
+          borrower_id: r.borrower_id ?? null,
+          branch: String(branchCode),
+          borrower_country: r.borrower_country ?? null,
+          borrower_firstname: r.borrower_firstname ?? null,
+          borrower_lastname: r.borrower_lastname ?? null,
+          borrower_business_name: r.borrower_business_name ?? null,
+          borrower_unique_number: r.borrower_unique_number ?? null,
+          borrower_gender: r.borrower_gender ?? null,
+          borrower_dob: r.borrower_dob ?? null,
+          borrower_address: r.borrower_address ?? null,
+          borrower_city: r.borrower_city ?? null,
+          borrower_province: r.borrower_province ?? null,
+          borrower_zipcode: r.borrower_zipcode ?? null,
+          borrower_landline: r.borrower_landline ?? null,
+          borrower_mobile: r.borrower_mobile ?? null,
+          borrower_email: r.borrower_email ?? null,
+          national_id: r.custom_field_23167 ?? null,
+        }))
+        db.transaction((rows) => {
+          for (const row of rows) insert.run(row)
+        })(mapped)
+        branchInserted += mapped.length
+        page += 1
+        const pageSize = payloadBase.count
+        if (!pageSize || results.length < pageSize) break
+      }
+      console.info(
+        `[Borrowers] Branch ${branchCode} (${branchName}) staged ${branchInserted}${
+          total != null ? ` / ${total}` : ''
+        } records`
+      )
     }
-    console.info(
-      `[Borrowers] Branch ${branchCode} (${branchName}) saved ${branchInserted}${
-        total != null ? ` / ${total}` : ''
-      } records`
-    )
+
+    const stagedCount = db.prepare(`SELECT COUNT(*) as c FROM ${STAGING}`).get().c
+    if (!stagedCount) {
+      console.warn('[Borrowers] Empty staging result — keeping existing live borrowers table')
+      return
+    }
+
+    // Atomic swap: live table unchanged until this transaction commits
+    db.transaction(() => {
+      db.exec(`DELETE FROM ${BORROWERS_TABLE}`)
+      db.exec(`
+        INSERT INTO ${BORROWERS_TABLE} (${insertCols})
+        SELECT ${insertCols} FROM ${STAGING}
+      `)
+    })()
+    console.info(`[Borrowers] Atomically replaced live table with ${stagedCount} staged rows`)
+  } finally {
+    db.exec(`DROP TABLE IF EXISTS ${STAGING}`)
   }
 }
 
@@ -1443,9 +1513,10 @@ function insertZidishaDaily(db, row, columns) {
       // Check if this is an initial fetch (table is empty or very small) vs incremental update
       const rowCount = db.prepare(`SELECT COUNT(*) as c FROM ${TABLE}`).get().c
       const isInitialFetch = rowCount === 0
-      
+      let lookbackStartKey = null
+
       if (!isInitialFetch) {
-        // Incremental fetch: use lookback window
+        // Incremental fetch: use lookback window (delete only after fetch, in same TX as upsert)
         const latest = getLatestDisbursedDate(db)
         if (latest) {
           const latestDate = parseDMY(latest)
@@ -1460,13 +1531,7 @@ function insertZidishaDaily(db, row, columns) {
             const startDMY = formatDMY(start)
             const startKey = dmyToSortKey(startDMY)
             if (startDMY && startKey) {
-              // Delete all rows in the lookback window so we can upsert fresh data
-              db.prepare(`
-                DELETE FROM ${TABLE}
-                WHERE disbursed_date IS NOT NULL
-                  AND TRIM(disbursed_date) <> ''
-                  AND (substr(disbursed_date,7,4) || substr(disbursed_date,4,2) || substr(disbursed_date,1,2)) >= ?
-              `).run(startKey)
+              lookbackStartKey = startKey
               basePayload.start_date = startDMY
               console.log(`[Disbursements] Incremental fetch: using lookback window from ${startDMY} to ${getTodayDMY()}`)
             }
@@ -1478,6 +1543,15 @@ function insertZidishaDaily(db, row, columns) {
 
       const { total, results } = await fetchAll()
       const tx = db.transaction((rows) => {
+        // Remove lookback window only once the new set is ready, then upsert
+        if (lookbackStartKey) {
+          db.prepare(`
+            DELETE FROM ${TABLE}
+            WHERE disbursed_date IS NOT NULL
+              AND TRIM(disbursed_date) <> ''
+              AND (substr(disbursed_date,7,4) || substr(disbursed_date,4,2) || substr(disbursed_date,1,2)) >= ?
+          `).run(lookbackStartKey)
+        }
         for (const r of rows) upsert(db, mapResult(r))
       })
       tx(results)
@@ -1514,15 +1588,15 @@ function insertZidishaDaily(db, row, columns) {
       const dbZ = initDb()
       initZidishaTable(dbZ)
       migrateZidishaDropUniqueIfPresent(dbZ)
-      // Truncate the table before new insert
-      dbZ.exec(`DELETE FROM ${ZIDISHA_TABLE}`)
+      // Fetch first; truncate+insert only when ready (keeps serving prior snapshot)
       const zidishaRows = await fetchZidishaCsv()
-      const txZ = dbZ.transaction((rows) => {
-        for (const r of rows) insertZidisha(dbZ, r)
-      })
-      txZ(zidishaRows)
+      const replacedZ = replaceTableContents(dbZ, ZIDISHA_TABLE, zidishaRows, (r) => insertZidisha(dbZ, r))
       const zidishaCount = dbZ.prepare(`SELECT COUNT(*) as c FROM ${ZIDISHA_TABLE}`).get().c
-      console.log(`Saved ${zidishaRows.length} rows into ${ZIDISHA_TABLE}. Table now has ${zidishaCount} rows.`)
+      if (replacedZ) {
+        console.log(`Saved ${zidishaRows.length} rows into ${ZIDISHA_TABLE}. Table now has ${zidishaCount} rows.`)
+      } else {
+        console.log(`${ZIDISHA_TABLE} unchanged (${zidishaCount} rows).`)
+      }
     } else {
       console.log('Skipping Zidisha ingestion due to SKIP_ZIDISHA=1')
     }
@@ -1531,15 +1605,14 @@ function insertZidishaDaily(db, row, columns) {
     if (!SKIP_BODA_REPAYMENTS) {
       const dbB = initDb()
       initBodaRepaymentsTable(dbB)
-      // Truncate table before fresh insert
-      dbB.exec(`DELETE FROM ${BODA_REPAY_TABLE}`)
       const bodaRows = await fetchBodaRepaymentsCsv()
-      const txB = dbB.transaction((rows) => {
-        for (const r of rows) insertBodaRepayment(dbB, r)
-      })
-      txB(bodaRows)
+      const replacedB = replaceTableContents(dbB, BODA_REPAY_TABLE, bodaRows, (r) => insertBodaRepayment(dbB, r))
       const bodaCount = dbB.prepare(`SELECT COUNT(*) as c FROM ${BODA_REPAY_TABLE}`).get().c
-      console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
+      if (replacedB) {
+        console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
+      } else {
+        console.log(`${BODA_REPAY_TABLE} unchanged (${bodaCount} rows).`)
+      }
     } else {
       console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
     }
@@ -1549,14 +1622,14 @@ function insertZidishaDaily(db, row, columns) {
     if (!SKIP_BODA_SCHEDULE) {
       const dbBS = initDb()
       initBodaScheduleTable(dbBS)
-      dbBS.exec(`DELETE FROM ${BODA_SCHEDULE_TABLE}`)
       const scheduleRows = await fetchBodaScheduleCsv()
-      const txBS = dbBS.transaction((rows) => {
-        for (const r of rows) insertBodaSchedule(dbBS, r)
-      })
-      txBS(scheduleRows)
+      const replacedS = replaceTableContents(dbBS, BODA_SCHEDULE_TABLE, scheduleRows, (r) => insertBodaSchedule(dbBS, r))
       const scheduleCount = dbBS.prepare(`SELECT COUNT(*) as c FROM ${BODA_SCHEDULE_TABLE}`).get().c
-      console.log(`Saved ${scheduleRows.length} rows into ${BODA_SCHEDULE_TABLE}. Table now has ${scheduleCount} rows.`)
+      if (replacedS) {
+        console.log(`Saved ${scheduleRows.length} rows into ${BODA_SCHEDULE_TABLE}. Table now has ${scheduleCount} rows.`)
+      } else {
+        console.log(`${BODA_SCHEDULE_TABLE} unchanged (${scheduleCount} rows).`)
+      }
     } else {
       console.log('Skipping boda_Schedule ingestion due to SKIP_BODA_SCHEDULE=1')
     }
@@ -1567,10 +1640,8 @@ function insertZidishaDaily(db, row, columns) {
       // Fetch data first to get columns
       const { data: zidishaDailyRows, columns } = await fetchZidishaDailyCsv()
       if (columns.length > 0) {
-        // Initialize table with columns from CSV
+        // Initialize table with columns from CSV (schema only; no truncate yet)
         initZidishaDailyTable(dbZD, columns)
-        // Truncate table before fresh insert
-        dbZD.exec(`DELETE FROM "${ZIDISHA_DAILY_TABLE}"`)
 
         // Backend filter: keep only "Zidisha Boda" rows based on Product Name
         const zidishaBodaRows = zidishaDailyRows.filter((row) => {
@@ -1580,12 +1651,18 @@ function insertZidishaDaily(db, row, columns) {
           return product === 'zidisha boda'
         })
 
-        const txZD = dbZD.transaction((rows) => {
-          for (const r of rows) insertZidishaDaily(dbZD, r, columns)
-        })
-        txZD(zidishaBodaRows)
+        const replacedZD = replaceTableContents(
+          dbZD,
+          `"${ZIDISHA_DAILY_TABLE}"`,
+          zidishaBodaRows,
+          (r) => insertZidishaDaily(dbZD, r, columns)
+        )
         const zidishaDailyCount = dbZD.prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_DAILY_TABLE}"`).get().c
-        console.log(`Saved ${zidishaBodaRows.length} Zidisha Boda rows into ${ZIDISHA_DAILY_TABLE}. Table now has ${zidishaDailyCount} rows.`)
+        if (replacedZD) {
+          console.log(`Saved ${zidishaBodaRows.length} Zidisha Boda rows into ${ZIDISHA_DAILY_TABLE}. Table now has ${zidishaDailyCount} rows.`)
+        } else {
+          console.log(`${ZIDISHA_DAILY_TABLE} unchanged (${zidishaDailyCount} rows).`)
+        }
       } else {
         console.log('No columns found in Zidisha Daily export, skipping ingestion')
       }
