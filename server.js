@@ -22,7 +22,7 @@ import {
   LOANDISK_LOAN_DB_COLUMNS,
   LOANDISK_LOAN_ROW_SELECT,
 } from './lib/loandiskLoanSchema.mjs'
-import { logLogin, logLogout, logPageView, logAction, setActivityDb } from './lib/telegramLogger.mjs'
+import { logLogin, logLogout, logPageView, logAction, logLoginFailed, logError, setActivityDb } from './lib/telegramLogger.mjs'
 import { initUserActivityTable } from './lib/userActivity.mjs'
 import { startTelegramBot } from './lib/telegramBot.mjs'
 
@@ -6829,41 +6829,55 @@ function findUserByUsernameOrEmail(loginId) {
 }
 
 app.post('/api/auth/login', (req, res) => {
+  const loginId = String(req.body?.username || '').trim()
+  const ip = getClientIp(req)
+  const reject = (status, error, userRow = null) => {
+    res.status(status).json({ error })
+    const mapped = userRow ? mapUserRow(userRow) : null
+    logLoginFailed({
+      loginId: loginId || 'unknown',
+      user: mapped,
+      reason: error,
+      ip,
+      statusCode: status,
+    }).catch(() => {})
+  }
   try {
     const { username, password, superuserOnly } = req.body || {}
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username or email and password are required' })
+      return reject(400, 'Username or email and password are required')
     }
-    const loginId = String(username).trim()
     const user = findUserByUsernameOrEmail(loginId)
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' })
+      return reject(401, 'Invalid credentials')
     }
     const emailOk = !!Number(user.email_verified || 0)
     const phoneOk = !!Number(user.phone_verified || 0)
     if (!emailOk && !phoneOk) {
-      return res.status(403).json({
-        error: 'Account not activated. Use the link sent to your email (if provided) or sign in with the SMS you received.',
-      })
+      return reject(
+        403,
+        'Account not activated. Use the link sent to your email (if provided) or sign in with the SMS you received.',
+        user
+      )
     }
     if (!user.active) {
-      return res.status(403).json({ error: 'User is deactivated' })
+      return reject(403, 'User is deactivated', user)
     }
     const isSuperuser = String(user.role || '').toLowerCase() === 'superuser'
     
     // If superuserOnly flag is set, only allow superuser login
     if (superuserOnly && !isSuperuser) {
-      return res.status(403).json({ error: 'Access denied. Superuser credentials required.' })
+      return reject(403, 'Access denied. Superuser credentials required.', user)
     }
     
     const maintenanceOn = isMaintenanceEnabled()
     // During maintenance, only superusers can login (unless it's a superuser-only login attempt)
     if (maintenanceOn && !isSuperuser) {
-      return res.status(503).json({ error: 'System under maintenance' })
+      return reject(503, 'System under maintenance', user)
     }
     const passwordHash = hashPassword(password)
     if (passwordHash !== user.password_hash) {
-      return res.status(401).json({ error: 'Invalid credentials' })
+      return reject(401, 'Invalid credentials', user)
     }
     const token = signAuthToken(user)
     setAuthCookie(res, token)
@@ -6872,6 +6886,11 @@ app.post('/api/auth/login', (req, res) => {
     // Fire-and-forget Telegram login notify for monitored users
     logLogin(mapped).catch(() => {})
   } catch (e) {
+    logError({
+      source: 'auth/login',
+      message: e.message || String(e),
+      stack: e.stack,
+    }).catch(() => {})
     res.status(500).json({ error: e.message })
   }
 })
@@ -7140,6 +7159,12 @@ app.post('/api/activity-log', requireAuth, async (req, res) => {
     }
     return res.json({ ok: true })
   } catch (e) {
+    logError({
+      source: 'activity-log',
+      message: e.message || String(e),
+      user: req.authUser || null,
+      stack: e.stack,
+    }).catch(() => {})
     return res.status(500).json({ error: e.message })
   }
 })
@@ -10961,5 +10986,26 @@ app.listen(PORT, '0.0.0.0', () => {
     startTelegramBot(dbRW)
   } catch (e) {
     console.warn('[TelegramBot] failed to start:', e.message)
+    logError({ source: 'telegramBot/start', message: e.message || String(e) }).catch(() => {})
   }
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err)
+  logError({
+    source: 'uncaughtException',
+    message: err?.message || String(err),
+    stack: err?.stack,
+  }).catch(() => {})
+})
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  const stack = reason instanceof Error ? reason.stack : undefined
+  console.error('[unhandledRejection]', reason)
+  logError({
+    source: 'unhandledRejection',
+    message,
+    stack,
+  }).catch(() => {})
 })
