@@ -5,6 +5,7 @@ import Header from './Header.jsx'
 import MaintenanceDownScreen, { DEFAULT_MAINTENANCE_MESSAGE } from './MaintenanceDownScreen.jsx'
 import { useBreakpoint } from '../hooks/useBreakpoint.js'
 import { useInactivityLogout } from '../hooks/useInactivityLogout.js'
+import { useActivityLogger } from '../hooks/useActivityLogger.js'
 import { API_URLS } from '../utils/api.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { LogbookCurrencyProvider } from '../context/LogbookCurrencyContext.jsx'
@@ -22,6 +23,7 @@ function Layout({ children }) {
   const { user, isLoading } = useAuth()
 
   useInactivityLogout()
+  useActivityLogger(user)
 
   useEffect(() => {
     setSidebarOpen(isDesktop)

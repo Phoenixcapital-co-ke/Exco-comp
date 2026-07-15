@@ -93,6 +93,7 @@ export const API_URLS = {
     resetPassword: `${API_BASE}/api/auth/reset-password`,
     firstPasswordChange: `${API_BASE}/api/auth/first-password-change`,
   },
+  activityLog: `${API_BASE}/api/activity-log`,
   users: {
     list: `${API_BASE}/api/users`,
     create: `${API_BASE}/api/users`,

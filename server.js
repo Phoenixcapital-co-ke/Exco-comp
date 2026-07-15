@@ -22,6 +22,7 @@ import {
   LOANDISK_LOAN_DB_COLUMNS,
   LOANDISK_LOAN_ROW_SELECT,
 } from './lib/loandiskLoanSchema.mjs'
+import { logLogin, logLogout, logPageView, logAction } from './lib/telegramLogger.mjs'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -6857,7 +6858,10 @@ app.post('/api/auth/login', (req, res) => {
     }
     const token = signAuthToken(user)
     setAuthCookie(res, token)
-    res.json({ user: mapUserRow(user), mustChangePassword: !!Number(user.must_change_password || 0) })
+    const mapped = mapUserRow(user)
+    res.json({ user: mapped, mustChangePassword: !!Number(user.must_change_password || 0) })
+    // Fire-and-forget Telegram login notify for monitored users
+    logLogin(mapped).catch(() => {})
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -7097,8 +7101,38 @@ app.post('/api/auth/first-password-change', requireAuth, (req, res) => {
 })
 
 app.post('/api/auth/logout', (req, res) => {
+  const loggedOutUser = req.authUser || null
   clearAuthCookie(res)
   res.json({ ok: true })
+  if (loggedOutUser) {
+    logLogout(loggedOutUser).catch(() => {})
+  }
+})
+
+app.post('/api/activity-log', requireAuth, async (req, res) => {
+  try {
+    const user = req.authUser
+    const { type, page, title, action } = req.body || {}
+    switch (type) {
+      case 'login':
+        await logLogin(user)
+        break
+      case 'logout':
+        await logLogout(user)
+        break
+      case 'pageView':
+        await logPageView(user, page || '', title || '')
+        break
+      case 'action':
+        await logAction(user, action || '')
+        break
+      default:
+        return res.status(400).json({ error: `Unknown log type: ${type}` })
+    }
+    return res.json({ ok: true })
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
+  }
 })
 
 app.get('/api/auth/me', (req, res) => {
