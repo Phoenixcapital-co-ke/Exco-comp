@@ -15,7 +15,18 @@ function BodaProductivity() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedBranch, setExpandedBranch] = useState(null)
-  const [parAging, setParAging] = useState({ par: null, par7: null, par14: null, par21: null })
+  const [parAging, setParAging] = useState({
+    par: null,
+    par7: null,
+    par14: null,
+    par21: null,
+    atRiskOutstanding: null,
+    par7Outstanding: null,
+    par14Outstanding: null,
+    par21Outstanding: null,
+    byBranch: {},
+    byOfficer: {},
+  })
   const [parLoading, setParLoading] = useState(true)
   const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useBodaBranch()
 
@@ -82,10 +93,27 @@ function BodaProductivity() {
           par7: data.par7 ?? null,
           par14: data.par14 ?? null,
           par21: data.par21 ?? null,
+          atRiskOutstanding: data.atRiskOutstanding ?? null,
+          par7Outstanding: data.par7Outstanding ?? null,
+          par14Outstanding: data.par14Outstanding ?? null,
+          par21Outstanding: data.par21Outstanding ?? null,
+          byBranch: data.byBranch && typeof data.byBranch === 'object' ? data.byBranch : {},
+          byOfficer: data.byOfficer && typeof data.byOfficer === 'object' ? data.byOfficer : {},
         })
       } catch (e) {
         if (e.name === 'AbortError') return
-        setParAging({ par: null, par7: null, par14: null, par21: null })
+        setParAging({
+          par: null,
+          par7: null,
+          par14: null,
+          par21: null,
+          atRiskOutstanding: null,
+          par7Outstanding: null,
+          par14Outstanding: null,
+          par21Outstanding: null,
+          byBranch: {},
+          byOfficer: {},
+        })
       } finally {
         setParLoading(false)
       }
@@ -94,6 +122,42 @@ function BodaProductivity() {
     return () => controller.abort()
   }, [selectedBranch])
 
+  const lookupBranchPar = (branchName, byBranch) => {
+    if (!byBranch || typeof byBranch !== 'object') return null
+    const want = String(branchName || '').trim().toLowerCase()
+    if (!want) return null
+    if (byBranch[branchName]?.par != null) return byBranch[branchName]
+    for (const [k, v] of Object.entries(byBranch)) {
+      if (String(k).trim().toLowerCase() === want) return v
+    }
+    return null
+  }
+
+  const lookupOfficerPar = (branchName, officerName, byOfficer) => {
+    if (!byOfficer || typeof byOfficer !== 'object') return null
+    const wantBranch = String(branchName || '').trim().toLowerCase()
+    const wantOfficer = String(officerName || '').trim().toLowerCase()
+    let branchBucket = byOfficer[branchName]
+    if (!branchBucket) {
+      const entry = Object.entries(byOfficer).find(
+        ([k]) => String(k).trim().toLowerCase() === wantBranch,
+      )
+      branchBucket = entry?.[1]
+    }
+    if (!branchBucket || typeof branchBucket !== 'object') return null
+    if (branchBucket[officerName]?.par != null) return branchBucket[officerName]
+    for (const [k, v] of Object.entries(branchBucket)) {
+      if (String(k).trim().toLowerCase() === wantOfficer) return v
+    }
+    return null
+  }
+
+  const formatParPct = (v) =>
+    v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v).toFixed(1)}%`
+
+  const parCellClass = (v, threshold = 35) =>
+    v != null && Number(v) >= threshold ? 'text-[#EF5322]' : 'text-gray-900'
+
   const mtdBranchRows = useMemo(
     () =>
       rows.map((r) => {
@@ -101,23 +165,40 @@ function BodaProductivity() {
         const collected = Number(r.collected || 0)
         const rate = Number(r.ratePercent || 0)
         const to97 = expected > 0 ? Math.max(0, TARGET_RATE * expected - collected) : 0
+        const branchPar = lookupBranchPar(r.branch, parAging.byBranch)
         const officers = Array.isArray(r.officers)
           ? r.officers.map((o) => {
               const oExpected = Number(o.expected || 0)
               const oCollected = Number(o.collected || 0)
               const oRate = Number(o.ratePercent || 0)
+              const oPar = lookupOfficerPar(r.branch, o.officer, parAging.byOfficer)
               return {
                 ...o,
                 expected: oExpected,
                 collected: oCollected,
                 rate: oRate,
                 to97: oExpected > 0 ? Math.max(0, TARGET_RATE * oExpected - oCollected) : 0,
+                par: oPar?.par ?? null,
+                par7: oPar?.par7 ?? null,
+                par14: oPar?.par14 ?? null,
+                par21: oPar?.par21 ?? null,
               }
             })
           : []
-        return { ...r, expected, collected, rate, to97, officers }
+        return {
+          ...r,
+          expected,
+          collected,
+          rate,
+          to97,
+          officers,
+          par: branchPar?.par ?? null,
+          par7: branchPar?.par7 ?? null,
+          par14: branchPar?.par14 ?? null,
+          par21: branchPar?.par21 ?? null,
+        }
       }),
-    [rows],
+    [rows, parAging.byBranch, parAging.byOfficer],
   )
 
   const summary = useMemo(() => {
@@ -274,11 +355,20 @@ function BodaProductivity() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+        <ParArcGauge
+          label="PAR"
+          hint="Total portfolio at risk"
+          value={parAging.par}
+          amount={parAging.atRiskOutstanding}
+          loading={parLoading}
+          dangerFrom={35}
+        />
         <ParArcGauge
           label="PAR 7"
           hint="Overdue ≥ 7 days"
           value={parAging.par7}
+          amount={parAging.par7Outstanding}
           loading={parLoading}
           dangerFrom={40}
         />
@@ -286,6 +376,7 @@ function BodaProductivity() {
           label="PAR 14"
           hint="Overdue ≥ 14 days"
           value={parAging.par14}
+          amount={parAging.par14Outstanding}
           loading={parLoading}
           dangerFrom={30}
         />
@@ -293,6 +384,7 @@ function BodaProductivity() {
           label="PAR 21"
           hint="Overdue ≥ 21 days"
           value={parAging.par21}
+          amount={parAging.par21Outstanding}
           loading={parLoading}
           dangerFrom={20}
         />
@@ -314,6 +406,10 @@ function BodaProductivity() {
                 <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
                 <th className="px-3 py-2 text-right font-medium text-gray-600">To 97%</th>
                 <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 7</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 14</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 21</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-100">
@@ -347,11 +443,23 @@ function BodaProductivity() {
                       {row.expected > 0 ? formatKES(row.to97) : '-'}
                     </td>
                     <td className="px-3 py-2 text-right font-medium">{row.rate.toFixed(1)}%</td>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par, 35)}`}>
+                      {formatParPct(row.par)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par7, 40)}`}>
+                      {formatParPct(row.par7)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par14, 30)}`}>
+                      {formatParPct(row.par14)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par21, 20)}`}>
+                      {formatParPct(row.par21)}
+                    </td>
                   </tr>
 
                   {expandedBranch === row.branch && (
                     <tr className="bg-indigo-50/40">
-                      <td colSpan={6} className="px-4 pb-4 pt-2">
+                      <td colSpan={10} className="px-4 pb-4 pt-2">
                         <div className="bg-white rounded-lg border border-indigo-200 overflow-hidden shadow-sm">
                           <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-blue-50 border-b border-indigo-100">
                             <h4 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
@@ -378,6 +486,18 @@ function BodaProductivity() {
                                   <th className="px-4 py-2 text-right font-medium text-gray-600">
                                     Rate
                                   </th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">
+                                    PAR
+                                  </th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">
+                                    PAR 7
+                                  </th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">
+                                    PAR 14
+                                  </th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">
+                                    PAR 21
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-gray-50">
@@ -395,6 +515,26 @@ function BodaProductivity() {
                                     </td>
                                     <td className="px-4 py-2 text-right">
                                       {officer.rate.toFixed(1)}%
+                                    </td>
+                                    <td
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par, 35)}`}
+                                    >
+                                      {formatParPct(officer.par)}
+                                    </td>
+                                    <td
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par7, 40)}`}
+                                    >
+                                      {formatParPct(officer.par7)}
+                                    </td>
+                                    <td
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par14, 30)}`}
+                                    >
+                                      {formatParPct(officer.par14)}
+                                    </td>
+                                    <td
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par21, 20)}`}
+                                    >
+                                      {formatParPct(officer.par21)}
                                     </td>
                                   </tr>
                                 ))}
@@ -414,7 +554,7 @@ function BodaProductivity() {
 
               {!mtdBranchRows.length && (
                 <tr>
-                  <td className="px-3 py-6 text-center text-gray-500" colSpan={6}>
+                  <td className="px-3 py-6 text-center text-gray-500" colSpan={10}>
                     No data for selected period.
                   </td>
                 </tr>

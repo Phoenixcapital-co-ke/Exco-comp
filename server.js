@@ -3814,6 +3814,7 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
       `SELECT
          TRIM("Loan ID") AS loanId,
          TRIM("Branch Name") AS branch,
+         TRIM(COALESCE("Loan Officer Name", 'Unknown')) AS officer,
          CAST("Principal Outstanding Derived" AS REAL) AS outstanding,
          CAST("Principal Overdue Derived" AS REAL) AS overdue
        FROM zidisha_data
@@ -3826,34 +3827,100 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
   let par7Outstanding = 0
   let par14Outstanding = 0
   let par21Outstanding = 0
+  const branchAgg = new Map()
+  const officerAgg = new Map() // key: `${branchLower}|||${officerLower}`
+
+  const bump = (map, key, labelFields, outstanding, overdue, dpd) => {
+    if (!map.has(key)) {
+      map.set(key, {
+        ...labelFields,
+        outstandingAll: 0,
+        outstandingAtRisk: 0,
+        outstandingPar7: 0,
+        outstandingPar14: 0,
+        outstandingPar21: 0,
+      })
+    }
+    const e = map.get(key)
+    e.outstandingAll += outstanding
+    if (overdue > 0) {
+      e.outstandingAtRisk += outstanding
+      if (dpd != null) {
+        if (dpd >= 7) e.outstandingPar7 += outstanding
+        if (dpd >= 14) e.outstandingPar14 += outstanding
+        if (dpd >= 21) e.outstandingPar21 += outstanding
+      }
+    }
+  }
 
   for (const r of loanRows) {
-    const b = String(r.branch || '').trim().toLowerCase()
+    const branchName = String(r.branch || '').trim() || 'Unknown'
+    const b = branchName.toLowerCase()
     if (allowedNorm && !wantBranch && b && !allowedNorm.has(b)) continue
     const outstanding = Number(r.outstanding) || 0
     if (outstanding <= 0) continue
-    totalOutstanding += outstanding
     const overdue = Number(r.overdue) || 0
-    if (!(overdue > 0)) continue
-    atRiskOutstanding += outstanding
+    const officerName = String(r.officer || 'Unknown').trim() || 'Unknown'
     const dpd = daysPastDueByLoan.get(String(r.loanId || '').trim())
-    if (dpd == null) continue
+
+    totalOutstanding += outstanding
+    if (overdue > 0) atRiskOutstanding += outstanding
+
+    bump(branchAgg, b, { branch: branchName }, outstanding, overdue, dpd)
+    bump(
+      officerAgg,
+      `${b}|||${officerName.toLowerCase()}`,
+      { branch: branchName, officer: officerName },
+      outstanding,
+      overdue,
+      dpd,
+    )
+
+    if (!(overdue > 0) || dpd == null) continue
     if (dpd >= 7) par7Outstanding += outstanding
     if (dpd >= 14) par14Outstanding += outstanding
     if (dpd >= 21) par21Outstanding += outstanding
   }
 
-  const pct = (num) =>
-    totalOutstanding > 0 ? Number(((num / totalOutstanding) * 100).toFixed(1)) : 0
+  const pct = (num, den = totalOutstanding) =>
+    den > 0 ? Number(((num / den) * 100).toFixed(1)) : 0
+
+  const finalizePar = (v) => ({
+    par: pct(v.outstandingAtRisk, v.outstandingAll),
+    par7: pct(v.outstandingPar7, v.outstandingAll),
+    par14: pct(v.outstandingPar14, v.outstandingAll),
+    par21: pct(v.outstandingPar21, v.outstandingAll),
+    outstanding: Math.round(v.outstandingAll),
+    atRisk: Math.round(v.outstandingAtRisk),
+    atRisk7: Math.round(v.outstandingPar7),
+    atRisk14: Math.round(v.outstandingPar14),
+    atRisk21: Math.round(v.outstandingPar21),
+  })
+
+  const byBranch = {}
+  for (const [, v] of branchAgg) {
+    byBranch[v.branch] = finalizePar(v)
+  }
+
+  const byOfficer = {}
+  for (const [, v] of officerAgg) {
+    if (!byOfficer[v.branch]) byOfficer[v.branch] = {}
+    byOfficer[v.branch][v.officer] = finalizePar(v)
+  }
 
   return {
-    totalOutstanding,
-    atRiskOutstanding,
+    totalOutstanding: Math.round(totalOutstanding),
+    atRiskOutstanding: Math.round(atRiskOutstanding),
+    par7Outstanding: Math.round(par7Outstanding),
+    par14Outstanding: Math.round(par14Outstanding),
+    par21Outstanding: Math.round(par21Outstanding),
     par: pct(atRiskOutstanding),
     par7: pct(par7Outstanding),
     par14: pct(par14Outstanding),
     par21: pct(par21Outstanding),
     loanCount: loanRows.length,
+    byBranch,
+    byOfficer,
   }
 }
 

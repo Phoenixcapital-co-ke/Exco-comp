@@ -1,19 +1,21 @@
 import React, { useId, useMemo } from 'react'
+import DigitalWatchAmount from './DigitalWatchAmount.jsx'
 
 /** Phoenix brand orange */
 const ORANGE = '#EF5322'
 const ORANGE_SOFT = '#F47A52'
 const ORANGE_DEEP = '#C9441A'
-const TRACK = '#e5e7eb' // gray-200
-const TICK = '#9ca3af' // gray-400
-const LABEL = '#6b7280' // gray-500
-const VALUE = '#111827' // gray-900
+const TRACK = '#e5e7eb'
+const TICK = '#9ca3af'
+const LABEL = '#6b7280'
+const VALUE = '#111827'
 
 /**
- * Semi-circular arc gauge — white card + app orange fill.
+ * Semi-circular arc gauge — white card + app orange fill + digital amount.
  */
 function ParArcGauge({
   value,
+  amount,
   label,
   hint,
   loading = false,
@@ -77,7 +79,10 @@ function ParArcGauge({
       <div className="flex items-baseline justify-between mb-1 px-1">
         <p className="text-sm font-semibold tracking-wide text-gray-900">{label}</p>
         {hint ? (
-          <p className="text-[10px] uppercase tracking-wider" style={{ color: 'rgba(239, 83, 34, 0.85)' }}>
+          <p
+            className="text-[10px] uppercase tracking-wider"
+            style={{ color: 'rgba(239, 83, 34, 0.85)' }}
+          >
             {hint}
           </p>
         ) : null}
@@ -97,7 +102,6 @@ function ParArcGauge({
             </linearGradient>
           </defs>
 
-          {/* Background track */}
           <path
             d={describeArc(startAngle, endAngle, r)}
             fill="none"
@@ -106,7 +110,6 @@ function ParArcGauge({
             strokeLinecap="butt"
           />
 
-          {/* Orange danger outer arc (upper end of scale) */}
           <path
             d={describeArc(dangerAngle, endAngle, r + stroke * 0.72)}
             fill="none"
@@ -116,7 +119,6 @@ function ParArcGauge({
             opacity={0.9}
           />
 
-          {/* Value fill */}
           {!loading && hasValue && clamped > 0 ? (
             <path
               d={describeArc(startAngle, valueAngle, r)}
@@ -127,7 +129,6 @@ function ParArcGauge({
             />
           ) : null}
 
-          {/* Tick marks + labels */}
           {ticks.map((t) => {
             const outer = polar(t.ang, tickOuter)
             const inner = polar(t.ang, t.isMajor ? tickInnerMajor : tickInnerMinor)
@@ -162,7 +163,6 @@ function ParArcGauge({
             )
           })}
 
-          {/* Value tip */}
           {!loading && hasValue ? (
             <circle
               cx={polar(valueAngle, r).x}
@@ -174,7 +174,6 @@ function ParArcGauge({
             />
           ) : null}
 
-          {/* Center readout */}
           <text
             x={cx}
             y={cy - size * 0.02}
@@ -201,6 +200,10 @@ function ParArcGauge({
             {loading ? 'loading' : '%'}
           </text>
         </svg>
+      </div>
+
+      <div className="mt-1 border-t border-gray-100 pt-2">
+        <DigitalWatchAmount amount={amount} loading={loading} />
       </div>
     </div>
   )
