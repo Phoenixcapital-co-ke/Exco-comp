@@ -56,6 +56,7 @@ export const API_URLS = {
     scheduleMtdByBranch: `${API_BASE}/api/boda/schedule/mtd-by-branch`,
     scheduleMtdByBranchOfficers: `${API_BASE}/api/boda/schedule/mtd-by-branch-officers`,
     scheduleDaily: `${API_BASE}/api/boda/schedule/daily`,
+    parAging: `${API_BASE}/api/boda/par-aging`,
   },
   events: `${API_BASE}/api/events`,
   ingest: `${API_BASE}/api/ingest`,

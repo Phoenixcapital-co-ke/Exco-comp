@@ -3,6 +3,7 @@ import { Activity, Users, Target, Award, ChevronDown, ChevronRight, User } from 
 import { formatKES } from '../../utils/format.js'
 import { API_URLS } from '../../utils/api.js'
 import { useBodaBranch } from '../../context/BodaBranchContext.jsx'
+import ParArcGauge from '../../components/ParArcGauge.jsx'
 
 const TARGET_RATE = 0.97
 
@@ -14,6 +15,8 @@ function BodaProductivity() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedBranch, setExpandedBranch] = useState(null)
+  const [parAging, setParAging] = useState({ par: null, par7: null, par14: null, par21: null })
+  const [parLoading, setParLoading] = useState(true)
   const { selectedBranch, setSelectedBranch, branchOptions, cleanBranchLabel } = useBodaBranch()
 
   useEffect(() => {
@@ -53,6 +56,43 @@ function BodaProductivity() {
     }
     if (selectedMonth && selectedYear) load()
   }, [selectedMonth, selectedYear, selectedBranch])
+
+  // PAR cards (same methodology as /boda/dashboard; aging via unpaid schedule days)
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadPar = async () => {
+      setParLoading(true)
+      try {
+        const params = new URLSearchParams()
+        if (selectedBranch && String(selectedBranch).toLowerCase() !== 'all') {
+          params.set('branch', String(selectedBranch))
+        }
+        const qs = params.toString()
+        const res = await fetch(`${API_URLS.boda.parAging}${qs ? `?${qs}` : ''}`, {
+          credentials: 'include',
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body?.error || `Failed to load PAR (${res.status})`)
+        }
+        const data = await res.json()
+        setParAging({
+          par: data.par ?? null,
+          par7: data.par7 ?? null,
+          par14: data.par14 ?? null,
+          par21: data.par21 ?? null,
+        })
+      } catch (e) {
+        if (e.name === 'AbortError') return
+        setParAging({ par: null, par7: null, par14: null, par21: null })
+      } finally {
+        setParLoading(false)
+      }
+    }
+    loadPar()
+    return () => controller.abort()
+  }, [selectedBranch])
 
   const mtdBranchRows = useMemo(
     () =>
@@ -232,6 +272,30 @@ function BodaProductivity() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <ParArcGauge
+          label="PAR 7"
+          hint="Overdue ≥ 7 days"
+          value={parAging.par7}
+          loading={parLoading}
+          dangerFrom={40}
+        />
+        <ParArcGauge
+          label="PAR 14"
+          hint="Overdue ≥ 14 days"
+          value={parAging.par14}
+          loading={parLoading}
+          dangerFrom={30}
+        />
+        <ParArcGauge
+          label="PAR 21"
+          hint="Overdue ≥ 21 days"
+          value={parAging.par21}
+          loading={parLoading}
+          dangerFrom={20}
+        />
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

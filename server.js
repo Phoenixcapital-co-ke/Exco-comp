@@ -3757,6 +3757,106 @@ function computeBodaPortfolioParByBranch(rows) {
   return { byBranch: branchPar, globalPar }
 }
 
+/**
+ * Boda PAR aging — same base as /boda/dashboard PAR
+ * (Principal Outstanding where Principal Overdue > 0 / total Principal Outstanding),
+ * filtered by days past due from the oldest unpaid boda_Schedule installment.
+ */
+function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
+  const branchFilter = String(branch || '').trim()
+  const wantBranch =
+    branchFilter && branchFilter.toLowerCase() !== 'all' ? branchFilter.toLowerCase() : null
+  const allowedNorm =
+    allowedBranches instanceof Set && allowedBranches.size > 0 ? allowedBranches : null
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const scheduleSql = `
+    SELECT TRIM("Loan Id") AS loanId, "Due Date" AS dueDate, TRIM("Branch Name") AS branch
+    FROM boda_Schedule
+    WHERE CAST("Total Outstanding" AS REAL) > 0
+      AND "Due Date" IS NOT NULL
+      AND TRIM("Due Date") <> ''
+      AND LOWER(TRIM(COALESCE("Product Name",''))) LIKE '%boda%'
+      ${wantBranch ? 'AND LOWER(TRIM(COALESCE("Branch Name",\'\'))) = LOWER(?)' : ''}
+  `
+  const scheduleRows = db.prepare(scheduleSql).all(...(wantBranch ? [wantBranch] : []))
+
+  const daysPastDueByLoan = new Map()
+  for (const r of scheduleRows) {
+    const b = String(r.branch || '').trim().toLowerCase()
+    if (allowedNorm && !wantBranch && b && !allowedNorm.has(b)) continue
+    const loanId = String(r.loanId || '').trim()
+    if (!loanId) continue
+    const due = parseDateLoose(r.dueDate)
+    if (!due) continue
+    due.setHours(0, 0, 0, 0)
+    if (due > today) continue
+    const days = Math.floor((today - due) / 86400000)
+    const prev = daysPastDueByLoan.get(loanId)
+    if (prev == null || days > prev) daysPastDueByLoan.set(loanId, days)
+  }
+
+  const where = [
+    `LOWER(TRIM("Product Name")) LIKE '%boda%'`,
+    `TRIM(COALESCE("Client Id",'')) != '3926'`,
+    `CAST("Principal Outstanding Derived" AS REAL) > 0`,
+  ]
+  const params = []
+  if (wantBranch) {
+    where.push(`LOWER(TRIM(COALESCE("Branch Name",''))) = ?`)
+    params.push(wantBranch)
+  }
+
+  const loanRows = db
+    .prepare(
+      `SELECT
+         TRIM("Loan ID") AS loanId,
+         TRIM("Branch Name") AS branch,
+         CAST("Principal Outstanding Derived" AS REAL) AS outstanding,
+         CAST("Principal Overdue Derived" AS REAL) AS overdue
+       FROM zidisha_data
+       WHERE ${where.join(' AND ')}`,
+    )
+    .all(...params)
+
+  let totalOutstanding = 0
+  let atRiskOutstanding = 0
+  let par7Outstanding = 0
+  let par14Outstanding = 0
+  let par21Outstanding = 0
+
+  for (const r of loanRows) {
+    const b = String(r.branch || '').trim().toLowerCase()
+    if (allowedNorm && !wantBranch && b && !allowedNorm.has(b)) continue
+    const outstanding = Number(r.outstanding) || 0
+    if (outstanding <= 0) continue
+    totalOutstanding += outstanding
+    const overdue = Number(r.overdue) || 0
+    if (!(overdue > 0)) continue
+    atRiskOutstanding += outstanding
+    const dpd = daysPastDueByLoan.get(String(r.loanId || '').trim())
+    if (dpd == null) continue
+    if (dpd >= 7) par7Outstanding += outstanding
+    if (dpd >= 14) par14Outstanding += outstanding
+    if (dpd >= 21) par21Outstanding += outstanding
+  }
+
+  const pct = (num) =>
+    totalOutstanding > 0 ? Number(((num / totalOutstanding) * 100).toFixed(1)) : 0
+
+  return {
+    totalOutstanding,
+    atRiskOutstanding,
+    par: pct(atRiskOutstanding),
+    par7: pct(par7Outstanding),
+    par14: pct(par14Outstanding),
+    par21: pct(par21Outstanding),
+    loanCount: loanRows.length,
+  }
+}
+
 function aggregateZidishaBranchesPerformance(config, year, monthNum, asAtDate) {
   const where = []
   const params = []
@@ -5440,6 +5540,28 @@ app.post('/api/credit/refresh', requireAuth, (req, res) => {
 
 // Boda schedule (export id 30) - branch summary for Daily Break-down table
 // Table: boda_Schedule. Columns: Branch Name, Client Id, Client Name, Due Date, Loan Id, Period, Total Expected, Total Outstanding
+
+// Boda PAR aging (PAR / PAR7 / PAR14 / PAR21) — same methodology as /boda/dashboard
+app.get('/api/boda/par-aging', requireAuth, (req, res) => {
+  try {
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+    const allowedBoda = getAllowedBodaBranches(req)
+    const allowedNorm = allowedBoda.length
+      ? new Set(allowedBoda.map((b) => String(b || '').trim().toLowerCase()).filter(Boolean))
+      : null
+
+    if (branch && branch.toLowerCase() !== 'all' && allowedNorm && !allowedNorm.has(branch.toLowerCase())) {
+      return res.status(403).json({ error: 'Branch not allowed for this user' })
+    }
+
+    const result = computeBodaParAging({ branch, allowedBranches: allowedNorm })
+    return res.json(result)
+  } catch (e) {
+    console.error('[Boda PAR aging]', e)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/boda/schedule/branch-summary', requireAuth, (req, res) => {
   try {
     const productName = 'Zidisha Boda'
