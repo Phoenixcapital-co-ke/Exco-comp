@@ -22,7 +22,9 @@ import {
   LOANDISK_LOAN_DB_COLUMNS,
   LOANDISK_LOAN_ROW_SELECT,
 } from './lib/loandiskLoanSchema.mjs'
-import { logLogin, logLogout, logPageView, logAction } from './lib/telegramLogger.mjs'
+import { logLogin, logLogout, logPageView, logAction, setActivityDb } from './lib/telegramLogger.mjs'
+import { initUserActivityTable } from './lib/userActivity.mjs'
+import { startTelegramBot } from './lib/telegramBot.mjs'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -407,6 +409,13 @@ try {
   dbRW.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_user_id ON Audit_Log (user_id)`).run()
 } catch (e) {
   console.warn('Audit_Log init:', e.message)
+}
+
+try {
+  initUserActivityTable(dbRW)
+  setActivityDb(dbRW)
+} catch (e) {
+  console.warn('User_Activity_Log init:', e.message)
 }
 
 const PUBLIC_API_PATHS = new Set([
@@ -10947,5 +10956,10 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`Development mode: API at http://localhost:${PORT}`)
     console.log(`Frontend dev server should run separately on port 5173`)
+  }
+  try {
+    startTelegramBot(dbRW)
+  } catch (e) {
+    console.warn('[TelegramBot] failed to start:', e.message)
   }
 })

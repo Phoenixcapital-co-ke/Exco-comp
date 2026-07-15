@@ -1,21 +1,23 @@
 # Telegram activity monitoring (adapted for Exco Express + Vite)
 
-Production wiring lives in:
+## Push alerts (optional monitored users)
+- `lib/telegramLogger.mjs`
+- Login/logout from `/api/auth/login` and `/api/auth/logout`
+- Page views via `src/hooks/useActivityLogger.js` → `POST /api/activity-log`
 
-- `lib/telegramLogger.mjs` — send messages (server only)
-- `src/hooks/useActivityLogger.js` — React Router page views
-- `POST /api/activity-log` in `server.js` — authenticated client logs
-- Login/logout Telegram events fire from `/api/auth/login` and `/api/auth/logout`
+## Chat the bot (Q&A)
+After the server is running, message your bot in the configured Telegram chat:
 
-Configure in `.env`:
+- `/lastlogin jane` or `when did jane last login`
+- `/recent jane 10`
+- `/help`
+
+Only `TELEGRAM_CHAT_ID` is answered. History comes from `User_Activity_Log` (all logins are stored; push alerts still respect the monitored list).
 
 ```
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
-TELEGRAM_MONITORED_USERS=email1@example.com,username2
+TELEGRAM_MONITORED_USERS=email1@example.com
 TELEGRAM_MONITOR_ALL=0
+TELEGRAM_BOT_POLL=1
 ```
-
-Or edit the `MONITORED_USERS` array in `lib/telegramLogger.mjs`.
-
-Do not commit bot tokens into source files.
