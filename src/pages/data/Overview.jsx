@@ -79,7 +79,7 @@ function DataOverview() {
   const [showDirectorDownloadMenu, setShowDirectorDownloadMenu] = useState(false)
 
   // Consolidated repayments by month (all products)
-  const [repaymentsFromMonth, setRepaymentsFromMonth] = useState('2025-07')
+  const [repaymentsFromMonth, setRepaymentsFromMonth] = useState('2024-06')
   const [repaymentsToMonth, setRepaymentsToMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -381,10 +381,13 @@ function DataOverview() {
       (acc, row) => ({
         logbook: acc.logbook + (Number(row.logbook) || 0),
         zidisha: acc.zidisha + (Number(row.zidisha) || 0),
+        zidishaTarget: acc.zidishaTarget + (Number(row.zidishaTarget) || 0),
         zidishaOtc: acc.zidishaOtc + (Number(row.zidishaOtc) || 0),
         boda: acc.boda + (Number(row.boda) || 0),
+        bodaTarget: acc.bodaTarget + (Number(row.bodaTarget) || 0),
         bodaOtc: acc.bodaOtc + (Number(row.bodaOtc) || 0),
         advans: acc.advans + (Number(row.advans) || 0),
+        advansTarget: acc.advansTarget + (Number(row.advansTarget) || 0),
         advansOtc: acc.advansOtc + (Number(row.advansOtc) || 0),
         total: acc.total + (Number(row.total) || 0),
         totalOtc: acc.totalOtc + (Number(row.totalOtc) || 0),
@@ -392,10 +395,13 @@ function DataOverview() {
       {
         logbook: 0,
         zidisha: 0,
+        zidishaTarget: 0,
         zidishaOtc: 0,
         boda: 0,
+        bodaTarget: 0,
         bodaOtc: 0,
         advans: 0,
+        advansTarget: 0,
         advansOtc: 0,
         total: 0,
         totalOtc: 0,
@@ -1188,10 +1194,13 @@ function DataOverview() {
         Month: row.month,
         Logbook: row.logbook,
         Zidisha: row.zidisha,
+        'Zidisha Collection Target': row.zidishaTarget,
         'Zidisha OTC': row.zidishaOtc,
         Boda: row.boda,
+        'Boda Collection Target': row.bodaTarget,
         'Boda OTC': row.bodaOtc,
         Advans: row.advans,
+        'Advans Collection Target': row.advansTarget,
         'Advans OTC': row.advansOtc,
         Total: row.total,
         'Total OTC': row.totalOtc,
@@ -2867,8 +2876,9 @@ function DataOverview() {
 
               {repaymentsMeta?.notes && (
                 <p className="mb-4 text-xs text-gray-500 leading-relaxed">
-                  Product columns match Collection Total Collected. OTC columns (Zidisha / Boda / Advans) are actual cash
-                  from boda_repayments split by Product Name. Portfolio is outstanding as of today (not monthly).
+                  Product columns are Collection Total Collected. Collection Target is the schedule Total Expected due
+                  that month. OTC columns are actual cash from boda_repayments (Zidisha/Advans OTC from Jun 2025; Boda
+                  OTC from Dec 2025). Portfolio is outstanding as of today (not monthly).
                 </p>
               )}
 
@@ -2957,10 +2967,13 @@ function DataOverview() {
                         <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Month</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Logbook</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha Target</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Zidisha OTC</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda Target</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Boda OTC</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans Target</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Advans OTC</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Total OTC</th>
@@ -2972,10 +2985,13 @@ function DataOverview() {
                           <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.month}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.logbook)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.zidisha)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-blue-700">{formatKES(row.zidishaTarget)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.zidishaOtc)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.boda)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-blue-700">{formatKES(row.bodaTarget)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.bodaOtc)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">{formatKES(row.advans)}</td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-blue-700">{formatKES(row.advansTarget)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">{formatKES(row.advansOtc)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-900">{formatKES(row.total)}</td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-right text-gray-700">{formatKES(row.totalOtc)}</td>
@@ -2987,10 +3003,13 @@ function DataOverview() {
                         <td className="px-4 py-3 text-sm font-bold text-gray-900">TOTAL</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.logbook)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.zidisha)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-blue-700">{formatKES(repaymentsTotals.zidishaTarget)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.zidishaOtc)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.boda)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-blue-700">{formatKES(repaymentsTotals.bodaTarget)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.bodaOtc)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.advans)}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-right text-blue-700">{formatKES(repaymentsTotals.advansTarget)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.advansOtc)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-900">{formatKES(repaymentsTotals.total)}</td>
                         <td className="px-4 py-3 text-sm font-bold text-right text-gray-700">{formatKES(repaymentsTotals.totalOtc)}</td>
@@ -3040,7 +3059,7 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Repayments by Month</h2>
                 <p className="text-sm text-gray-500">
-                  Consolidated repayments for Logbook, Zidisha, Boda &amp; Advans — amounts per month (from Jul 2025, adjustable)
+                  Consolidated repayments for Logbook, Zidisha, Boda &amp; Advans — amounts per month (from Jun 2024, adjustable)
                 </p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

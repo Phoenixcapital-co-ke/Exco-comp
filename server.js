@@ -2919,10 +2919,13 @@ function enumerateMonthKeys(fromMonth, toMonth) {
       month: `${monthNames[m - 1]}-${y}`,
       logbook: 0,
       zidisha: 0,
+      zidishaTarget: 0,
       zidishaOtc: 0,
       boda: 0,
+      bodaTarget: 0,
       bodaOtc: 0,
       advans: 0,
+      advansTarget: 0,
       advansOtc: 0,
       total: 0,
       totalOtc: 0,
@@ -2969,65 +2972,79 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
   const nextAfterTo =
     toMonthNum === 12 ? `${toYear + 1}-01-01` : `${toYear}-${String(toMonthNum + 1).padStart(2, '0')}-01`
 
-  // Boda — Collection "EOM Total Collected" (schedule Expected − Outstanding)
-  const bodaScheduleRows = db
-    .prepare(
-      `SELECT
-         strftime('%Y-%m', date("Due Date")) AS monthKey,
-         SUM(COALESCE(CAST(REPLACE("Total Expected", ',', '') AS REAL), 0)) AS expected,
-         SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS outstanding
-       FROM boda_Schedule
-       WHERE "Due Date" IS NOT NULL
-         AND COALESCE(TRIM("Product Name"), '') COLLATE NOCASE = 'Zidisha Boda'
-         AND date("Due Date") >= date(?)
-         AND date("Due Date") < date(?)
-       GROUP BY monthKey`,
-    )
-    .all(rangeStart, nextAfterTo)
-  for (const r of bodaScheduleRows) {
-    if (!r.monthKey) continue
-    const net = Math.max(0, Number(r.expected || 0) - Number(r.outstanding || 0))
-    addAmount(r.monthKey, 'boda', net)
-  }
-
-  const mat = zidishaExpectedMaturityExpr('z')
   const zidishaProducts = ['Zidisha Kifaru', 'Zidisha Nyati', 'Zidisha Simba', 'Zidisha Tembo', 'Zidisha Express']
   const advansOtcProducts = ['Salary Advans', 'Advans Emergency Loan']
+  const zidishaProductSet = new Set(zidishaProducts.map((p) => p.toLowerCase()))
+  const advansProductSet = new Set(advansOtcProducts.map((p) => p.toLowerCase()))
 
-  // Zidisha — Collection "Total Collected" (maturity-month Total Repayment Derived)
-  const zidishaRows = db
-    .prepare(
-      `SELECT
-         strftime('%Y-%m', ${mat}) AS monthKey,
-         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
-       FROM zidisha_data z
-       WHERE z."Product Name" COLLATE NOCASE IN (${zidishaProducts.map(() => '?').join(', ')})
-         AND z."Branch Name" COLLATE NOCASE != 'Advans Branch'
-         AND ${mat} >= date(?)
-         AND ${mat} < date(?)
-       GROUP BY monthKey`,
-    )
-    .all(...zidishaProducts, rangeStart, nextAfterTo)
-  for (const r of zidishaRows) {
-    if (r.monthKey) addAmount(r.monthKey, 'zidisha', r.total)
+  // Zidisha / Advans / Boda Collection — Expected − Outstanding by installment due month.
+  // Prefer historical schedule table (covers mid-2024+); also merge current boda_Schedule for Boda
+  // so recent months stay complete. Live zidisha_data maturity snapshots cannot fill past months.
+  const collectedByDueMonthSql = (tableName, productFilterSql = '') => `
+    SELECT
+      strftime('%Y-%m', date("Due Date")) AS monthKey,
+      LOWER(TRIM(COALESCE("Product Name", ''))) AS product,
+      SUM(
+        COALESCE(CAST(REPLACE(COALESCE("Total Expected", '0'), ',', '') AS REAL), 0)
+      ) AS expected,
+      SUM(
+        CASE
+          WHEN COALESCE(CAST(REPLACE(COALESCE("Total Expected", '0'), ',', '') AS REAL), 0)
+             > COALESCE(CAST(REPLACE(COALESCE("Total Outstanding", '0'), ',', '') AS REAL), 0)
+          THEN COALESCE(CAST(REPLACE(COALESCE("Total Expected", '0'), ',', '') AS REAL), 0)
+             - COALESCE(CAST(REPLACE(COALESCE("Total Outstanding", '0'), ',', '') AS REAL), 0)
+          ELSE 0
+        END
+      ) AS collected
+    FROM ${tableName}
+    WHERE "Due Date" IS NOT NULL
+      AND TRIM(COALESCE("Due Date", '')) <> ''
+      AND date("Due Date") >= date(?)
+      AND date("Due Date") < date(?)
+      ${productFilterSql}
+    GROUP BY monthKey, product
+  `
+
+  const applyScheduleCollected = (rows, { preferExisting = false } = {}) => {
+    for (const r of rows) {
+      if (!r.monthKey) continue
+      const product = String(r.product || '').trim().toLowerCase()
+      const amt = Number(r.collected || 0)
+      let field = null
+      if (product === 'zidisha boda') field = 'boda'
+      else if (zidishaProductSet.has(product)) field = 'zidisha'
+      else if (advansProductSet.has(product) || product.includes('advans')) field = 'advans'
+      if (!field) continue
+      if (preferExisting) {
+        const existing = byKey.get(r.monthKey)
+        if (
+          existing &&
+          (Number(existing[field] || 0) > 0 || Number(existing[`${field}Target`] || 0) > 0)
+        ) {
+          continue
+        }
+      }
+      if (amt > 0) addAmount(r.monthKey, field, amt)
+      const expected = Number(r.expected || 0)
+      if (expected > 0) byKey.get(r.monthKey)[`${field}Target`] += expected
+    }
   }
 
-  // Advans — Collection "Total Collected"
-  const advansRows = db
-    .prepare(
-      `SELECT
-         strftime('%Y-%m', ${mat}) AS monthKey,
-         SUM(COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0)) AS total
-       FROM zidisha_data z
-       WHERE z."Branch Name" COLLATE NOCASE = 'Advans Branch'
-         AND ${mat} >= date(?)
-         AND ${mat} < date(?)
-       GROUP BY monthKey`,
-    )
-    .all(rangeStart, nextAfterTo)
-  for (const r of advansRows) {
-    if (r.monthKey) addAmount(r.monthKey, 'advans', r.total)
-  }
+  applyScheduleCollected(
+    db.prepare(collectedByDueMonthSql('"Zidisha_Daily expected_vs_Repayed"')).all(rangeStart, nextAfterTo),
+  )
+  // Fill Boda months missing from the historical table using the current schedule export
+  applyScheduleCollected(
+    db
+      .prepare(
+        collectedByDueMonthSql(
+          'boda_Schedule',
+          `AND LOWER(TRIM(COALESCE("Product Name", ''))) = 'zidisha boda'`,
+        ),
+      )
+      .all(rangeStart, nextAfterTo),
+    { preferExisting: true },
+  )
 
   // OTC from boda_repayments (actual Transaction Amount by Submitted On Date), split by Product Name
   const otcRows = db
@@ -3049,9 +3066,6 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
     )
     .all(rangeStart, nextAfterTo)
 
-  const zidishaProductSet = new Set(zidishaProducts.map((p) => p.toLowerCase()))
-  const advansProductSet = new Set(advansOtcProducts.map((p) => p.toLowerCase()))
-
   for (const r of otcRows) {
     if (!r.monthKey) continue
     const product = String(r.product || '').trim().toLowerCase()
@@ -3068,10 +3082,13 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
     ...row,
     logbook: Math.round(row.logbook),
     zidisha: Math.round(row.zidisha),
+    zidishaTarget: Math.round(row.zidishaTarget),
     zidishaOtc: Math.round(row.zidishaOtc),
     boda: Math.round(row.boda),
+    bodaTarget: Math.round(row.bodaTarget),
     bodaOtc: Math.round(row.bodaOtc),
     advans: Math.round(row.advans),
+    advansTarget: Math.round(row.advansTarget),
     advansOtc: Math.round(row.advansOtc),
     total: Math.round(row.total),
     totalOtc: Math.round(row.totalOtc),
@@ -3213,12 +3230,14 @@ app.post('/api/reports/repayments-by-month', requireAuth, (req, res) => {
         toMonth,
         notes: {
           logbook: 'Collection Total Collected (Logbook_collection by payment date, Kenya)',
-          zidisha: 'Collection Total Collected (maturity-month Total Repayment Derived)',
-          zidishaOtc: 'OTC from boda_repayments (core Zidisha products)',
-          boda: 'Collection EOM Total Collected (boda_Schedule Expected − Outstanding)',
-          bodaOtc: 'OTC from boda_repayments (Zidisha Boda)',
-          advans: 'Collection Total Collected (Advans Branch maturity-month)',
-          advansOtc: 'OTC from boda_repayments (Salary Advans / Advans Emergency Loan)',
+          zidisha:
+            'Collection Total Collected (Zidisha_Daily expected_vs_Repayed: Expected − Outstanding by due month)',
+          zidishaOtc: 'OTC from boda_repayments (core Zidisha products; data from Jun 2025)',
+          boda: 'Collection EOM Total Collected (expected_vs_Repayed + boda_Schedule Expected − Outstanding; Boda history starts 2026)',
+          bodaOtc: 'OTC from boda_repayments (Zidisha Boda; data from Dec 2025)',
+          advans:
+            'Collection Total Collected (expected_vs_Repayed Salary Advans / Advans Emergency by due month)',
+          advansOtc: 'OTC from boda_repayments (Salary Advans / Advans Emergency Loan; data from Jun 2025)',
           portfolio:
             'As-of-today outstanding: Logbook = open loan principal (latest PAR); Zidisha/Boda/Advans = Principal Outstanding Derived',
         },

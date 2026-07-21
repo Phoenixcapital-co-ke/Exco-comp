@@ -7,11 +7,15 @@
 //   SKIP_ZIDISHA=1           -> skip Zidisha ingestion
 //   SKIP_ZIDISHA_DAILY=1     -> skip Zidisha Daily Expected vs Repayed ingestion
 //   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
+// Dedicated staged import:
+//   node scripts/fetch_disbursments.mjs --boda-repayments-only --from=2024-06-01 --to=2025-06-30
+// The --from/--to range must match the date filter configured on Musoni export #20.
 // Optional: DISBURSEMENTS_LOOKBACK_DAYS (default 60), COLLECTIONS_LOOKBACK_DAYS (default 90)
 // Musoni pacing / resilience (export downloads only):
 //   MUSONI_FETCH_DELAY_MS    -> wait this many ms before each Musoni GET (default 0). Try 3000–8000 if the API returns 5xx under load.
 //   MUSONI_RETRY_COUNT       -> extra attempts after the first failure for retryable HTTP statuses (429, 5xx); default 3 (4 tries total).
 //   MUSONI_RETRY_BASE_MS     -> base backoff before first retry; doubles each retry (default 2000).
+// If a Musoni export fails (e.g. export #20 HTTP 500), that table keeps its previous snapshot and the rest of the refresh continues.
 
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
@@ -39,6 +43,16 @@ const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
 const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
 const SKIP_ZIDISHA_DAILY = process.env.SKIP_ZIDISHA_DAILY === '1'
 const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
+const BODA_REPAYMENTS_ONLY = process.argv.includes('--boda-repayments-only')
+const cliValue = (name) => {
+  const prefix = `--${name}=`
+  const arg = process.argv.find((value) => value.startsWith(prefix))
+  return arg ? arg.slice(prefix.length).trim() : ''
+}
+const BODA_REPAYMENTS_RANGE_START =
+  cliValue('from') || String(process.env.BODA_REPAYMENTS_RANGE_START || '').trim()
+const BODA_REPAYMENTS_RANGE_END =
+  cliValue('to') || String(process.env.BODA_REPAYMENTS_RANGE_END || '').trim()
 
 const MUSONI_FETCH_DELAY_MS = Math.max(0, Number(process.env.MUSONI_FETCH_DELAY_MS || 0) || 0)
 const _mrc = Number(process.env.MUSONI_RETRY_COUNT)
@@ -1410,6 +1424,137 @@ function insertBodaRepayment(db, row) {
   }
 }
 
+function normalizeBodaRepaymentDate(value) {
+  const text = String(value || '').trim()
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`
+  match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  if (match) return `${match[3]}-${match[2]}-${match[1]}`
+  return null
+}
+
+function validateIsoDate(value, label) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${label} must be YYYY-MM-DD (received "${value}")`)
+  }
+  const date = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${label} is not a valid calendar date (received "${value}")`)
+  }
+}
+
+/**
+ * Replace only the exported date window. Rows outside the window are preserved,
+ * allowing export #20 to be downloaded and ingested in multiple chunks.
+ */
+function mergeBodaRepaymentRange(db, rows, requestedStart = '', requestedEnd = '') {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.warn('[Boda repayments] Empty export; keeping all existing rows.')
+    return { merged: false, start: null, end: null, inserted: 0 }
+  }
+  if (Boolean(requestedStart) !== Boolean(requestedEnd)) {
+    throw new Error('Both --from and --to are required when specifying an import range')
+  }
+
+  const datedRows = rows.map((row, index) => {
+    const date = normalizeBodaRepaymentDate(row['Submitted On Date'])
+    if (!date) {
+      throw new Error(
+        `Invalid Submitted On Date at export row ${index + 2}: "${row['Submitted On Date'] ?? ''}"`,
+      )
+    }
+    return { row, date }
+  })
+  const dates = datedRows.map(({ date }) => date)
+  const detectedStart = dates.reduce((min, date) => (date < min ? date : min))
+  const detectedEnd = dates.reduce((max, date) => (date > max ? date : max))
+  const start = requestedStart || detectedStart
+  const end = requestedEnd || detectedEnd
+  validateIsoDate(start, '--from')
+  validateIsoDate(end, '--to')
+  if (start > end) throw new Error(`Import range start ${start} is after end ${end}`)
+
+  // When --from/--to are set, keep only that window (Musoni may return a wider export).
+  // Without an explicit range, replace the full detected window from the download.
+  const inRangeRows = datedRows.filter(({ date }) => date >= start && date <= end)
+  const dropped = datedRows.length - inRangeRows.length
+  if (requestedStart && dropped > 0) {
+    console.warn(
+      `[Boda repayments] Export #20 returned ${dropped} row(s) outside ${start} to ${end} ` +
+        `(detected ${detectedStart} to ${detectedEnd}); those rows were ignored for this chunk.`,
+    )
+  }
+  if (!inRangeRows.length) {
+    throw new Error(
+      `No rows in export #20 fall within ${start} to ${end} ` +
+        `(detected ${detectedStart} to ${detectedEnd}). Check the Musoni date filter.`,
+    )
+  }
+  if (!requestedStart) {
+    console.warn(
+      `[Boda repayments] No explicit --from/--to supplied; replacing detected data window ${start} to ${end}.`,
+    )
+  }
+
+  const existingInRange = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM ${BODA_REPAY_TABLE}
+       WHERE date("Submitted On Date") >= date(?) AND date("Submitted On Date") <= date(?)`,
+    )
+    .get(start, end).count
+  const replaceRange = db.transaction((items) => {
+    db.prepare(
+      `DELETE FROM ${BODA_REPAY_TABLE}
+       WHERE date("Submitted On Date") >= date(?) AND date("Submitted On Date") <= date(?)`,
+    ).run(start, end)
+    for (const { row } of items) insertBodaRepayment(db, row)
+  })
+  replaceRange(inRangeRows)
+  return {
+    merged: true,
+    start,
+    end,
+    inserted: inRangeRows.length,
+    replaced: Number(existingInRange) || 0,
+    dropped,
+  }
+}
+
+async function ingestBodaRepaymentsChunk() {
+  const dbB = initDb()
+  initBodaRepaymentsTable(dbB)
+  const bodaRows = await fetchBodaRepaymentsCsv()
+  const result = mergeBodaRepaymentRange(
+    dbB,
+    bodaRows,
+    BODA_REPAYMENTS_RANGE_START,
+    BODA_REPAYMENTS_RANGE_END,
+  )
+  const coverage = dbB
+    .prepare(
+      `SELECT MIN(date("Submitted On Date")) AS minDate,
+              MAX(date("Submitted On Date")) AS maxDate,
+              COUNT(*) AS count
+       FROM ${BODA_REPAY_TABLE}`,
+    )
+    .get()
+  if (result.merged) {
+    console.log(
+      `[Boda repayments] Replaced ${result.replaced} existing rows in ${result.start} to ${result.end}; ` +
+        `inserted ${result.inserted} exported rows` +
+        (result.dropped ? ` (ignored ${result.dropped} outside range)` : '') +
+        '.',
+    )
+  }
+  console.log(
+    `[Boda repayments] Stored coverage: ${coverage.minDate || '—'} to ${coverage.maxDate || '—'} ` +
+      `(${coverage.count || 0} rows).`,
+  )
+  dbB.close()
+  return result
+}
+
 async function fetchZidishaDailyCsv() {
   const res = await fetchMusoniGET(ZIDISHA_DAILY_URL, 'Zidisha Daily')
   const csv = await res.text()
@@ -1500,6 +1645,11 @@ function insertZidishaDaily(db, row, columns) {
 
 (async () => {
   try {
+    if (BODA_REPAYMENTS_ONLY) {
+      await ingestBodaRepaymentsChunk()
+      return
+    }
+
     const db = initDb()
     migrateDropRawIfPresent(db)
     migrateDisbursementsUniqueLoanId(db)
@@ -1601,17 +1751,22 @@ function insertZidishaDaily(db, row, columns) {
       console.log('Skipping Zidisha ingestion due to SKIP_ZIDISHA=1')
     }
 
+    // Musoni export sections are isolated: one export failing (e.g. HTTP 500) must not
+    // abort schedule / daily refreshes or wipe prior successful snapshots.
+    let musoniFailures = 0
+
     // === Boda repayments ingestion (Musoni export id 20) ===
     if (!SKIP_BODA_REPAYMENTS) {
-      const dbB = initDb()
-      initBodaRepaymentsTable(dbB)
-      const bodaRows = await fetchBodaRepaymentsCsv()
-      const replacedB = replaceTableContents(dbB, BODA_REPAY_TABLE, bodaRows, (r) => insertBodaRepayment(dbB, r))
-      const bodaCount = dbB.prepare(`SELECT COUNT(*) as c FROM ${BODA_REPAY_TABLE}`).get().c
-      if (replacedB) {
-        console.log(`Saved ${bodaRows.length} rows into ${BODA_REPAY_TABLE}. Table now has ${bodaCount} rows.`)
-      } else {
-        console.log(`${BODA_REPAY_TABLE} unchanged (${bodaCount} rows).`)
+      try {
+        await ingestBodaRepaymentsChunk()
+      } catch (e) {
+        musoniFailures += 1
+        console.error(
+          `[Musoni] boda_repayments failed — keeping previous snapshot. ${e.message}`,
+        )
+        console.error(
+          '  Tip: export #20 may be timing out (too large / date range too wide). Retry later with MUSONI_FETCH_DELAY_MS=5000, or fix the export in Musoni.',
+        )
       }
     } else {
       console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
@@ -1620,15 +1775,20 @@ function insertZidishaDaily(db, row, columns) {
     // === Boda schedule ingestion (Musoni export id 30) ===
     const SKIP_BODA_SCHEDULE = String(process.env.SKIP_BODA_SCHEDULE || '').trim() === '1'
     if (!SKIP_BODA_SCHEDULE) {
-      const dbBS = initDb()
-      initBodaScheduleTable(dbBS)
-      const scheduleRows = await fetchBodaScheduleCsv()
-      const replacedS = replaceTableContents(dbBS, BODA_SCHEDULE_TABLE, scheduleRows, (r) => insertBodaSchedule(dbBS, r))
-      const scheduleCount = dbBS.prepare(`SELECT COUNT(*) as c FROM ${BODA_SCHEDULE_TABLE}`).get().c
-      if (replacedS) {
-        console.log(`Saved ${scheduleRows.length} rows into ${BODA_SCHEDULE_TABLE}. Table now has ${scheduleCount} rows.`)
-      } else {
-        console.log(`${BODA_SCHEDULE_TABLE} unchanged (${scheduleCount} rows).`)
+      try {
+        const dbBS = initDb()
+        initBodaScheduleTable(dbBS)
+        const scheduleRows = await fetchBodaScheduleCsv()
+        const replacedS = replaceTableContents(dbBS, BODA_SCHEDULE_TABLE, scheduleRows, (r) => insertBodaSchedule(dbBS, r))
+        const scheduleCount = dbBS.prepare(`SELECT COUNT(*) as c FROM ${BODA_SCHEDULE_TABLE}`).get().c
+        if (replacedS) {
+          console.log(`Saved ${scheduleRows.length} rows into ${BODA_SCHEDULE_TABLE}. Table now has ${scheduleCount} rows.`)
+        } else {
+          console.log(`${BODA_SCHEDULE_TABLE} unchanged (${scheduleCount} rows).`)
+        }
+      } catch (e) {
+        musoniFailures += 1
+        console.error(`[Musoni] boda_Schedule failed — keeping previous snapshot. ${e.message}`)
       }
     } else {
       console.log('Skipping boda_Schedule ingestion due to SKIP_BODA_SCHEDULE=1')
@@ -1636,41 +1796,50 @@ function insertZidishaDaily(db, row, columns) {
 
     // === Zidisha Daily Expected vs Repayed ingestion (Musoni export id 22) ===
     if (!SKIP_ZIDISHA_DAILY) {
-      const dbZD = initDb()
-      // Fetch data first to get columns
-      const { data: zidishaDailyRows, columns } = await fetchZidishaDailyCsv()
-      if (columns.length > 0) {
-        // Initialize table with columns from CSV (schema only; no truncate yet)
-        initZidishaDailyTable(dbZD, columns)
+      try {
+        const dbZD = initDb()
+        // Fetch data first to get columns
+        const { data: zidishaDailyRows, columns } = await fetchZidishaDailyCsv()
+        if (columns.length > 0) {
+          // Initialize table with columns from CSV (schema only; no truncate yet)
+          initZidishaDailyTable(dbZD, columns)
 
-        // Backend filter: keep only "Zidisha Boda" rows based on Product Name
-        const zidishaBodaRows = zidishaDailyRows.filter((row) => {
-          const product = (row['Product Name'] || row.product_name || '').toString().trim().toLowerCase()
-          const clientId = (row['Client Id'] || row.client_id || '').toString().trim()
-          if (clientId === '3926') return false
-          return product === 'zidisha boda'
-        })
+          // Backend filter: keep only "Zidisha Boda" rows based on Product Name
+          const zidishaBodaRows = zidishaDailyRows.filter((row) => {
+            const product = (row['Product Name'] || row.product_name || '').toString().trim().toLowerCase()
+            const clientId = (row['Client Id'] || row.client_id || '').toString().trim()
+            if (clientId === '3926') return false
+            return product === 'zidisha boda'
+          })
 
-        const replacedZD = replaceTableContents(
-          dbZD,
-          `"${ZIDISHA_DAILY_TABLE}"`,
-          zidishaBodaRows,
-          (r) => insertZidishaDaily(dbZD, r, columns)
-        )
-        const zidishaDailyCount = dbZD.prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_DAILY_TABLE}"`).get().c
-        if (replacedZD) {
-          console.log(`Saved ${zidishaBodaRows.length} Zidisha Boda rows into ${ZIDISHA_DAILY_TABLE}. Table now has ${zidishaDailyCount} rows.`)
+          const replacedZD = replaceTableContents(
+            dbZD,
+            `"${ZIDISHA_DAILY_TABLE}"`,
+            zidishaBodaRows,
+            (r) => insertZidishaDaily(dbZD, r, columns)
+          )
+          const zidishaDailyCount = dbZD.prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_DAILY_TABLE}"`).get().c
+          if (replacedZD) {
+            console.log(`Saved ${zidishaBodaRows.length} Zidisha Boda rows into ${ZIDISHA_DAILY_TABLE}. Table now has ${zidishaDailyCount} rows.`)
+          } else {
+            console.log(`${ZIDISHA_DAILY_TABLE} unchanged (${zidishaDailyCount} rows).`)
+          }
         } else {
-          console.log(`${ZIDISHA_DAILY_TABLE} unchanged (${zidishaDailyCount} rows).`)
+          console.log('No columns found in Zidisha Daily export, skipping ingestion')
         }
-      } else {
-        console.log('No columns found in Zidisha Daily export, skipping ingestion')
+      } catch (e) {
+        musoniFailures += 1
+        console.error(`[Musoni] Zidisha Daily failed — keeping previous snapshot. ${e.message}`)
       }
     } else {
       console.log('Skipping Zidisha Daily ingestion due to SKIP_ZIDISHA_DAILY=1')
     }
 
     db.close()
+    if (musoniFailures > 0) {
+      console.warn(`Ingestion finished with ${musoniFailures} Musoni export failure(s). Prior snapshots kept for those tables.`)
+      process.exitCode = 1
+    }
   } catch (err) {
     console.error('Ingestion failed:', err.message)
     process.exitCode = 1
