@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { Calendar, AlertTriangle, Clock, FileText, Loader2 } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
+import { HrShell, HrToolbar } from '../../components/hr/HrUi.jsx'
 
 function HRContracts() {
   const [employees, setEmployees] = useState([])
@@ -192,6 +193,8 @@ function HRContracts() {
   }
 
   return (
+    <HrShell>
+      <HrToolbar page="CONTRACTS" />
     <div className="space-y-6 pb-10">
       <header>
         <h1 className="text-3xl font-bold text-gray-900">Contract Management</h1>
@@ -390,6 +393,7 @@ function HRContracts() {
         </>
       )}
     </div>
+    </HrShell>
   )
 }
 

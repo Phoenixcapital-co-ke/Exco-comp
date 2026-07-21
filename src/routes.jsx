@@ -36,14 +36,7 @@ import KajeaClients from './pages/kajea/Clients.jsx'
 import OSParkingReport from './pages/kajea/OSParkingReport.jsx'
 
 import InsuranceDashboard from './pages/insurance/Dashboard.jsx'
-import HRDashboard from './pages/hr/Dashboard.jsx'
-import HRAnalytics from './pages/hr/Analytics.jsx'
-import HRDemographics from './pages/hr/Demographics.jsx'
-import HRDepartments from './pages/hr/Departments.jsx'
-import HRBranches from './pages/hr/Branches.jsx'
-import HRContracts from './pages/hr/Contracts.jsx'
-import HRDirectory from './pages/hr/Directory.jsx'
-import HRReports from './pages/hr/Reports.jsx'
+import HRWorkspace from './pages/hr/Workspace.jsx'
 import DataOverview from './pages/data/Overview.jsx'
 import DataBranches from './pages/data/Branches.jsx'
 import DataUsers from './pages/data/Users.jsx'
@@ -218,15 +211,9 @@ function Routes() {
       {/* Insurance routes */}
       <Route path="/insurance/dashboard" element={<RequireAuth><InsuranceDashboard /></RequireAuth>} />
       
-      {/* HR Management routes */}
-      <Route path="/hr/dashboard" element={<RequireAuth><HRDashboard /></RequireAuth>} />
-      <Route path="/hr/analytics" element={<RequireAuth><HRAnalytics /></RequireAuth>} />
-      <Route path="/hr/demographics" element={<RequireAuth><HRDemographics /></RequireAuth>} />
-      <Route path="/hr/departments" element={<RequireAuth><HRDepartments /></RequireAuth>} />
-      <Route path="/hr/branches" element={<RequireAuth><HRBranches /></RequireAuth>} />
-      <Route path="/hr/contracts" element={<RequireAuth><HRContracts /></RequireAuth>} />
-      <Route path="/hr/directory" element={<RequireAuth><HRDirectory /></RequireAuth>} />
-      <Route path="/hr/reports" element={<RequireAuth><HRReports /></RequireAuth>} />
+      {/* HR People Intelligence routes */}
+      <Route path="/hr/overview" element={<RequireAuth><HRWorkspace /></RequireAuth>} />
+      <Route path="/hr/:section" element={<RequireAuth><HRWorkspace /></RequireAuth>} />
       <Route path="/data/overview" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataOverview /></RequireAuth>} />
       <Route path="/data/users" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataUsers /></RequireAuth>} />
       {/* Legacy routes - redirect to new paths */}

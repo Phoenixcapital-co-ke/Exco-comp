@@ -20,10 +20,12 @@ function BodaProductivity() {
     par7: null,
     par14: null,
     par21: null,
+    par21plus: null,
     atRiskOutstanding: null,
     par7Outstanding: null,
     par14Outstanding: null,
     par21Outstanding: null,
+    par21plusOutstanding: null,
     byBranch: {},
     byOfficer: {},
   })
@@ -93,10 +95,12 @@ function BodaProductivity() {
           par7: data.par7 ?? null,
           par14: data.par14 ?? null,
           par21: data.par21 ?? null,
+          par21plus: data.par21plus ?? null,
           atRiskOutstanding: data.atRiskOutstanding ?? null,
           par7Outstanding: data.par7Outstanding ?? null,
           par14Outstanding: data.par14Outstanding ?? null,
           par21Outstanding: data.par21Outstanding ?? null,
+          par21plusOutstanding: data.par21plusOutstanding ?? null,
           byBranch: data.byBranch && typeof data.byBranch === 'object' ? data.byBranch : {},
           byOfficer: data.byOfficer && typeof data.byOfficer === 'object' ? data.byOfficer : {},
         })
@@ -107,10 +111,12 @@ function BodaProductivity() {
           par7: null,
           par14: null,
           par21: null,
+          par21plus: null,
           atRiskOutstanding: null,
           par7Outstanding: null,
           par14Outstanding: null,
           par21Outstanding: null,
+          par21plusOutstanding: null,
           byBranch: {},
           byOfficer: {},
         })
@@ -182,6 +188,7 @@ function BodaProductivity() {
                 par7: oPar?.par7 ?? null,
                 par14: oPar?.par14 ?? null,
                 par21: oPar?.par21 ?? null,
+                par21plus: oPar?.par21plus ?? null,
               }
             })
           : []
@@ -196,6 +203,7 @@ function BodaProductivity() {
           par7: branchPar?.par7 ?? null,
           par14: branchPar?.par14 ?? null,
           par21: branchPar?.par21 ?? null,
+          par21plus: branchPar?.par21plus ?? null,
         }
       }),
     [rows, parAging.byBranch, parAging.byOfficer],
@@ -355,7 +363,7 @@ function BodaProductivity() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
         <ParArcGauge
           label="PAR"
           hint="Total portfolio at risk"
@@ -365,28 +373,36 @@ function BodaProductivity() {
           dangerFrom={35}
         />
         <ParArcGauge
-          label="PAR 7"
-          hint="Overdue ≥ 7 days"
+          label="PAR 1-7"
+          hint="Overdue 1–7 days"
           value={parAging.par7}
           amount={parAging.par7Outstanding}
           loading={parLoading}
-          dangerFrom={40}
+          dangerFrom={15}
         />
         <ParArcGauge
-          label="PAR 14"
-          hint="Overdue ≥ 14 days"
+          label="PAR 8-14"
+          hint="Overdue 8–14 days"
           value={parAging.par14}
           amount={parAging.par14Outstanding}
           loading={parLoading}
-          dangerFrom={30}
+          dangerFrom={15}
         />
         <ParArcGauge
-          label="PAR 21"
-          hint="Overdue ≥ 21 days"
+          label="PAR 15-21"
+          hint="Overdue 15–21 days"
           value={parAging.par21}
           amount={parAging.par21Outstanding}
           loading={parLoading}
-          dangerFrom={20}
+          dangerFrom={15}
+        />
+        <ParArcGauge
+          label="PAR 21+"
+          hint="Overdue 21+ days"
+          value={parAging.par21plus}
+          amount={parAging.par21plusOutstanding}
+          loading={parLoading}
+          dangerFrom={15}
         />
       </div>
 
@@ -407,9 +423,10 @@ function BodaProductivity() {
                 <th className="px-3 py-2 text-right font-medium text-gray-600">To 97%</th>
                 <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
                 <th className="px-3 py-2 text-right font-medium text-gray-600">PAR</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 7</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 14</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 21</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 1-7</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 8-14</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 15-21</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">PAR 21+</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-100">
@@ -446,20 +463,23 @@ function BodaProductivity() {
                     <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par, 35)}`}>
                       {formatParPct(row.par)}
                     </td>
-                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par7, 40)}`}>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par7, 15)}`}>
                       {formatParPct(row.par7)}
                     </td>
-                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par14, 30)}`}>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par14, 15)}`}>
                       {formatParPct(row.par14)}
                     </td>
-                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par21, 20)}`}>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par21, 15)}`}>
                       {formatParPct(row.par21)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-semibold ${parCellClass(row.par21plus, 15)}`}>
+                      {formatParPct(row.par21plus)}
                     </td>
                   </tr>
 
                   {expandedBranch === row.branch && (
                     <tr className="bg-indigo-50/40">
-                      <td colSpan={10} className="px-4 pb-4 pt-2">
+                      <td colSpan={11} className="px-4 pb-4 pt-2">
                         <div className="bg-white rounded-lg border border-indigo-200 overflow-hidden shadow-sm">
                           <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-blue-50 border-b border-indigo-100">
                             <h4 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
@@ -490,13 +510,16 @@ function BodaProductivity() {
                                     PAR
                                   </th>
                                   <th className="px-4 py-2 text-right font-medium text-gray-600">
-                                    PAR 7
+                                    PAR 1-7
                                   </th>
                                   <th className="px-4 py-2 text-right font-medium text-gray-600">
-                                    PAR 14
+                                    PAR 8-14
                                   </th>
                                   <th className="px-4 py-2 text-right font-medium text-gray-600">
-                                    PAR 21
+                                    PAR 15-21
+                                  </th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">
+                                    PAR 21+
                                   </th>
                                 </tr>
                               </thead>
@@ -522,19 +545,24 @@ function BodaProductivity() {
                                       {formatParPct(officer.par)}
                                     </td>
                                     <td
-                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par7, 40)}`}
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par7, 15)}`}
                                     >
                                       {formatParPct(officer.par7)}
                                     </td>
                                     <td
-                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par14, 30)}`}
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par14, 15)}`}
                                     >
                                       {formatParPct(officer.par14)}
                                     </td>
                                     <td
-                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par21, 20)}`}
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par21, 15)}`}
                                     >
                                       {formatParPct(officer.par21)}
+                                    </td>
+                                    <td
+                                      className={`px-4 py-2 text-right font-semibold ${parCellClass(officer.par21plus, 15)}`}
+                                    >
+                                      {formatParPct(officer.par21plus)}
                                     </td>
                                   </tr>
                                 ))}

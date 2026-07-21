@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react'
 import { Users, Mail, Phone, Building2, Briefcase, Calendar, Search, Filter, Download, Loader2 } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
+import { HrShell, HrToolbar } from '../../components/hr/HrUi.jsx'
 
 function HRDirectory() {
   const [employees, setEmployees] = useState([])
@@ -144,6 +145,8 @@ function HRDirectory() {
   }
 
   return (
+    <HrShell>
+      <HrToolbar page="DIRECTORY" />
     <div className="space-y-6 pb-10">
       <header className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         <div>
@@ -318,6 +321,7 @@ function HRDirectory() {
         </div>
       )}
     </div>
+    </HrShell>
   )
 }
 

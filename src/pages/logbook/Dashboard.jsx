@@ -15,7 +15,8 @@ import {
   CartesianGrid, 
   Tooltip, 
   Legend, 
-  ResponsiveContainer 
+  ResponsiveContainer,
+  LabelList
 } from 'recharts'
 import { formatKES } from '../../utils/format.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
@@ -31,6 +32,7 @@ function LogbookDashboard({ country }) {
   const [openLoansChange, setOpenLoansChange] = useState('—')
   const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear())
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().getMonth() + 1)
+  const [targets, setTargets] = useState([])
   const esRef = useRef()
 
   // Refactor loadData so it can be called repeatedly
@@ -129,6 +131,27 @@ function LogbookDashboard({ country }) {
     return () => {
       if (esRef.current) esRef.current.close()
     }
+  }, [country])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadTargets = async () => {
+      try {
+        const base = API_URLS.targets.logbook.list
+        const url = country ? `${base}?country=${encodeURIComponent(country)}` : base
+        const response = await fetch(url, { credentials: 'include', signal: controller.signal })
+        if (!response.ok) throw new Error(`Unable to load targets (${response.status})`)
+        const payload = await response.json()
+        setTargets(Array.isArray(payload) ? payload : [])
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to load Logbook targets', error)
+          setTargets([])
+        }
+      }
+    }
+    loadTargets()
+    return () => controller.abort()
   }, [country])
 
   if (loading) {
@@ -515,6 +538,25 @@ function LogbookDashboard({ country }) {
     });
   }
 
+  const yearlyCollectionTargets = Array(13).fill(0)
+  for (const target of targets) {
+    if (Number(target.active) === 0 || Number(target.year) !== effectiveYear) continue
+    const month = Number(target.month)
+    if (month >= 1 && month <= 12) {
+      yearlyCollectionTargets[month] += Number(target.collectionTarget) || 0
+    }
+  }
+  const collectionsOverYear = yearlyTrend.map((row, index) => {
+    const month = index + 1
+    const target = yearlyCollectionTargets[month]
+    return {
+      month: row.month,
+      amount: row.collected,
+      target,
+      pctOfTarget: target > 0 ? (row.collected / target) * 100 : null,
+    }
+  })
+
   // Compute collection per branch for current month
   const branchCollectionAgg = {};
   (processor.repaymentsData || []).forEach(r => {
@@ -676,25 +718,63 @@ function LogbookDashboard({ country }) {
         </div>
       </div>
 
-      {/* Collection Trend */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Disbursement vs Collection (Yearly Trend – {effectiveYear})</h3>
-        <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={yearlyTrend}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="month" />
-            <YAxis />
-            <Tooltip
-              formatter={(value, _rawName, entry) => {
-                const seriesName = entry && entry.name ? entry.name : _rawName
-                return [formatMoney(value), seriesName]
-              }}
-            />
-            <Legend />
-            <Area type="monotone" dataKey="disbursed" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Disbursed" />
-            <Area type="monotone" dataKey="collected" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
-          </AreaChart>
-        </ResponsiveContainer>
+      {/* Yearly trends */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Disbursement vs Collection (Yearly Trend – {effectiveYear})
+          </h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={yearlyTrend}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip
+                formatter={(value, _rawName, entry) => {
+                  const seriesName = entry && entry.name ? entry.name : _rawName
+                  return [formatMoney(value), seriesName]
+                }}
+              />
+              <Legend />
+              <Area type="monotone" dataKey="disbursed" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Disbursed" />
+              <Area type="monotone" dataKey="collected" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Collections Over The Year – {effectiveYear}
+          </h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={collectionsOverYear}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip
+                formatter={(value, name, entry) => {
+                  if (name === 'Target') return [formatMoney(value), 'Target']
+                  const pct = entry?.payload?.pctOfTarget
+                  return [
+                    pct == null ? formatMoney(value) : `${formatMoney(value)} (${pct.toFixed(1)}% of target)`,
+                    'Collected',
+                  ]
+                }}
+              />
+              <Legend />
+              <Bar dataKey="amount" fill="#3b82f6" name="Collected">
+                <LabelList
+                  dataKey="pctOfTarget"
+                  position="top"
+                  formatter={(value) => (value == null ? '' : `${Number(value).toFixed(1)}%`)}
+                  fill="#1e40af"
+                  fontSize={11}
+                />
+              </Bar>
+              <Bar dataKey="target" fill="#f59e0b" name="Target" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Recent Activity Summary */}

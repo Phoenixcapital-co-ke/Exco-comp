@@ -1,0 +1,43 @@
+/* Scoped tactical theme for /hr/* — inspired by cyberdesighn + network-traffic-analyzer */
+.hr-tactical {
+  --hr-bg: #0a0a0a;
+  --hr-panel: #171717;
+  --hr-panel-2: #262626;
+  --hr-border: #404040;
+  --hr-text: #fafafa;
+  --hr-muted: #a3a3a3;
+  --hr-faint: #737373;
+  --hr-accent: #ef5322;
+  --hr-accent-soft: rgba(239, 83, 34, 0.15);
+  --hr-ok: #22c55e;
+  --hr-warn: #f59e0b;
+  --hr-danger: #ef4444;
+  color: var(--hr-text);
+  font-feature-settings: 'tnum' 1;
+}
+
+.hr-tactical .hr-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.hr-tactical .hr-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hr-muted);
+}
+
+.hr-tactical .hr-pulse {
+  animation: hr-pulse 2s ease-in-out infinite;
+}
+
+@keyframes hr-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

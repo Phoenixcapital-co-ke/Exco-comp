@@ -3827,9 +3827,14 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
   let par7Outstanding = 0
   let par14Outstanding = 0
   let par21Outstanding = 0
+  let par21PlusOutstanding = 0
   const branchAgg = new Map()
   const officerAgg = new Map() // key: `${branchLower}|||${officerLower}`
 
+  // Non-overlapping arrears bands by days-past-due (oldest unpaid installment):
+  //   par7 = 1-7 days, par14 = 8-14 days, par21 = 15-21 days, par21plus = 22+ days.
+  // The whole remaining principal of a loan is treated as at risk once any
+  // installment is past its due date and unpaid.
   const bump = (map, key, labelFields, outstanding, overdue, dpd) => {
     if (!map.has(key)) {
       map.set(key, {
@@ -3839,6 +3844,7 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
         outstandingPar7: 0,
         outstandingPar14: 0,
         outstandingPar21: 0,
+        outstandingPar21Plus: 0,
       })
     }
     const e = map.get(key)
@@ -3846,9 +3852,10 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
     if (overdue > 0) {
       e.outstandingAtRisk += outstanding
       if (dpd != null) {
-        if (dpd >= 7) e.outstandingPar7 += outstanding
-        if (dpd >= 14) e.outstandingPar14 += outstanding
-        if (dpd >= 21) e.outstandingPar21 += outstanding
+        if (dpd <= 7) e.outstandingPar7 += outstanding
+        else if (dpd <= 14) e.outstandingPar14 += outstanding
+        else if (dpd <= 21) e.outstandingPar21 += outstanding
+        else e.outstandingPar21Plus += outstanding
       }
     }
   }
@@ -3877,9 +3884,10 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
     )
 
     if (!(overdue > 0) || dpd == null) continue
-    if (dpd >= 7) par7Outstanding += outstanding
-    if (dpd >= 14) par14Outstanding += outstanding
-    if (dpd >= 21) par21Outstanding += outstanding
+    if (dpd <= 7) par7Outstanding += outstanding
+    else if (dpd <= 14) par14Outstanding += outstanding
+    else if (dpd <= 21) par21Outstanding += outstanding
+    else par21PlusOutstanding += outstanding
   }
 
   const pct = (num, den = totalOutstanding) =>
@@ -3890,11 +3898,13 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
     par7: pct(v.outstandingPar7, v.outstandingAll),
     par14: pct(v.outstandingPar14, v.outstandingAll),
     par21: pct(v.outstandingPar21, v.outstandingAll),
+    par21plus: pct(v.outstandingPar21Plus, v.outstandingAll),
     outstanding: Math.round(v.outstandingAll),
     atRisk: Math.round(v.outstandingAtRisk),
     atRisk7: Math.round(v.outstandingPar7),
     atRisk14: Math.round(v.outstandingPar14),
     atRisk21: Math.round(v.outstandingPar21),
+    atRisk21plus: Math.round(v.outstandingPar21Plus),
   })
 
   const byBranch = {}
@@ -3914,10 +3924,12 @@ function computeBodaParAging({ branch = '', allowedBranches = null } = {}) {
     par7Outstanding: Math.round(par7Outstanding),
     par14Outstanding: Math.round(par14Outstanding),
     par21Outstanding: Math.round(par21Outstanding),
+    par21plusOutstanding: Math.round(par21PlusOutstanding),
     par: pct(atRiskOutstanding),
     par7: pct(par7Outstanding),
     par14: pct(par14Outstanding),
     par21: pct(par21Outstanding),
+    par21plus: pct(par21PlusOutstanding),
     loanCount: loanRows.length,
     byBranch,
     byOfficer,
@@ -10724,6 +10736,243 @@ app.get('/api/kajea/os/sync/runs', (req, res) => {
 
 // Kajea clients list endpoint
 // HR Management - Wingubox Employees
+const normalizeSalesPersonName = (value) =>
+  String(value || '')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+
+const normalizeSalesBranch = (value) =>
+  normalizeSalesPersonName(value)
+    .replace(/\b(zidisha|bodacash|boda cash|logbook|branch|head quarters|kilimani)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const salesNameTokens = (value) =>
+  normalizeSalesPersonName(value)
+    .split(' ')
+    .filter((token) => token.length > 1)
+
+const salesTokenDistance = (left, right) => {
+  if (left === right) return 0
+  if (!left || !right) return Math.max(left.length, right.length)
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= left.length; i += 1) {
+    let diagonal = previous[0]
+    previous[0] = i
+    for (let j = 1; j <= right.length; j += 1) {
+      const above = previous[j]
+      previous[j] = Math.min(
+        previous[j] + 1,
+        previous[j - 1] + 1,
+        diagonal + (left[i - 1] === right[j - 1] ? 0 : 1),
+      )
+      diagonal = above
+    }
+  }
+  return previous[right.length]
+}
+
+const salesTokenMatches = (left, right) =>
+  left === right ||
+  (left.length >= 5 && right.length >= 5 && salesTokenDistance(left, right) <= 1)
+
+const matchSalesEmployee = (sourceName, sourceBranch, employees) => {
+  const sourceTokens = salesNameTokens(sourceName)
+  if (!sourceTokens.length) return null
+  const sourceBranchKey = normalizeSalesBranch(sourceBranch)
+  let best = null
+
+  for (const employee of employees) {
+    const employeeTokens = employee._nameTokens
+    const used = new Set()
+    let matched = 0
+    for (const sourceToken of sourceTokens) {
+      const matchIndex = employeeTokens.findIndex(
+        (employeeToken, index) => !used.has(index) && salesTokenMatches(sourceToken, employeeToken),
+      )
+      if (matchIndex >= 0) {
+        used.add(matchIndex)
+        matched += 1
+      }
+    }
+
+    const branchMatch =
+      sourceBranchKey &&
+      employee._branchKey &&
+      (sourceBranchKey === employee._branchKey ||
+        sourceBranchKey.includes(employee._branchKey) ||
+        employee._branchKey.includes(sourceBranchKey))
+    const sufficientNameMatch =
+      matched >= 2 ||
+      (matched === 1 && sourceTokens.length === 1 && branchMatch) ||
+      (matched === 1 && sourceTokens.length === 2 && branchMatch)
+    if (!sufficientNameMatch) continue
+
+    const score = matched / sourceTokens.length + (branchMatch ? 0.35 : 0)
+    if (!best || score > best.score) best = { employee, score }
+  }
+
+  return best?.employee || null
+}
+
+app.get('/api/hr/sales-force', (req, res) => {
+  try {
+    const now = new Date()
+    const month = Number.parseInt(req.query.month, 10) || now.getMonth() + 1
+    const year = Number.parseInt(req.query.year, 10) || now.getFullYear()
+    if (month < 1 || month > 12 || year < 2000 || year > 2100) {
+      return res.status(400).json({ error: 'A valid month and year are required' })
+    }
+
+    const employees = db
+      .prepare(`
+        SELECT
+          id, employee_id, employee_number, full_name, first_name, middle_name,
+          last_name, job_title, department, region
+        FROM wingubox_employees
+        WHERE active IN ('1', 1)
+          AND (
+            LOWER(COALESCE(department, '')) LIKE '%sale%'
+            OR LOWER(COALESCE(job_title, '')) LIKE '%sale%'
+            OR LOWER(COALESCE(department, '')) = 'collection department logbook'
+          )
+        ORDER BY full_name COLLATE NOCASE
+      `)
+      .all()
+      .map((employee) => ({
+        ...employee,
+        _nameTokens: salesNameTokens(employee.full_name),
+        _branchKey: normalizeSalesBranch(employee.region),
+        products: {
+          logbook: { loans: 0, amount: 0 },
+          boda: { loans: 0, amount: 0 },
+          zidisha: { loans: 0, amount: 0 },
+        },
+        productBreakdown: {},
+        matchedSalesNames: [],
+      }))
+
+    const monthText = String(month).padStart(2, '0')
+    const period = `${year}-${monthText}`
+    const salesRows = [
+      ...db
+        .prepare(`
+          SELECT
+            COALESCE(NULLIF(TRIM(sales_person), ''), NULLIF(TRIM(loan_officer), '')) AS person,
+            TRIM(COALESCE(branch, '')) AS branch,
+            'logbook' AS family,
+            TRIM(COALESCE(product, 'Logbook')) AS product,
+            COUNT(*) AS loans,
+            COALESCE(SUM(CAST(disbursed AS REAL)), 0) AS amount
+          FROM Logbook_Disbursement
+          WHERE substr(disbursed_date, 4, 2) = ?
+            AND substr(disbursed_date, 7, 4) = ?
+            AND COALESCE(NULLIF(TRIM(sales_person), ''), NULLIF(TRIM(loan_officer), '')) IS NOT NULL
+          GROUP BY person, branch, product
+        `)
+        .all(monthText, String(year)),
+      ...db
+        .prepare(`
+          SELECT
+            TRIM(COALESCE([Loan Officer Name], '')) AS person,
+            TRIM(COALESCE([Branch Name], '')) AS branch,
+            CASE
+              WHEN LOWER(TRIM(COALESCE([Product Name], ''))) = 'zidisha boda' THEN 'boda'
+              ELSE 'zidisha'
+            END AS family,
+            TRIM(COALESCE([Product Name], 'Zidisha')) AS product,
+            COUNT(*) AS loans,
+            COALESCE(SUM(CAST([Principal Amount] AS REAL)), 0) AS amount
+          FROM zidisha_data
+          WHERE substr([Disbursed On Date], 1, 7) = ?
+            AND LOWER(TRIM(COALESCE([Product Name], ''))) LIKE 'zidisha%'
+            AND TRIM(COALESCE([Loan Officer Name], '')) <> ''
+          GROUP BY person, branch, family, product
+        `)
+        .all(period),
+    ]
+
+    const unmatched = []
+    let matchedLoans = 0
+    let totalLoans = 0
+    for (const row of salesRows) {
+      const loans = Number(row.loans) || 0
+      const amount = Number(row.amount) || 0
+      totalLoans += loans
+      const employee = matchSalesEmployee(row.person, row.branch, employees)
+      if (!employee) {
+        unmatched.push({
+          name: row.person,
+          branch: row.branch,
+          family: row.family,
+          product: row.product,
+          loans,
+          amount,
+        })
+        continue
+      }
+
+      matchedLoans += loans
+      employee.products[row.family].loans += loans
+      employee.products[row.family].amount += amount
+      employee.productBreakdown[row.product] = employee.productBreakdown[row.product] || { loans: 0, amount: 0 }
+      employee.productBreakdown[row.product].loans += loans
+      employee.productBreakdown[row.product].amount += amount
+      if (!employee.matchedSalesNames.includes(row.person)) employee.matchedSalesNames.push(row.person)
+    }
+
+    const cleanEmployees = employees
+      .map(({ _nameTokens, _branchKey, ...employee }) => {
+        const total = Object.values(employee.products).reduce(
+          (sum, product) => ({ loans: sum.loans + product.loans, amount: sum.amount + product.amount }),
+          { loans: 0, amount: 0 },
+        )
+        return { ...employee, total }
+      })
+      .sort((left, right) => right.total.amount - left.total.amount || left.full_name.localeCompare(right.full_name))
+
+    const totals = cleanEmployees.reduce(
+      (result, employee) => {
+        for (const family of ['logbook', 'boda', 'zidisha']) {
+          result[family].loans += employee.products[family].loans
+          result[family].amount += employee.products[family].amount
+        }
+        result.loans += employee.total.loans
+        result.amount += employee.total.amount
+        return result
+      },
+      {
+        logbook: { loans: 0, amount: 0 },
+        boda: { loans: 0, amount: 0 },
+        zidisha: { loans: 0, amount: 0 },
+        loans: 0,
+        amount: 0,
+      },
+    )
+
+    res.json({
+      month,
+      year,
+      employees: cleanEmployees,
+      totals,
+      matching: {
+        matchedLoans,
+        totalLoans,
+        matchRate: totalLoans ? (matchedLoans / totalLoans) * 100 : 0,
+        unmatched,
+      },
+    })
+  } catch (e) {
+    console.error('[HR Sales Force API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/hr/employees', (req, res) => {
   try {
     const rows = db

@@ -21,7 +21,12 @@ import {
   Calendar,
   FileText,
   Search,
-  Gauge
+  Gauge,
+  BadgeDollarSign,
+  CalendarCheck,
+  GraduationCap,
+  RefreshCw,
+  WalletCards
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -134,16 +139,18 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false, fullHeigh
     },
     {
       id: 'hr',
-      label: 'HR Management',
+      label: 'People Intelligence',
       icon: Users,
       items: [
-        { path: '/hr/dashboard', label: 'Dashboard', icon: BarChart3 },
-        { path: '/hr/demographics', label: 'Demographics', icon: MapPin },
-        { path: '/hr/departments', label: 'Departments', icon: Building2 },
-        { path: '/hr/branches', label: 'Branches', icon: Building2 },
-        { path: '/hr/contracts', label: 'Contracts', icon: Calendar },
-        { path: '/hr/directory', label: 'Directory', icon: Search },
-        { path: '/hr/reports', label: 'Reports', icon: FileText }
+        { path: '/hr/overview', label: 'Command Centre', icon: BarChart3 },
+        { path: '/hr/sales-force', label: 'Sales Force', icon: Target },
+        { path: '/hr/collections-quality', label: 'Collections & PAR', icon: Gauge },
+        { path: '/hr/productivity', label: 'Productivity', icon: Activity },
+        { path: '/hr/attendance-field', label: 'Attendance & Field', icon: CalendarCheck },
+        { path: '/hr/compensation', label: 'Compensation', icon: BadgeDollarSign },
+        { path: '/hr/retention', label: 'Turnover & Retention', icon: RefreshCw },
+        { path: '/hr/training', label: 'Training & Capability', icon: GraduationCap },
+        { path: '/hr/branch-performance', label: 'Branch Scorecards', icon: WalletCards }
       ]
     },
     // --- Data nav ---

@@ -155,6 +155,7 @@ export const API_URLS = {
   },
   hr: {
     employees: `${API_BASE}/api/hr/employees`,
+    salesForce: (month, year) => `${API_BASE}/api/hr/sales-force?month=${month}&year=${year}`,
   },
 }
 

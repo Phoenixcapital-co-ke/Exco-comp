@@ -15,11 +15,9 @@ import {
   Legend, 
   ResponsiveContainer,
   AreaChart,
-  Area,
-  LabelList
+  Area
 } from 'recharts'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
-import { formatKES } from '../../utils/format.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import { API_URLS } from '../../utils/api.js'
 
@@ -31,6 +29,7 @@ function LogbookCollection({ country }) {
   const nowInit = new Date()
   const [selectedMonth, setSelectedMonth] = useState(nowInit.getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
+  const [selectedDay, setSelectedDay] = useState(nowInit.getDate())
   const [targets, setTargets] = useState([])
 
   useEffect(() => {
@@ -500,6 +499,126 @@ function LogbookCollection({ country }) {
     return rows.sort((a, b) => b.actual - a.actual)
   })()
 
+  const branchCollectionTables = (() => {
+    const proc = data.processor
+    if (!proc || !Array.isArray(proc.repaymentsData)) {
+      return { monthly: [], mtd: [], daily: [], cutoffDay: 0, selectedDay: 1 }
+    }
+
+    const y = selectedYear
+    const m = selectedMonth
+    const daysInMonth = new Date(y, m, 0).getDate()
+    const day = Math.min(Math.max(1, selectedDay), daysInMonth)
+    const now = new Date()
+    const isCurrentMonth = y === now.getFullYear() && m === now.getMonth() + 1
+    const isFutureMonth = y > now.getFullYear() || (y === now.getFullYear() && m > now.getMonth() + 1)
+    const cutoffDay = isFutureMonth ? 0 : isCurrentMonth ? Math.min(now.getDate(), daysInMonth) : daysInMonth
+
+    const normalizeBranch = (value) =>
+      String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/\s*branch\s*$/i, '')
+        .toLowerCase()
+
+    const targetMap = new Map()
+    targets
+      .filter((target) =>
+        Number(target.active) !== 0 &&
+        Number(target.year) === y &&
+        Number(target.month) === m
+      )
+      .forEach((target) => {
+        const key = normalizeBranch(target.branch)
+        if (!key) return
+        targetMap.set(key, {
+          name: String(target.branch || '').replace(/\s*branch\s*$/i, '').trim(),
+          target: Number(target.collectionTarget) || 0,
+          workingDays: Number(target.workingDays) || 0,
+          holidays: Array.isArray(target.holidays) ? target.holidays : [],
+        })
+      })
+
+    const actualMap = new Map()
+    const ensureActual = (key, name) => {
+      if (!actualMap.has(key)) {
+        actualMap.set(key, { name, monthCollected: 0, mtdCollected: 0, dailyCollected: 0 })
+      }
+      return actualMap.get(key)
+    }
+
+    for (const repayment of proc.repaymentsData) {
+      const date = proc.parseDMY(repayment.repayment_collected_date)
+      if (!date || date.getFullYear() !== y || date.getMonth() + 1 !== m) continue
+      const code = repayment.branch || repayment.Branch
+      if (!code) continue
+      const name = proc.getBranchName ? proc.getBranchName(code) : String(code)
+      const key = normalizeBranch(name)
+      if (!key) continue
+      const row = ensureActual(key, name)
+      const amount = Number(repayment.repayment_amount) || 0
+      row.monthCollected += amount
+      if (date.getDate() <= cutoffDay) row.mtdCollected += amount
+      if (date.getDate() === day) row.dailyCollected += amount
+    }
+
+    const targetForDay = (targetInfo, targetDay) => {
+      if (!targetInfo || targetInfo.target <= 0) return 0
+      const date = new Date(y, m - 1, targetDay)
+      if (date.getDay() === 0) return 0
+      const holidaySet = new Set(
+        targetInfo.holidays.map((holiday) => new Date(holiday).toDateString())
+      )
+      if (holidaySet.has(date.toDateString())) return 0
+      const workingDays = targetInfo.workingDays || daysInMonth
+      return workingDays > 0 ? targetInfo.target / workingDays : 0
+    }
+
+    const mtdTarget = (targetInfo) => {
+      let expected = 0
+      for (let currentDay = 1; currentDay <= cutoffDay; currentDay++) {
+        expected += targetForDay(targetInfo, currentDay)
+      }
+      return expected
+    }
+
+    const keys = new Set([...targetMap.keys(), ...actualMap.keys()])
+    const rows = Array.from(keys, (key) => {
+      const targetInfo = targetMap.get(key)
+      const actual = actualMap.get(key)
+      const name = actual?.name || targetInfo?.name || key
+      const expected = targetInfo?.target || 0
+      const collected = actual?.monthCollected || 0
+      const mtdExpected = mtdTarget(targetInfo)
+      const mtdCollected = actual?.mtdCollected || 0
+      const dailyExpected = targetForDay(targetInfo, day)
+      const dailyCollected = actual?.dailyCollected || 0
+      return {
+        name,
+        expected,
+        collected,
+        rate: expected > 0 ? (collected / expected) * 100 : null,
+        mtdExpected,
+        mtdCollected,
+        mtdGap: Math.max(0, mtdExpected - mtdCollected),
+        mtdRate: mtdExpected > 0 ? (mtdCollected / mtdExpected) * 100 : null,
+        dailyExpected,
+        dailyCollected,
+        dailyRate: dailyExpected > 0 ? (dailyCollected / dailyExpected) * 100 : null,
+      }
+    })
+
+    return {
+      monthly: [...rows].sort((a, b) => b.collected - a.collected),
+      mtd: [...rows].sort((a, b) => b.mtdCollected - a.mtdCollected),
+      daily: [...rows]
+        .filter((row) => row.dailyExpected > 0 || row.dailyCollected > 0)
+        .sort((a, b) => b.dailyCollected - a.dailyCollected),
+      cutoffDay,
+      selectedDay: day,
+    }
+  })()
+
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
 
   // Selected-month breakdown totals
@@ -724,6 +843,152 @@ function LogbookCollection({ country }) {
         </div>
       )}
 
+      {/* Branch collection breakdowns */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex flex-col gap-1 mb-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">MTD Collection by Branch</h3>
+            <p className="text-xs text-gray-500">
+              Collected through day {branchCollectionTables.cutoffDay}; Expected MTD uses each branch’s MTD collection target.
+            </p>
+          </div>
+          <span className="text-xs font-medium text-gray-500">{country || 'All countries'}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">Expected MTD</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">Collected MTD</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">Gap</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-100">
+              {branchCollectionTables.mtd.map((row) => (
+                <tr key={row.name} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdExpected)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdCollected)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdGap)}</td>
+                  <td className={`px-3 py-2 text-right font-semibold ${
+                    row.mtdRate == null ? 'text-gray-500' : row.mtdRate >= 100 ? 'text-green-600' : 'text-orange-600'
+                  }`}>
+                    {row.mtdRate == null ? '—' : `${row.mtdRate.toFixed(1)}%`}
+                  </td>
+                </tr>
+              ))}
+              {!branchCollectionTables.mtd.length && (
+                <tr>
+                  <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
+                    No branch data for the selected period.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">
+              Expected vs Collected by Branch (Selected Month)
+            </h3>
+            <p className="text-xs text-gray-500">Expected uses each branch’s configured monthly collection target.</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100">
+                {branchCollectionTables.monthly.map((row) => (
+                  <tr key={row.name} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.expected)}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.collected)}</td>
+                    <td className={`px-3 py-2 text-right font-semibold ${
+                      row.rate == null ? 'text-gray-500' : row.rate >= 100 ? 'text-green-600' : 'text-orange-600'
+                    }`}>
+                      {row.rate == null ? '—' : `${row.rate.toFixed(1)}%`}
+                    </td>
+                  </tr>
+                ))}
+                {!branchCollectionTables.monthly.length && (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>
+                      No branch data for the selected period.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Daily Branch Breakdown</h3>
+              <p className="text-xs text-gray-500">Daily expected is the branch target divided by working days.</p>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-gray-600">
+              Day
+              <select
+                className="border border-gray-300 rounded px-2 py-1 text-sm"
+                value={branchCollectionTables.selectedDay}
+                onChange={(event) => setSelectedDay(Number(event.target.value))}
+              >
+                {Array.from({ length: daysInSelectedMonth }, (_, index) => index + 1).map((day) => (
+                  <option key={day} value={day}>{day}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100">
+                {branchCollectionTables.daily.map((row) => (
+                  <tr key={row.name} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.dailyExpected)}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.dailyCollected)}</td>
+                    <td className={`px-3 py-2 text-right font-semibold ${
+                      row.dailyRate == null ? 'text-gray-500' : row.dailyRate >= 100 ? 'text-green-600' : 'text-orange-600'
+                    }`}>
+                      {row.dailyRate == null ? '—' : `${row.dailyRate.toFixed(1)}%`}
+                    </td>
+                  </tr>
+                ))}
+                {!branchCollectionTables.daily.length && (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>
+                      No branch data for the selected day.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Repayment Composition */}
@@ -860,86 +1125,6 @@ function LogbookCollection({ country }) {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Collections Over The Year */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Collections Over The Year</h3>
-        {(() => {
-          const proc = data.processor
-          const months = [null, 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-          const y = selectedYear
-          const monthly = Array(13).fill(0)
-          const monthlyTarget = Array(13).fill(0)
-          if (proc && proc.repaymentsData) {
-            for (const r of proc.repaymentsData) {
-              const s = r.repayment_collected_date || ''
-              const [dd, mm, yyyy] = String(s).split('/')
-              if (!yyyy || !mm || !dd) continue
-              if (Number(yyyy) === y) {
-                const m = Number(mm)
-                if (m >= 1 && m <= 12) monthly[m] += Number(r.repayment_amount) || 0
-              }
-            }
-          }
-          if (Array.isArray(targets) && targets.length) {
-            for (const t of targets) {
-              if (!t.active) continue
-              if (Number(t.year) !== y) continue
-              const m = Number(t.month)
-              if (m >= 1 && m <= 12) {
-                monthlyTarget[m] += Number(t.collectionTarget) || 0
-              }
-            }
-          }
-          const series = []
-          for (let i = 1; i <= 12; i++) {
-            const amount = monthly[i]
-            const target = monthlyTarget[i]
-            const pctOfTarget = target > 0 ? (amount / target) * 100 : null
-            series.push({ month: months[i], amount, target, pctOfTarget })
-          }
-          const selectedMonthTarget = monthlyTarget[selectedMonth] || 0
-          return (
-            <>
-              {selectedMonthTarget > 0 && (
-                <p className="text-sm text-gray-600 mb-3">
-                  {monthLabel} {y} target (all branches):{' '}
-                  <span className="font-semibold text-gray-900">{formatMoney(selectedMonthTarget)}</span>
-                </p>
-              )}
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={series}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip
-                    formatter={(value, name, entry) => {
-                      if (name === 'Target') return [formatMoney(value), 'Target']
-                      const pct = entry?.payload?.pctOfTarget
-                      const label =
-                        pct != null
-                          ? `${formatMoney(value)} (${pct.toFixed(1)}% of target)`
-                          : formatMoney(value)
-                      return [label, 'Collected']
-                    }}
-                  />
-                  <Legend />
-                  <Bar dataKey="amount" fill="#3b82f6" name="Collected">
-                    <LabelList
-                      dataKey="pctOfTarget"
-                      position="top"
-                      formatter={(v) => (v == null ? '' : `${Number(v).toFixed(1)}%`)}
-                      fill="#1e40af"
-                      fontSize={11}
-                    />
-                  </Bar>
-                  <Bar dataKey="target" fill="#f59e0b" name="Target" />
-                </BarChart>
-              </ResponsiveContainer>
-            </>
-          )
-        })()}
       </div>
 
       {/* Collection Breakdown */}

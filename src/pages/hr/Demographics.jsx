@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import { Users, MapPin, Calendar, Loader2 } from 'lucide-react'
 import { API_URLS } from '../../utils/api.js'
+import { HrShell, HrToolbar } from '../../components/hr/HrUi.jsx'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
 
@@ -163,6 +164,8 @@ function HRDemographics() {
   }
 
   return (
+    <HrShell>
+      <HrToolbar page="DEMOGRAPHICS" />
     <div className="space-y-6 pb-10">
       <header>
         <h1 className="text-3xl font-bold text-gray-900">HR Demographics</h1>
@@ -370,6 +373,7 @@ function HRDemographics() {
         </>
       )}
     </div>
+    </HrShell>
   )
 }
 
