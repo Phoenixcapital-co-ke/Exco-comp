@@ -884,6 +884,8 @@ const BODA_SCHEDULE_COLUMNS = [
 // Zidisha Daily Expected vs Repayed (Musoni export id 22)
 const ZIDISHA_DAILY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/22/download'
 const ZIDISHA_DAILY_TABLE = 'Zidisha_Daily'
+// Full-product schedule history used by repayments-by-month (Collection + Target columns)
+const ZIDISHA_EXPECTED_VS_TABLE = 'Zidisha_Daily expected_vs_Repayed'
 
 // Boda repayments (Musoni export id 20) - saved into boda_repayments
 const BODA_REPAY_URL = 'https://api.live.irl.musoniservices.com/v1/dataexports/20/download?fileFormat=csv'
@@ -1113,10 +1115,10 @@ function migrateZidishaDropUniqueIfPresent(db) {
   }
 }
 
-// Initialize Zidisha Daily Expected vs Repayed table dynamically based on CSV columns
-function initZidishaDailyTable(db, columns) {
+// Initialize a Musoni schedule/daily table dynamically based on CSV columns
+function initZidishaDailyTable(db, columns, tableName = ZIDISHA_DAILY_TABLE) {
   if (!columns || columns.length === 0) {
-    console.warn('No columns provided for Zidisha Daily table initialization')
+    console.warn(`No columns provided for ${tableName} table initialization`)
     return
   }
   
@@ -1132,7 +1134,7 @@ function initZidishaDailyTable(db, columns) {
   }
   
   // Check if table exists
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(ZIDISHA_DAILY_TABLE)
+  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(tableName)
   
   if (!tableExists) {
     // Create table with all columns from CSV
@@ -1146,25 +1148,25 @@ function initZidishaDailyTable(db, columns) {
     }).join(', ')
     
     const sql = `
-      CREATE TABLE IF NOT EXISTS "${ZIDISHA_DAILY_TABLE}" (
+      CREATE TABLE IF NOT EXISTS "${tableName}" (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ${columnDefs},
         created_at TEXT DEFAULT (datetime('now'))
       )
     `
     db.exec(sql)
-    console.log(`Created table ${ZIDISHA_DAILY_TABLE} with ${allColumns.length} columns`)
+    console.log(`Created table ${tableName} with ${allColumns.length} columns`)
   } else {
     // Table exists - check for missing columns and add them
-    const existingCols = db.prepare(`PRAGMA table_info("${ZIDISHA_DAILY_TABLE}")`).all().map(c => c.name)
+    const existingCols = db.prepare(`PRAGMA table_info("${tableName}")`).all().map(c => c.name)
     for (const col of allColumns) {
       if (!existingCols.includes(col) && col !== 'id' && col !== 'created_at') {
         const numericFields = ['Amount', 'Expected', 'Repayed', 'Repayment', 'Outstanding', 'Overdue', 'Principal', 'Total', 'Charges']
         const isNumeric = numericFields.some(field => col.includes(field))
         const type = isNumeric ? 'REAL' : 'TEXT'
         try {
-          db.exec(`ALTER TABLE "${ZIDISHA_DAILY_TABLE}" ADD COLUMN "${col}" ${type}`)
-          console.log(`Added column "${col}" to ${ZIDISHA_DAILY_TABLE}`)
+          db.exec(`ALTER TABLE "${tableName}" ADD COLUMN "${col}" ${type}`)
+          console.log(`Added column "${col}" to ${tableName}`)
         } catch (e) {
           console.warn(`Could not add column "${col}": ${e.message}`)
         }
@@ -1173,8 +1175,8 @@ function initZidishaDailyTable(db, columns) {
     // Explicitly ensure "Branch Name" exists if it's in the response
     if (allColumns.includes('Branch Name') && !existingCols.includes('Branch Name')) {
       try {
-        db.exec(`ALTER TABLE "${ZIDISHA_DAILY_TABLE}" ADD COLUMN "Branch Name" TEXT`)
-        console.log(`Added column "Branch Name" to ${ZIDISHA_DAILY_TABLE}`)
+        db.exec(`ALTER TABLE "${tableName}" ADD COLUMN "Branch Name" TEXT`)
+        console.log(`Added column "Branch Name" to ${tableName}`)
       } catch (e) {
         console.warn(`Could not add column "Branch Name": ${e.message}`)
       }
@@ -1617,13 +1619,13 @@ async function fetchZidishaDailyCsv() {
   return { data, columns: headers }
 }
 
-function insertZidishaDaily(db, row, columns) {
+function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
   if (!columns || columns.length === 0) return
   
   const toParam = (name) => ('@' + name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
   const keyFor = (name) => (name.replace(/[^A-Za-z0-9_]/g, '_').replace(/_+/g, '_'))
   const placeholders = columns.map(c => toParam(c)).join(',')
-  const sql = `INSERT INTO "${ZIDISHA_DAILY_TABLE}" (${columns.map(c=>`"${c}"`).join(',')}) VALUES (${placeholders})`
+  const sql = `INSERT INTO "${tableName}" (${columns.map(c=>`"${c}"`).join(',')}) VALUES (${placeholders})`
   const stmt = db.prepare(sql)
   const cleanRow = {}
   
@@ -1794,29 +1796,48 @@ function insertZidishaDaily(db, row, columns) {
       console.log('Skipping boda_Schedule ingestion due to SKIP_BODA_SCHEDULE=1')
     }
 
-    // === Zidisha Daily Expected vs Repayed ingestion (Musoni export id 22) ===
+    // === Zidisha Daily / Expected vs Repayed ingestion (Musoni export id 22) ===
     if (!SKIP_ZIDISHA_DAILY) {
       try {
         const dbZD = initDb()
         // Fetch data first to get columns
         const { data: zidishaDailyRows, columns } = await fetchZidishaDailyCsv()
         if (columns.length > 0) {
-          // Initialize table with columns from CSV (schema only; no truncate yet)
-          initZidishaDailyTable(dbZD, columns)
-
-          // Backend filter: keep only "Zidisha Boda" rows based on Product Name
-          const zidishaBodaRows = zidishaDailyRows.filter((row) => {
-            const product = (row['Product Name'] || row.product_name || '').toString().trim().toLowerCase()
+          const withoutInternalClient = zidishaDailyRows.filter((row) => {
             const clientId = (row['Client Id'] || row.client_id || '').toString().trim()
-            if (clientId === '3926') return false
-            return product === 'zidisha boda'
+            return clientId !== '3926'
           })
 
+          // Full-product history for repayments-by-month Collection / Target columns
+          initZidishaDailyTable(dbZD, columns, ZIDISHA_EXPECTED_VS_TABLE)
+          const replacedExpected = replaceTableContents(
+            dbZD,
+            `"${ZIDISHA_EXPECTED_VS_TABLE}"`,
+            withoutInternalClient,
+            (r) => insertZidishaDaily(dbZD, r, columns, ZIDISHA_EXPECTED_VS_TABLE),
+          )
+          const expectedCount = dbZD
+            .prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_EXPECTED_VS_TABLE}"`)
+            .get().c
+          if (replacedExpected) {
+            console.log(
+              `Saved ${withoutInternalClient.length} rows into ${ZIDISHA_EXPECTED_VS_TABLE}. Table now has ${expectedCount} rows.`,
+            )
+          } else {
+            console.log(`${ZIDISHA_EXPECTED_VS_TABLE} unchanged (${expectedCount} rows).`)
+          }
+
+          // Boda-only mirror for /boda daily-loans UI
+          initZidishaDailyTable(dbZD, columns, ZIDISHA_DAILY_TABLE)
+          const zidishaBodaRows = withoutInternalClient.filter((row) => {
+            const product = (row['Product Name'] || row.product_name || '').toString().trim().toLowerCase()
+            return product === 'zidisha boda'
+          })
           const replacedZD = replaceTableContents(
             dbZD,
             `"${ZIDISHA_DAILY_TABLE}"`,
             zidishaBodaRows,
-            (r) => insertZidishaDaily(dbZD, r, columns)
+            (r) => insertZidishaDaily(dbZD, r, columns, ZIDISHA_DAILY_TABLE),
           )
           const zidishaDailyCount = dbZD.prepare(`SELECT COUNT(*) as c FROM "${ZIDISHA_DAILY_TABLE}"`).get().c
           if (replacedZD) {

@@ -2978,8 +2978,11 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
   const advansProductSet = new Set(advansOtcProducts.map((p) => p.toLowerCase()))
 
   // Zidisha / Advans / Boda Collection — Expected − Outstanding by installment due month.
-  // Prefer historical schedule table (covers mid-2024+); also merge current boda_Schedule for Boda
-  // so recent months stay complete. Live zidisha_data maturity snapshots cannot fill past months.
+  // Prefer historical schedule table when present; otherwise use current boda_Schedule.
+  // Live zidisha_data maturity snapshots cannot fill past months.
+  const scheduleTableExists = (name) =>
+    Boolean(db.prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name = ?`).get(name))
+
   const collectedByDueMonthSql = (tableName, productFilterSql = '') => `
     SELECT
       strftime('%Y-%m', date("Due Date")) AS monthKey,
@@ -3030,21 +3033,19 @@ function buildRepaymentsByMonthReport(fromMonth, toMonth) {
     }
   }
 
-  applyScheduleCollected(
-    db.prepare(collectedByDueMonthSql('"Zidisha_Daily expected_vs_Repayed"')).all(rangeStart, nextAfterTo),
-  )
-  // Fill Boda months missing from the historical table using the current schedule export
-  applyScheduleCollected(
-    db
-      .prepare(
-        collectedByDueMonthSql(
-          'boda_Schedule',
-          `AND LOWER(TRIM(COALESCE("Product Name", ''))) = 'zidisha boda'`,
-        ),
-      )
-      .all(rangeStart, nextAfterTo),
-    { preferExisting: true },
-  )
+  const EXPECTED_VS_TABLE = 'Zidisha_Daily expected_vs_Repayed'
+  if (scheduleTableExists(EXPECTED_VS_TABLE)) {
+    applyScheduleCollected(
+      db.prepare(collectedByDueMonthSql(`"${EXPECTED_VS_TABLE}"`)).all(rangeStart, nextAfterTo),
+    )
+  }
+  // Fill any missing months / products from the current schedule export (always present after ingest)
+  if (scheduleTableExists('boda_Schedule')) {
+    applyScheduleCollected(
+      db.prepare(collectedByDueMonthSql('boda_Schedule')).all(rangeStart, nextAfterTo),
+      { preferExisting: true },
+    )
+  }
 
   // OTC from boda_repayments (actual Transaction Amount by Submitted On Date), split by Product Name
   const otcRows = db
