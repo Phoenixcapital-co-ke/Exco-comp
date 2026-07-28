@@ -73,6 +73,7 @@ export default function ParMonthEndCompareTable({ country }) {
         const a = row.actual || {}
         acc.openingLoanbook += Number(o.loanbook) || 0
         acc.openingPar += Number(o.par) || 0
+        acc.currentLoanbook += Number(a.closingLoanbook) || 0
         acc.collectedFromPar += Number(a.collectedFromPar) || 0
         acc.closingPar += Number(a.closingPar) || 0
         acc.netParMovement += Number(a.netParMovement) || 0
@@ -81,6 +82,7 @@ export default function ParMonthEndCompareTable({ country }) {
       {
         openingLoanbook: 0,
         openingPar: 0,
+        currentLoanbook: 0,
         collectedFromPar: 0,
         closingPar: 0,
         netParMovement: 0,
@@ -119,7 +121,7 @@ export default function ParMonthEndCompareTable({ country }) {
             <Loader2 className="animate-spin text-gray-400" />
           </div>
         ) : (
-          <table className="w-full min-w-[880px] text-[11px] border-separate border-spacing-0">
+            <table className="w-full min-w-[980px] text-[11px] border-separate border-spacing-0">
             <thead>
               <tr>
                 <th
@@ -138,7 +140,7 @@ export default function ParMonthEndCompareTable({ country }) {
                   </span>
                 </th>
                 <th
-                  colSpan={3}
+                  colSpan={4}
                   className="px-2 py-2 text-center text-[10px] font-bold text-sky-900 uppercase tracking-wide bg-sky-50 border-b border-gray-200"
                 >
                   Actual Performance — This Month
@@ -169,6 +171,7 @@ export default function ParMonthEndCompareTable({ country }) {
                   </th>
                 ))}
                 {[
+                  { label: 'Current Loanbook', tone: 'emerald' },
                   { label: 'Actual Collected (From PAR)', tone: 'sky' },
                   { label: 'Closing PAR', tone: 'rose' },
                   { label: 'Net PAR Movement', tone: 'slate' },
@@ -176,7 +179,13 @@ export default function ParMonthEndCompareTable({ country }) {
                   <th
                     key={`a-${c.label}`}
                     className={`px-1.5 py-1.5 text-right text-[9px] font-bold uppercase tracking-wide whitespace-nowrap border-b border-gray-200 bg-sky-50/60 ${
-                      c.tone === 'rose' ? 'text-rose-700' : c.tone === 'sky' ? 'text-sky-800' : 'text-slate-600'
+                      c.tone === 'rose'
+                        ? 'text-rose-700'
+                        : c.tone === 'sky'
+                          ? 'text-sky-800'
+                          : c.tone === 'emerald'
+                            ? 'text-emerald-700'
+                            : 'text-slate-600'
                     }`}
                   >
                     {c.label}
@@ -208,6 +217,7 @@ export default function ParMonthEndCompareTable({ country }) {
                     <td className="px-1.5 py-2 text-right border-b border-r border-gray-100">
                       <ParPill rate={o.parPct} />
                     </td>
+                    {money(a.closingLoanbook, 'bg-sky-50/25 text-emerald-800')}
                     {money(a.collectedFromPar, 'bg-sky-50/25 text-sky-900')}
                     {money(a.closingPar, `bg-sky-50/25 ${Number(a.closingPar) > 0 ? 'text-rose-700' : 'text-gray-400'}`)}
                     <td className={`px-1.5 py-2 text-right font-bold tabular-nums whitespace-nowrap border-b border-gray-100 bg-sky-50/25 ${signedTone(a.netParMovement)}`}>
@@ -232,6 +242,9 @@ export default function ParMonthEndCompareTable({ country }) {
                     <ParPill rate={totals.openingParPct} />
                   </td>
                   <td className="px-1.5 py-2.5 text-right font-bold tabular-nums border-t-2 border-slate-200 bg-sky-50/40 text-slate-800">
+                    {formatCompact(totals.currentLoanbook)}
+                  </td>
+                  <td className="px-1.5 py-2.5 text-right font-bold tabular-nums border-t-2 border-slate-200 bg-sky-50/40 text-slate-800">
                     {formatCompact(totals.collectedFromPar)}
                   </td>
                   <td className="px-1.5 py-2.5 text-right font-bold tabular-nums border-t-2 border-slate-200 bg-sky-50/40 text-slate-800">
@@ -245,7 +258,7 @@ export default function ParMonthEndCompareTable({ country }) {
               ) : null}
               {!(monthEndCompare?.branches || []).length ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
                     No comparable PAR snapshots found for {monthLabel} month-end and now.
                   </td>
                 </tr>
