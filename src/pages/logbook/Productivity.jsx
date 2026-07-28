@@ -17,6 +17,7 @@ import { API_URLS } from '../../utils/api.js'
 import { formatKES } from '../../utils/format.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
+import ParMonthEndCompareTable from './ParMonthEndCompareTable.jsx'
 
 function LogbookProductivity({ country }) {
   const { formatMoney } = useLogbookCurrency()
@@ -670,6 +671,188 @@ function LogbookProductivity({ country }) {
         </div>
       </div>
 
+      <ParMonthEndCompareTable country={country} />
+
+      {/* Staff Productivity Visualizations */}
+          {staffParError ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+              <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
+            </div>
+      ) : staffParLoading || staffParData.length === 0 ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
+          {staffParLoading ? 'Loading staff productivity metrics...' : 'No staff productivity data available. Ensure PAR snapshots are running.'}
+            </div>
+      ) : filteredStaffParData.length === 0 ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
+          No data available for selected branch.
+            </div>
+          ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* PAR Performance Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Performance by Staff</h3>
+            {parPerformanceChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
+              <BarChart
+                data={parPerformanceChartData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={0}
+                />
+                <YAxis 
+                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft' }}
+                />
+                <Tooltip 
+                  formatter={(value, name) => {
+                    if (name === 'parRate') return [`${value.toFixed(2)}%`, 'PAR Rate']
+                    if (name === 'openLoans') return [formatMoney(value), 'Open Loans']
+                    if (name === 'pastMissed') return [formatMoney(value), 'Past Missed']
+                    return [value, name]
+                  }}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="parRate" 
+                  name="PAR Rate" 
+                  fill="#ef4444"
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+            ) : (
+              <div className="h-[350px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
+          </div>
+
+          {/* Portfolio Distribution Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Portfolio Distribution by Staff</h3>
+            {portfolioChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
+              <BarChart
+                data={portfolioChartData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={0}
+                />
+                <YAxis 
+                  label={{ value: 'Amount (KES)', angle: -90, position: 'insideLeft' }}
+                  tickFormatter={(value) => `${(value / 1000000).toFixed(1)}M`}
+                />
+                <Tooltip 
+                  formatter={(value) => formatMoney(value)}
+                />
+                <Legend />
+                <Bar 
+                  dataKey="openLoans" 
+                  name="Open Loans (Portfolio)" 
+                  fill="#3b82f6"
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar 
+                  dataKey="pastMissed" 
+                  name="Past Missed" 
+                  fill="#f59e0b"
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+            ) : (
+              <div className="h-[350px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
+          </div>
+
+          {/* PAR Distribution Pie Chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Rate Distribution</h3>
+            {parDistributionData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={parDistributionData}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                  outerRadius={100}
+                  fill="#8884d8"
+                  dataKey="value"
+                >
+                  {parDistributionData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">
+                No data available
+              </div>
+            )}
+          </div>
+
+          {/* Top Performers Summary */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Performers Summary</h3>
+            {topPerformersData.length > 0 ? (
+              <div className="space-y-4">
+                {topPerformersData.map((entry, index) => (
+                  <div key={entry.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
+                        index === 0 ? 'bg-yellow-500' : 
+                        index === 1 ? 'bg-gray-400' : 
+                        index === 2 ? 'bg-orange-600' : 
+                        'bg-gray-300'
+                      }`}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{entry.name}</p>
+                        <p className="text-xs text-gray-500">Portfolio: {formatMoney(entry.openLoans)}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-sm font-semibold ${
+                        entry.parRate < 8 ? 'text-green-600' :
+                        entry.parRate < 12 ? 'text-blue-600' :
+                        entry.parRate < 15 ? 'text-yellow-600' :
+                        'text-red-600'
+                      }`}>
+                        {entry.parRate.toFixed(2)}%
+                      </p>
+                      <p className="text-xs text-gray-500">PAR Rate</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-gray-500 text-sm">
+                No data available
+              </div>
+          )}
+        </div>
+      </div>
+      )}
+
       {/* Collector Performance Table */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
@@ -1062,185 +1245,7 @@ function LogbookProductivity({ country }) {
         </div>
       </div>
 
-      {/* Staff Productivity Visualizations */}
-          {staffParError ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-              <p className="text-sm text-red-600">Error loading staff PAR data: {staffParError}</p>
-            </div>
-      ) : staffParLoading || staffParData.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
-          {staffParLoading ? 'Loading staff productivity metrics...' : 'No staff productivity data available. Ensure PAR snapshots are running.'}
-            </div>
-      ) : filteredStaffParData.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-gray-500 text-sm">
-          No data available for selected branch.
-            </div>
-          ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* PAR Performance Chart */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Performance by Staff</h3>
-            {parPerformanceChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={350}>
-              <BarChart
-                data={parPerformanceChartData}
-                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis 
-                  dataKey="name" 
-                  angle={-45}
-                  textAnchor="end"
-                  height={80}
-                  interval={0}
-                />
-                <YAxis 
-                  label={{ value: 'PAR %', angle: -90, position: 'insideLeft' }}
-                />
-                <Tooltip 
-                  formatter={(value, name) => {
-                    if (name === 'parRate') return [`${value.toFixed(2)}%`, 'PAR Rate']
-                    if (name === 'openLoans') return [formatMoney(value), 'Open Loans']
-                    if (name === 'pastMissed') return [formatMoney(value), 'Past Missed']
-                    return [value, name]
-                  }}
-                />
-                <Legend />
-                <Bar 
-                  dataKey="parRate" 
-                  name="PAR Rate" 
-                  fill="#ef4444"
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-            ) : (
-              <div className="h-[350px] flex items-center justify-center text-gray-500">
-                No data available
-              </div>
-            )}
-          </div>
 
-          {/* Portfolio Distribution Chart */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Portfolio Distribution by Staff</h3>
-            {portfolioChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={350}>
-              <BarChart
-                data={portfolioChartData}
-                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis 
-                  dataKey="name" 
-                  angle={-45}
-                  textAnchor="end"
-                  height={80}
-                  interval={0}
-                />
-                <YAxis 
-                  label={{ value: 'Amount (KES)', angle: -90, position: 'insideLeft' }}
-                  tickFormatter={(value) => `${(value / 1000000).toFixed(1)}M`}
-                />
-                <Tooltip 
-                  formatter={(value) => formatMoney(value)}
-                />
-                <Legend />
-                <Bar 
-                  dataKey="openLoans" 
-                  name="Open Loans (Portfolio)" 
-                  fill="#3b82f6"
-                  radius={[4, 4, 0, 0]}
-                />
-                <Bar 
-                  dataKey="pastMissed" 
-                  name="Past Missed" 
-                  fill="#f59e0b"
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-            ) : (
-              <div className="h-[350px] flex items-center justify-center text-gray-500">
-                No data available
-              </div>
-            )}
-          </div>
-
-          {/* PAR Distribution Pie Chart */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">PAR Rate Distribution</h3>
-            {parDistributionData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={parDistributionData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={100}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {parDistributionData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-            ) : (
-              <div className="h-[300px] flex items-center justify-center text-gray-500">
-                No data available
-              </div>
-            )}
-          </div>
-
-          {/* Top Performers Summary */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Performers Summary</h3>
-            {topPerformersData.length > 0 ? (
-              <div className="space-y-4">
-                {topPerformersData.map((entry, index) => (
-                  <div key={entry.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${
-                        index === 0 ? 'bg-yellow-500' : 
-                        index === 1 ? 'bg-gray-400' : 
-                        index === 2 ? 'bg-orange-600' : 
-                        'bg-gray-300'
-                      }`}>
-                        {index + 1}
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{entry.name}</p>
-                        <p className="text-xs text-gray-500">Portfolio: {formatMoney(entry.openLoans)}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-sm font-semibold ${
-                        entry.parRate < 8 ? 'text-green-600' :
-                        entry.parRate < 12 ? 'text-blue-600' :
-                        entry.parRate < 15 ? 'text-yellow-600' :
-                        'text-red-600'
-                      }`}>
-                        {entry.parRate.toFixed(2)}%
-                      </p>
-                      <p className="text-xs text-gray-500">PAR Rate</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-gray-500 text-sm">
-                No data available
-              </div>
-          )}
-        </div>
-      </div>
-      )}
     </div>
   )
 }

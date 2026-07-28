@@ -6,6 +6,7 @@ import { fetchAllZidishaRows } from '../../utils/zidishaClient.js'
 import { formatKES } from '../../utils/format.js'
 import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookWeeklyReportTemplate.js'
 import { renderDirectorReportHTML } from '../../reports/directorReportTemplate.js'
+import { renderDailyParReportHTML } from '../../reports/dailyParReportTemplate.js'
 import { DEFAULT_MAINTENANCE_MESSAGE } from '../../components/MaintenanceDownScreen.jsx'
 
 function DataOverview() {
@@ -58,6 +59,18 @@ function DataOverview() {
   const [logbookWeeklyError, setLogbookWeeklyError] = useState(null)
   const [showLogbookWeeklyReport, setShowLogbookWeeklyReport] = useState(false)
   const [showLogbookWeeklyDownloadMenu, setShowLogbookWeeklyDownloadMenu] = useState(false)
+
+  // Daily PAR Report State
+  const [dailyParDate, setDailyParDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [dailyParCountry, setDailyParCountry] = useState('Kenya')
+  const [dailyParReportHtml, setDailyParReportHtml] = useState('')
+  const [dailyParLoading, setDailyParLoading] = useState(false)
+  const [dailyParError, setDailyParError] = useState(null)
+  const [showDailyParReport, setShowDailyParReport] = useState(false)
+  const [showDailyParDownloadMenu, setShowDailyParDownloadMenu] = useState(false)
 
   // Boda Top Up Qualifiers Report State
   const [bodaTopupRows, setBodaTopupRows] = useState([])
@@ -1449,6 +1462,110 @@ function DataOverview() {
     document.body.removeChild(iframe)
   }
 
+  const generateDailyParReport = async () => {
+    try {
+      setDailyParLoading(true)
+      setDailyParError(null)
+      setDailyParReportHtml('')
+      const params = new URLSearchParams()
+      if (dailyParDate) params.set('date', dailyParDate)
+      if (dailyParCountry) params.set('country', dailyParCountry)
+      const url = `${API_URLS.reports.dailyPar}?${params.toString()}`
+      const res = await fetch(url, { credentials: 'include' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `Failed to load daily PAR (${res.status})`)
+      }
+      const data = await res.json()
+      setDailyParReportHtml(renderDailyParReportHTML(data))
+    } catch (e) {
+      console.error('Daily PAR report error:', e)
+      setDailyParError(e.message || 'Failed to generate daily PAR report')
+    } finally {
+      setDailyParLoading(false)
+    }
+  }
+
+  const downloadDailyParHTML = () => {
+    const safeName = 'daily-par-report'
+    const blob = new Blob([dailyParReportHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeName}-${dailyParDate}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadDailyParPDF = async () => {
+    // Capture at a fixed wide width (keeps 4 KPI cards in one row), then scale
+    // the image to fit exactly one A4 landscape page.
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const { jsPDF } = await import('jspdf')
+      const safeName = 'daily-par-report'
+
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'fixed'
+      iframe.style.left = '-10000px'
+      iframe.style.top = '0'
+      iframe.style.width = '900px'
+      iframe.style.height = '1270px'
+      iframe.style.border = 'none'
+      iframe.style.opacity = '0'
+      iframe.style.pointerEvents = 'none'
+      document.body.appendChild(iframe)
+
+      iframe.contentDocument.open()
+      iframe.contentDocument.write(dailyParReportHtml)
+      iframe.contentDocument.close()
+      await new Promise((resolve) => setTimeout(resolve, 450))
+
+      const element = iframe.contentDocument.querySelector('.page') || iframe.contentDocument.body
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 900,
+        width: 900,
+        scrollX: 0,
+        scrollY: 0,
+      })
+
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const pageW = pdf.internal.pageSize.getWidth()
+      const pageH = pdf.internal.pageSize.getHeight()
+      const marginX = 6
+      const marginTop = 4
+      const maxW = pageW - marginX * 2
+      const maxH = pageH - marginTop - 4
+      const imgW = canvas.width
+      const imgH = canvas.height
+      const pxToMm = 0.264583
+      const scale = Math.min(maxW / (imgW * pxToMm), maxH / (imgH * pxToMm))
+      const renderW = imgW * pxToMm * scale
+      const renderH = imgH * pxToMm * scale
+      const x = (pageW - renderW) / 2
+      const y = marginTop // pin to top — no vertical centering
+      const imgData = canvas.toDataURL('image/jpeg', 0.98)
+      pdf.addImage(imgData, 'JPEG', x, y, renderW, renderH)
+      pdf.save(`${safeName}-${dailyParDate}.pdf`)
+      document.body.removeChild(iframe)
+      return
+    } catch (err) {
+      console.error('Daily PAR PDF failed, falling back to print:', err)
+    }
+
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.open()
+      printWindow.document.write(dailyParReportHtml)
+      printWindow.document.close()
+      printWindow.onload = () => setTimeout(() => printWindow.print(), 400)
+    }
+  }
+
   const downloadDirectorHTML = () => {
     const safeName = 'board-report'
     const blob = new Blob([directorReportHtml], { type: 'text/html' })
@@ -2520,6 +2637,141 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Daily PAR Report Modal */}
+      {showDailyParReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowDailyParReport(false)
+              setShowDailyParDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Daily PAR Report (SOD → EOD)</h2>
+              <button
+                onClick={() => {
+                  setShowDailyParReport(false)
+                  setShowDailyParDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Report date</label>
+                  <input
+                    type="date"
+                    value={dailyParDate}
+                    onChange={(e) => setDailyParDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+                  <select
+                    value={dailyParCountry}
+                    onChange={(e) => setDailyParCountry(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                  >
+                    <option value="Kenya">Kenya</option>
+                    <option value="Uganda">Uganda</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={generateDailyParReport}
+                    disabled={dailyParLoading}
+                    className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {dailyParLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      'Generate Report'
+                    )}
+                  </button>
+
+                  {dailyParReportHtml && !dailyParLoading && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowDailyParDownloadMenu((v) => !v)}
+                        className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                      >
+                        Download
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showDailyParDownloadMenu && (
+                        <div className="absolute mt-2 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                          <button
+                            onClick={() => {
+                              setShowDailyParDownloadMenu(false)
+                              downloadDailyParHTML()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download HTML
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowDailyParDownloadMenu(false)
+                              downloadDailyParPDF()
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download PDF
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500 mb-4">
+                Uses closest PAR snapshots to <strong>03:00 EAT</strong> (start of day) and <strong>20:00 EAT</strong> (end of day),
+                plus yesterday&apos;s EOD for net recovery.
+              </p>
+
+              {dailyParLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
+                  <p className="mt-4 text-sm text-gray-500">Building daily PAR table...</p>
+                </div>
+              ) : dailyParError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {dailyParError}
+                </div>
+              ) : !dailyParReportHtml ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to build the daily SOD / EOD PAR report.</p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <iframe
+                    title="Daily PAR Report Preview"
+                    style={{ width: '100%', height: '75vh', border: 0 }}
+                    srcDoc={dailyParReportHtml}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Director Report Modal */}
       {showDirectorReport && (
         <div
@@ -3141,6 +3393,22 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Logbook Product – Weekly</h2>
                 <p className="text-sm text-gray-500">Weekly performance report (sales, collections, portfolio & PAR) in the Phoenix template</p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Daily PAR Report Card */}
+          <button
+            onClick={() => setShowDailyParReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Daily PAR Report</h2>
+                <p className="text-sm text-gray-500">SOD (~3am) vs EOD (~8pm) by branch — shift, recovery vs yesterday, PDF download</p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

@@ -232,7 +232,13 @@ function LogbookPAR({ country }) {
         const error = await res.json().catch(() => ({}))
         throw new Error(error?.error || `Request failed (${res.status})`)
       }
-      await Promise.all([loadHistory(), loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()])
+      await Promise.all([
+        loadHistory(),
+        loadBranchData(),
+        loadBorrowerData(),
+        loadLoanOfficers(),
+        loadLastRunTime(),
+      ])
       setTimeout(() => setProgress(null), 1000)
     } catch (err) {
       setTriggerMessage(`Error: ${err.message}`)
@@ -245,9 +251,13 @@ function LogbookPAR({ country }) {
   }
 
   useEffect(() => {
-    Promise.all([loadHistory(), loadBranchData(), loadBorrowerData(), loadLoanOfficers(), loadLastRunTime()]).catch(
-      (e) => console.error('Error loading initial data:', e),
-    )
+    Promise.all([
+      loadHistory(),
+      loadBranchData(),
+      loadBorrowerData(),
+      loadLoanOfficers(),
+      loadLastRunTime(),
+    ]).catch((e) => console.error('Error loading initial data:', e))
     const interval = setInterval(loadLastRunTime, 30000)
     return () => clearInterval(interval)
   }, [loadHistory, loadBranchData, loadBorrowerData, loadLoanOfficers, loadLastRunTime])

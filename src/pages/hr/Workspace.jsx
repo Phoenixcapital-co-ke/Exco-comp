@@ -3,7 +3,6 @@ import { Link, useParams } from 'react-router-dom'
 import {
   Activity,
   ArrowRight,
-  Award,
   BadgeDollarSign,
   BarChart3,
   BookOpenCheck,
@@ -14,7 +13,9 @@ import {
   Gauge,
   GraduationCap,
   Loader2,
+  MapPinned,
   RefreshCw,
+  Search,
   Target,
   UserMinus,
   UserPlus,
@@ -160,8 +161,28 @@ const isActive = (employee) =>
   employee?.active === 1 || employee?.active === '1' || employee?.active === true
 
 const safeDate = (value) => {
-  if (!value) return null
-  const date = new Date(value)
+  if (value == null) return null
+  const text = String(value).trim()
+  if (!text) return null
+
+  // Wingubox dates are typically DD/MM/YYYY (sometimes with a time suffix).
+  const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T].*)?$/)
+  if (dmy) {
+    const dd = Number(dmy[1])
+    const mm = Number(dmy[2])
+    const yyyy = Number(dmy[3])
+    const date = new Date(yyyy, mm - 1, dd)
+    if (
+      date.getFullYear() === yyyy &&
+      date.getMonth() === mm - 1 &&
+      date.getDate() === dd
+    ) {
+      return date
+    }
+    return null
+  }
+
+  const date = new Date(text)
   return Number.isNaN(date.getTime()) ? null : date
 }
 
@@ -210,6 +231,7 @@ function KpiCard({ label, value, detail, icon: Icon, tone = 'orange' }) {
     orange: 'bg-[#FFF1EC] text-[#EF5322]',
     green: 'bg-emerald-50 text-emerald-600',
     slate: 'bg-slate-100 text-slate-600',
+    sky: 'bg-sky-50 text-sky-700',
     red: 'bg-red-50 text-red-600',
   }[tone]
   return (
@@ -598,6 +620,124 @@ const formatSalesAmount = (value) =>
     maximumFractionDigits: 1,
   }).format(Number(value) || 0)
 
+const PRODUCT_TABS = [
+  { id: 'boda', label: 'Boda' },
+  { id: 'zidisha', label: 'Zidisha' },
+  { id: 'advans', label: 'Advans' },
+  { id: 'logbook', label: 'Logbook' },
+]
+
+function formatBranchLabel(name) {
+  const trimmed = String(name || '').trim()
+  if (!trimmed) return 'Unassigned'
+  return (
+    trimmed
+      .replace(/^boda\s*[-–—]?\s*/i, '')
+      .replace(/\s+branch$/i, '')
+      .trim() || trimmed
+  )
+}
+
+function salesBranchName(employee) {
+  return formatBranchLabel(employee?.region)
+}
+
+function SalesArcMeter({ label, value, detail, colorClass = 'stroke-[#EF5322]', emptyLabel = 'No target' }) {
+  const hasValue = value != null && Number.isFinite(Number(value))
+  const raw = hasValue ? Number(value) : 0
+  const arcPct = Math.max(0, Math.min(100, raw))
+  const radius = 45
+  const circumference = 2 * Math.PI * radius
+  const offset = circumference - (arcPct / 100) * circumference
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="relative h-28 w-28">
+        <svg className="h-full w-full -rotate-90" viewBox="0 0 112 112">
+          <circle cx="56" cy="56" r={radius} className="fill-none stroke-slate-100" strokeWidth="8" />
+          <circle
+            cx="56"
+            cy="56"
+            r={radius}
+            className={`fill-none transition-all duration-500 ${colorClass}`}
+            strokeWidth="8"
+            strokeDasharray={circumference}
+            strokeDashoffset={hasValue ? offset : circumference}
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center px-2 text-center">
+          <span className="font-mono text-lg font-bold text-slate-900">
+            {hasValue ? `${raw.toFixed(0)}%` : emptyLabel}
+          </span>
+          {detail ? <span className="text-[10px] leading-tight text-slate-500">{detail}</span> : null}
+        </div>
+      </div>
+      <span className="text-sm font-medium text-slate-600">{label}</span>
+    </div>
+  )
+}
+
+function ProductRateCard({ product, rate, actualVerb = 'disbursed' }) {
+  const branches = rate.branches || []
+  const maxActual = Math.max(...branches.map((b) => b.actual), 1)
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+        <div className="flex shrink-0 justify-center sm:w-[140px]">
+          <SalesArcMeter
+            label={`${product.label} ${product.meterLabel || 'vs target'}`}
+            value={rate.hasTarget ? rate.rate : null}
+            detail={
+              rate.hasTarget
+                ? `${formatSalesAmount(rate.actual)} / ${formatSalesAmount(rate.target)}`
+                : `${formatSalesAmount(rate.actual)} ${actualVerb}`
+            }
+            colorClass={product.meterColor}
+            emptyLabel="No target"
+          />
+        </div>
+        <div className="min-w-0 flex-1 border-t border-slate-100 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Branch breakdown
+          </div>
+          <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+            {branches.map((branch) => (
+              <div key={branch.branch}>
+                <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
+                  <span className="truncate font-medium text-slate-700">{formatBranchLabel(branch.branch)}</span>
+                  <span className="shrink-0 font-mono text-slate-500">
+                    {branch.hasTarget
+                      ? `${branch.rate.toFixed(0)}% · ${formatSalesAmount(branch.actual)}`
+                      : formatSalesAmount(branch.actual)}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-[#EF5322] to-[#F78A65]"
+                    style={{
+                      width: `${branch.hasTarget
+                        ? Math.min(100, branch.rate)
+                        : (branch.actual / maxActual) * 100}%`,
+                    }}
+                  />
+                </div>
+                {branch.hasTarget ? (
+                  <div className="mt-0.5 text-[10px] text-slate-400">
+                    Target {formatSalesAmount(branch.target)}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+            {!branches.length ? (
+              <p className="py-2 text-center text-xs text-slate-400">No branch activity this month.</p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SalesForceVisuals() {
   const now = new Date()
   const [period, setPeriod] = useState(
@@ -606,6 +746,8 @@ function SalesForceVisuals() {
   const [salesData, setSalesData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState('boda')
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -636,18 +778,109 @@ function SalesForceVisuals() {
   const totals = salesData?.totals
   const employees = salesData?.employees || []
   const productCards = [
-    { key: 'logbook', label: 'Logbook', detail: 'Logbook disbursements' },
-    { key: 'boda', label: 'Boda', detail: 'Zidisha Boda loans' },
-    { key: 'zidisha', label: 'Zidisha', detail: 'All Zidisha loan products' },
+    {
+      key: 'boda',
+      label: 'Boda',
+      detail: 'Zidisha Boda loans',
+      tone: 'green',
+      meterColor: 'stroke-emerald-500',
+    },
+    {
+      key: 'zidisha',
+      label: 'Zidisha',
+      detail: 'All Zidisha loan products',
+      tone: 'slate',
+      meterColor: 'stroke-slate-600',
+    },
+    {
+      key: 'advans',
+      label: 'Advans',
+      detail: 'Advans Branch / Advans products',
+      tone: 'sky',
+      meterColor: 'stroke-sky-600',
+    },
+    {
+      key: 'logbook',
+      label: 'Logbook',
+      detail: 'Logbook disbursements',
+      tone: 'orange',
+      meterColor: 'stroke-[#EF5322]',
+    },
   ]
+
+  const staffWithSales = employees.filter((e) => e.total.loans > 0).length
+
+  const tabProduct = activeTab
+  const tabMeta = PRODUCT_TABS.find((t) => t.id === tabProduct) || PRODUCT_TABS[0]
+  const tabTotals = totals?.[tabProduct] || { loans: 0, amount: 0, staff: 0 }
+
+  const tabStaff = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return employees
+      .map((employee) => ({
+        ...employee,
+        filtered: {
+          amount: Number(employee.products?.[tabProduct]?.amount) || 0,
+          loans: Number(employee.products?.[tabProduct]?.loans) || 0,
+        },
+      }))
+      .filter((employee) => {
+        if (employee.filtered.loans <= 0) return false
+        if (!q) return true
+        return [employee.full_name, employee.department, employee.region, employee.job_title]
+          .join(' ')
+          .toLowerCase()
+          .includes(q)
+      })
+      .sort((a, b) => b.filtered.amount - a.filtered.amount || a.full_name.localeCompare(b.full_name))
+  }, [employees, tabProduct, searchQuery])
+
+  const tabBranches = useMemo(() => {
+    const map = new Map()
+    for (const employee of employees) {
+      const loans = Number(employee.products?.[tabProduct]?.loans) || 0
+      const amount = Number(employee.products?.[tabProduct]?.amount) || 0
+      if (loans <= 0) continue
+      const branch = salesBranchName(employee)
+      if (!map.has(branch)) map.set(branch, { name: branch, amount: 0, loans: 0, staff: 0 })
+      const row = map.get(branch)
+      row.amount += amount
+      row.loans += loans
+      row.staff += 1
+    }
+    return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+  }, [employees, tabProduct])
+
+  const tabBranchMax = Math.max(...tabBranches.map((b) => b.amount), 1)
+  const rates = salesData?.rates || {}
+
+  const staffBranchRates = useMemo(() => {
+    const result = { boda: [], zidisha: [], advans: [], logbook: [] }
+    for (const key of Object.keys(result)) {
+      const map = new Map()
+      for (const employee of employees) {
+        const actual = Number(employee.products?.[key]?.amount) || 0
+        if (actual <= 0) continue
+        const branch = salesBranchName(employee)
+        if (!map.has(branch)) {
+          map.set(branch, { branch, actual: 0, target: 0, rate: 0, hasTarget: false })
+        }
+        map.get(branch).actual += actual
+      }
+      result[key] = Array.from(map.values())
+        .map((row) => ({ ...row, actual: Math.round(row.actual) }))
+        .sort((a, b) => b.actual - a.actual || a.branch.localeCompare(b.branch))
+    }
+    return result
+  }, [employees])
 
   return (
     <>
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="font-semibold text-slate-900">Sales staff performance</h2>
+          <h2 className="font-semibold text-slate-900">Sales Force Analyzer</h2>
           <p className="mt-1 text-xs text-slate-500">
-            Active staff in sales departments, including staff with no recorded sales.
+            Disbursement vs target rates, product tabs and staff rankings — same reporting month as the KPI cards.
           </p>
         </div>
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
@@ -676,81 +909,529 @@ function SalesForceVisuals() {
 
       {!loading && !error && salesData ? (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <KpiCard
               label="Sales staff"
               value={employees.length.toLocaleString()}
-              detail={`${employees.filter((employee) => employee.total.loans > 0).length} with recorded sales`}
+              detail={`${staffWithSales} with recorded sales`}
               icon={Users}
             />
             {productCards.map((product) => (
               <KpiCard
                 key={product.key}
                 label={product.label}
-                value={formatSalesAmount(totals[product.key].amount)}
-                detail={`${totals[product.key].loans.toLocaleString()} loans · ${product.detail}`}
+                value={formatSalesAmount(totals[product.key]?.amount || 0)}
+                detail={`${Number(totals[product.key]?.staff || 0).toLocaleString()} staff · ${Number(totals[product.key]?.loans || 0).toLocaleString()} loans · ${product.detail}`}
                 icon={WalletCards}
-                tone={product.key === 'boda' ? 'green' : product.key === 'zidisha' ? 'slate' : 'orange'}
+                tone={product.tone}
               />
             ))}
           </div>
 
-          <ChartCard
-            title="Staff sales by product"
-            subtitle={`${period} · ${salesData.matching.matchRate.toFixed(1)}% of source loans linked to current sales staff`}
-          >
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] border-separate border-spacing-0 text-left">
-                <thead>
-                  <tr className="text-[10px] uppercase tracking-wider text-slate-500">
-                    <th className="border-b border-slate-200 px-3 py-3 font-semibold">Staff member</th>
-                    <th className="border-b border-slate-200 px-3 py-3 font-semibold">Department / branch</th>
-                    <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">Logbook</th>
-                    <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">Boda</th>
-                    <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">Zidisha</th>
-                    <th className="border-b border-slate-200 px-3 py-3 text-right font-semibold">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {employees.map((employee, index) => (
-                    <tr key={employee.id || employee.employee_id} className={index % 2 ? 'bg-slate-50/60' : 'bg-white'}>
-                      <td className="border-b border-slate-100 px-3 py-3">
-                        <div className="font-medium text-slate-900">{employee.full_name}</div>
-                        <div className="mt-0.5 text-[10px] text-slate-500">{employee.job_title || 'Role not specified'}</div>
-                      </td>
-                      <td className="border-b border-slate-100 px-3 py-3">
-                        <div className="text-xs text-slate-700">{employee.department || 'Unassigned'}</div>
-                        <div className="mt-0.5 text-[10px] text-slate-500">{employee.region || 'Branch not specified'}</div>
-                      </td>
-                      {['logbook', 'boda', 'zidisha'].map((family) => (
-                        <td key={family} className="border-b border-slate-100 px-3 py-3 text-right">
-                          <div className="font-mono text-xs font-semibold text-slate-900">
-                            {formatSalesAmount(employee.products[family].amount)}
-                          </div>
-                          <div className="mt-0.5 text-[10px] text-slate-500">
-                            {employee.products[family].loans.toLocaleString()} loans
-                          </div>
-                        </td>
-                      ))}
-                      <td className="border-b border-slate-100 px-3 py-3 text-right">
-                        <div className="font-mono text-xs font-bold text-[#EF5322]">
-                          {formatSalesAmount(employee.total.amount)}
-                        </div>
-                        <div className="mt-0.5 text-[10px] font-medium text-slate-500">
-                          {employee.total.loans.toLocaleString()} loans
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {productCards.map((product) => {
+              const apiRate = rates[product.key]
+              const fallbackActual = Number(totals[product.key]?.amount) || 0
+              const apiBranches = Array.isArray(apiRate?.branches) ? apiRate.branches : []
+              const branches = apiBranches.length ? apiBranches : staffBranchRates[product.key] || []
+              const actual = Number(apiRate?.actual) || fallbackActual
+              const target = Number(apiRate?.target) || 0
+              const hasTarget = Boolean(apiRate?.hasTarget) && target > 0
+              const rate = {
+                actual,
+                target,
+                rate: hasTarget ? (actual / target) * 100 : Number(apiRate?.rate) || 0,
+                hasTarget,
+                branches,
+              }
+              return <ProductRateCard key={product.key} product={product} rate={rate} />
+            })}
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid max-w-2xl grid-cols-4 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1">
+              {PRODUCT_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`rounded-lg px-2 py-2 text-xs font-semibold transition ${
+                    activeTab === tab.id
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-          </ChartCard>
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} staff</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {Number(tabTotals.staff || 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} loans</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {Number(tabTotals.loans || 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} disbursed</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {formatSalesAmount(tabTotals.amount || 0)}
+                </div>
+              </div>
+            </div>
+
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`Search ${tabMeta.label} staff, department or branch…`}
+                className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:border-[#EF5322] focus:ring-2 focus:ring-[#EF5322]/15"
+              />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <ChartCard
+                title={`${tabMeta.label} staff stream`}
+                subtitle={`${tabStaff.length} staff with ${tabMeta.label} sales · ${period}`}
+              >
+                <div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
+                  {tabStaff.map((employee, index) => (
+                    <div
+                      key={employee.id || employee.employee_id}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white font-mono text-[10px] font-semibold text-slate-500">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-slate-900">{employee.full_name}</div>
+                          <div className="truncate text-[11px] text-slate-500">
+                            {employee.department || 'Unassigned'} · {formatBranchLabel(employee.region) || 'No branch'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="font-mono text-sm font-semibold text-slate-900">
+                          {formatSalesAmount(employee.filtered.amount)}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {employee.filtered.loans.toLocaleString()} loans
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {!tabStaff.length ? (
+                    <p className="py-8 text-center text-sm text-slate-500">
+                      No staff with {tabMeta.label} sales this month.
+                    </p>
+                  ) : null}
+                </div>
+              </ChartCard>
+
+              <ChartCard
+                title={`${tabMeta.label} branch footprint`}
+                subtitle={`${tabBranches.length} branches · relative disbursement volume`}
+              >
+                <div className="max-h-[480px] space-y-3 overflow-y-auto pr-1">
+                  {tabBranches.map((branch, idx) => (
+                    <div key={branch.name} className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 text-[10px] font-semibold text-slate-600">
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate font-medium text-slate-800">{branch.name}</span>
+                          <span className="shrink-0 font-mono text-slate-600">
+                            {formatSalesAmount(branch.amount)}
+                          </span>
+                        </div>
+                        <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-[#EF5322] to-[#F78A65]"
+                            style={{ width: `${(branch.amount / tabBranchMax) * 100}%` }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500">
+                          {branch.staff} staff · {branch.loans.toLocaleString()} loans
+                        </div>
+                      </div>
+                      <MapPinned size={16} className="shrink-0 text-slate-400" />
+                    </div>
+                  ))}
+                  {!tabBranches.length ? (
+                    <p className="py-8 text-center text-sm text-slate-500">
+                      No {tabMeta.label} branch activity this month.
+                    </p>
+                  ) : null}
+                </div>
+              </ChartCard>
+            </div>
+          </div>
         </>
       ) : null}
     </>
   )
 }
+
+function CollectionsParVisuals() {
+  const now = new Date()
+  const [period, setPeriod] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+  )
+  const [collectionsData, setCollectionsData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState('boda')
+  const [searchQuery, setSearchQuery] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const [year, month] = period.split('-').map(Number)
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        const response = await fetch(API_URLS.hr.collectionsPar(month, year), {
+          credentials: 'include',
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`Unable to load collections-par data (${response.status})`)
+        setCollectionsData(await response.json())
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setCollectionsData(null)
+          setError(err.message)
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    load()
+    return () => controller.abort()
+  }, [period])
+
+  const totals = collectionsData?.totals
+  const employees = collectionsData?.employees || []
+  const productCards = [
+    {
+      key: 'boda',
+      label: 'Boda',
+      detail: 'Boda schedule collections',
+      tone: 'green',
+      meterColor: 'stroke-emerald-500',
+      meterLabel: 'collection rate',
+    },
+    {
+      key: 'zidisha',
+      label: 'Zidisha',
+      detail: 'Zidisha maturity collections',
+      tone: 'slate',
+      meterColor: 'stroke-slate-600',
+      meterLabel: 'collection rate',
+    },
+    {
+      key: 'advans',
+      label: 'Advans',
+      detail: 'Advans maturity collections',
+      tone: 'sky',
+      meterColor: 'stroke-sky-600',
+      meterLabel: 'collection rate',
+    },
+    {
+      key: 'logbook',
+      label: 'Logbook',
+      detail: 'Logbook cash collections',
+      tone: 'orange',
+      meterColor: 'stroke-[#EF5322]',
+      meterLabel: 'collection rate',
+    },
+  ]
+
+  const staffWithCollections = employees.filter((e) => (e.total?.amount || 0) > 0 || (e.total?.loans || 0) > 0).length
+
+  const tabProduct = activeTab
+  const tabMeta = PRODUCT_TABS.find((t) => t.id === tabProduct) || PRODUCT_TABS[0]
+  const tabTotals = totals?.[tabProduct] || { loans: 0, amount: 0, staff: 0 }
+
+  const tabStaff = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return employees
+      .map((employee) => ({
+        ...employee,
+        filtered: {
+          amount: Number(employee.products?.[tabProduct]?.amount) || 0,
+          loans: Number(employee.products?.[tabProduct]?.loans) || 0,
+        },
+      }))
+      .filter((employee) => {
+        if (employee.filtered.amount <= 0 && employee.filtered.loans <= 0) return false
+        if (!q) return true
+        return [employee.full_name, employee.department, employee.region, employee.job_title]
+          .join(' ')
+          .toLowerCase()
+          .includes(q)
+      })
+      .sort((a, b) => b.filtered.amount - a.filtered.amount || a.full_name.localeCompare(b.full_name))
+  }, [employees, tabProduct, searchQuery])
+
+  const tabBranches = useMemo(() => {
+    const map = new Map()
+    for (const employee of employees) {
+      const loans = Number(employee.products?.[tabProduct]?.loans) || 0
+      const amount = Number(employee.products?.[tabProduct]?.amount) || 0
+      if (amount <= 0 && loans <= 0) continue
+      const branch = salesBranchName(employee)
+      if (!map.has(branch)) map.set(branch, { name: branch, amount: 0, loans: 0, staff: 0 })
+      const row = map.get(branch)
+      row.amount += amount
+      row.loans += loans
+      row.staff += 1
+    }
+    return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+  }, [employees, tabProduct])
+
+  const tabBranchMax = Math.max(...tabBranches.map((b) => b.amount), 1)
+  const rates = collectionsData?.rates || {}
+
+  const staffBranchRates = useMemo(() => {
+    const result = { boda: [], zidisha: [], advans: [], logbook: [] }
+    for (const key of Object.keys(result)) {
+      const map = new Map()
+      for (const employee of employees) {
+        const actual = Number(employee.products?.[key]?.amount) || 0
+        if (actual <= 0) continue
+        const branch = salesBranchName(employee)
+        if (!map.has(branch)) {
+          map.set(branch, { branch, actual: 0, target: 0, rate: 0, hasTarget: false })
+        }
+        map.get(branch).actual += actual
+      }
+      result[key] = Array.from(map.values())
+        .map((row) => ({ ...row, actual: Math.round(row.actual) }))
+        .sort((a, b) => b.actual - a.actual || a.branch.localeCompare(b.branch))
+    }
+    return result
+  }, [employees])
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="font-semibold text-slate-900">Collections & PAR Analyzer</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Collection vs target rates, product tabs and officer rankings — same reporting month as the KPI cards.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+          Reporting month
+          <input
+            type="month"
+            value={period}
+            onChange={(event) => setPeriod(event.target.value)}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:border-[#EF5322] focus:ring-2 focus:ring-[#EF5322]/15"
+          />
+        </label>
+      </div>
+
+      {loading ? (
+        <div className="flex min-h-[320px] items-center justify-center rounded-2xl border border-slate-200 bg-white">
+          <div className="text-center">
+            <Loader2 className="mx-auto animate-spin text-[#EF5322]" size={30} />
+            <p className="mt-3 text-sm text-slate-500">Matching staff to collections…</p>
+          </div>
+        </div>
+      ) : null}
+
+      {!loading && error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">{error}</div>
+      ) : null}
+
+      {!loading && !error && collectionsData ? (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <KpiCard
+              label="Collection staff"
+              value={employees.length.toLocaleString()}
+              detail={`${staffWithCollections} with recorded collections`}
+              icon={Users}
+            />
+            {productCards.map((product) => (
+              <KpiCard
+                key={product.key}
+                label={product.label}
+                value={formatSalesAmount(totals[product.key]?.amount || 0)}
+                detail={`${Number(totals[product.key]?.staff || 0).toLocaleString()} staff · ${Number(totals[product.key]?.loans || 0).toLocaleString()} txns · ${product.detail}`}
+                icon={WalletCards}
+                tone={product.tone}
+              />
+            ))}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {productCards.map((product) => {
+              const apiRate = rates[product.key]
+              const fallbackActual = Number(totals[product.key]?.amount) || 0
+              const apiBranches = Array.isArray(apiRate?.branches) ? apiRate.branches : []
+              const branches = apiBranches.length ? apiBranches : staffBranchRates[product.key] || []
+              const actual = Number(apiRate?.actual) || fallbackActual
+              const target = Number(apiRate?.target) || 0
+              const hasTarget = Boolean(apiRate?.hasTarget) && target > 0
+              const rate = {
+                actual,
+                target,
+                rate: hasTarget ? (actual / target) * 100 : Number(apiRate?.rate) || 0,
+                hasTarget,
+                branches,
+              }
+              return <ProductRateCard key={product.key} product={product} rate={rate} actualVerb="collected" />
+            })}
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid max-w-2xl grid-cols-4 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1">
+              {PRODUCT_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`rounded-lg px-2 py-2 text-xs font-semibold transition ${
+                    activeTab === tab.id
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} staff</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {Number(tabTotals.staff || 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} txns</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {Number(tabTotals.loans || 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-medium text-slate-500">{tabMeta.label} collected</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {formatSalesAmount(tabTotals.amount || 0)}
+                </div>
+              </div>
+            </div>
+
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`Search ${tabMeta.label} staff, department or branch…`}
+                className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:border-[#EF5322] focus:ring-2 focus:ring-[#EF5322]/15"
+              />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <ChartCard
+                title={`${tabMeta.label} collector stream`}
+                subtitle={`${tabStaff.length} staff with ${tabMeta.label} collections · ${period}`}
+              >
+                <div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
+                  {tabStaff.map((employee, index) => (
+                    <div
+                      key={employee.id || employee.employee_id}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white font-mono text-[10px] font-semibold text-slate-500">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-slate-900">{employee.full_name}</div>
+                          <div className="truncate text-[11px] text-slate-500">
+                            {employee.department || 'Unassigned'} · {formatBranchLabel(employee.region) || 'No branch'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="font-mono text-sm font-semibold text-slate-900">
+                          {formatSalesAmount(employee.filtered.amount)}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {employee.filtered.loans.toLocaleString()} txns
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {!tabStaff.length ? (
+                    <p className="py-8 text-center text-sm text-slate-500">
+                      No staff with {tabMeta.label} collections this month.
+                    </p>
+                  ) : null}
+                </div>
+              </ChartCard>
+
+              <ChartCard
+                title={`${tabMeta.label} branch collections`}
+                subtitle={`${tabBranches.length} branches · relative collection volume`}
+              >
+                <div className="max-h-[480px] space-y-3 overflow-y-auto pr-1">
+                  {tabBranches.map((branch, idx) => (
+                    <div key={branch.name} className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 text-[10px] font-semibold text-slate-600">
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate font-medium text-slate-800">{branch.name}</span>
+                          <span className="shrink-0 font-mono text-slate-600">
+                            {formatSalesAmount(branch.amount)}
+                          </span>
+                        </div>
+                        <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-[#EF5322] to-[#F78A65]"
+                            style={{ width: `${(branch.amount / tabBranchMax) * 100}%` }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500">
+                          {branch.staff} staff · {branch.loans.toLocaleString()} txns
+                        </div>
+                      </div>
+                      <MapPinned size={16} className="shrink-0 text-slate-400" />
+                    </div>
+                  ))}
+                  {!tabBranches.length ? (
+                    <p className="py-8 text-center text-sm text-slate-500">
+                      No {tabMeta.label} branch collections this month.
+                    </p>
+                  ) : null}
+                </div>
+              </ChartCard>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </>
+  )
+}
+
 
 function GenericSection({ section }) {
   return (
@@ -956,9 +1637,10 @@ export default function HRWorkspace() {
       <WorkspaceHeader section={section} />
       {!section ? <Overview analytics={analytics} /> : null}
       {section?.id === 'sales-force' ? <SalesForceVisuals /> : null}
+      {section?.id === 'collections-quality' ? <CollectionsParVisuals /> : null}
       {section?.id === 'retention' ? <RetentionVisuals analytics={analytics} /> : null}
       {section?.id === 'productivity' ? <ProductivityVisuals analytics={analytics} section={section} /> : null}
-      {section && !['sales-force', 'retention', 'productivity'].includes(section.id) ? <GenericSection section={section} /> : null}
+      {section && !['sales-force', 'collections-quality', 'retention', 'productivity'].includes(section.id) ? <GenericSection section={section} /> : null}
     </div>
   )
 }

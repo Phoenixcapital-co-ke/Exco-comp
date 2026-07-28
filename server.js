@@ -9610,6 +9610,792 @@ app.get('/api/par/branches', async (req, res) => {
   }
 })
 
+function nairobiDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Nairobi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const get = (type) => parts.find((p) => p.type === type)?.value
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+    hour: Number(get('hour')),
+    minute: Number(get('minute')),
+  }
+}
+
+/** Previous calendar month-end at 23:00 Africa/Nairobi (as UTC Date). */
+function previousMonthEnd23Nairobi(now = new Date()) {
+  const { year, month } = nairobiDateParts(now)
+  let y = year
+  let m = month - 1
+  if (m < 1) {
+    m = 12
+    y -= 1
+  }
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  // 23:00 EAT = 20:00 UTC
+  return {
+    target: new Date(Date.UTC(y, m - 1, lastDay, 20, 0, 0, 0)),
+    year: y,
+    month: m,
+    day: lastDay,
+  }
+}
+
+function findClosestParSnapshotTime(targetDate, { preferOnOrBefore = true } = {}) {
+  const targetMs = targetDate.getTime()
+  if (!Number.isFinite(targetMs)) return null
+  const rows = db.prepare('SELECT time FROM PAR').all()
+  let best = null
+  let bestScore = Infinity
+  for (const row of rows) {
+    const time = String(row.time || '').trim()
+    if (!time) continue
+    const ms = new Date(time).getTime()
+    if (!Number.isFinite(ms)) continue
+    const delta = ms - targetMs
+    const abs = Math.abs(delta)
+    let score = abs
+    if (preferOnOrBefore) {
+      // Prefer snapshots at/before target; small grace after target is still ok.
+      if (delta > 3 * 60 * 60 * 1000) score = abs + 1e15
+      else if (delta > 0) score = abs + 1e9
+    }
+    if (score < bestScore) {
+      bestScore = score
+      best = time
+    }
+  }
+  return best
+}
+
+/** Closest PAR.time within ±maxAbsHours of target (absolute distance). */
+function findClosestParSnapshotTimeNear(targetDate, { maxAbsHours = 6 } = {}) {
+  const targetMs = targetDate.getTime()
+  if (!Number.isFinite(targetMs)) return null
+  const maxAbs = Math.max(0.5, Number(maxAbsHours) || 6) * 60 * 60 * 1000
+  const rows = db.prepare('SELECT time FROM PAR').all()
+  let best = null
+  let bestAbs = Infinity
+  for (const row of rows) {
+    const time = String(row.time || '').trim()
+    if (!time) continue
+    const ms = new Date(time).getTime()
+    if (!Number.isFinite(ms)) continue
+    const abs = Math.abs(ms - targetMs)
+    if (abs > maxAbs) continue
+    if (abs < bestAbs) {
+      bestAbs = abs
+      best = time
+    }
+  }
+  return best
+}
+
+/** Africa/Nairobi wall clock → UTC Date (EAT = UTC+3 year-round). */
+function nairobiWallClockUtc(year, month, day, hour, minute = 0) {
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour) - 3, Number(minute) || 0, 0, 0))
+}
+
+function createRiskSplitTotals() {
+  return { openLoans: 0, missed: 0, arrears: 0, pastMaturity: 0 }
+}
+
+function classifyPastMissedChildStatus(loan, row) {
+  const raw = String(row?.child_status_id ?? loan?.child_status_id ?? '').trim()
+  if (raw === '6') return 'pastMaturity'
+  if (raw === '16') return 'arrears'
+  if (raw === '5') return 'missed'
+  // Fallback: treat unknown delinquency as missed repayment
+  return 'missed'
+}
+
+function aggregateBranchRiskSplit(openLoansRows, pastMissedRows) {
+  const byBranch = new Map()
+  const ensure = (code) => {
+    const key = String(code || '').trim()
+    if (!byBranch.has(key)) byBranch.set(key, createRiskSplitTotals())
+    return byBranch.get(key)
+  }
+
+  for (const row of openLoansRows || []) {
+    try {
+      const loan = parseLoandiskLoanRecord(row)
+      if (!loan) continue
+      const p = parseParLoanPrincipal(loan)
+      if (p > 0) ensure(row.branch_code).openLoans += p
+    } catch {
+      continue
+    }
+  }
+
+  for (const row of pastMissedRows || []) {
+    try {
+      const loan = parseLoandiskLoanRecord(row)
+      if (!loan) continue
+      const p = parseParLoanPrincipal(loan)
+      if (p <= 0) continue
+      const bucket = classifyPastMissedChildStatus(loan, row)
+      ensure(row.branch_code)[bucket] += p
+    } catch {
+      continue
+    }
+  }
+
+  return byBranch
+}
+
+function buildParBranchRowsForSnapshot(snapshotTime, { countryParam = '', effectiveBranches = [] } = {}) {
+  let activeBranches
+  if (countryParam) {
+    activeBranches = dbRW
+      .prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1 AND country = ?')
+      .all(countryParam)
+  } else {
+    activeBranches = dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()
+  }
+  if (!activeBranches.length || !snapshotTime) return []
+
+  const openLoansRows = db
+    .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`)
+    .all(snapshotTime)
+  const pastMissedRows = db
+    .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+    .all(snapshotTime)
+  const riskByBranch = aggregateBranchRiskSplit(openLoansRows, pastMissedRows)
+
+  const effectiveSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
+  const branchData = []
+  for (const branch of activeBranches) {
+    const branchCode = String(branch.code ?? '').trim()
+    if (!branchCode) continue
+    if (effectiveSet && !effectiveSet.has(branchCode)) continue
+    const agg = riskByBranch.get(branchCode) || createRiskSplitTotals()
+    const atRisk = (agg.missed || 0) + (agg.arrears || 0) + (agg.pastMaturity || 0)
+    branchData.push({
+      code: branchCode,
+      name: branch.name || branchCode,
+      openLoans: Math.round(agg.openLoans || 0),
+      missed: Math.round(agg.missed || 0),
+      arrears: Math.round(agg.arrears || 0),
+      pastMaturity: Math.round(agg.pastMaturity || 0),
+      pastMissed: Math.round(atRisk),
+    })
+  }
+  return branchData
+}
+
+/** loan_id → branch_code for loans that were in Past_Missed at opening snapshot. */
+function loadOpeningParLoanBranchMap(snapshotTime) {
+  const map = new Map()
+  if (!snapshotTime) return map
+  const rows = db
+    .prepare('SELECT branch_code, loan_id FROM Past_Missed_repayment WHERE time = ?')
+    .all(snapshotTime)
+  for (const r of rows) {
+    const lid = String(r.loan_id ?? '').trim()
+    const code = String(r.branch_code ?? '').trim()
+    if (!lid || !code) continue
+    map.set(lid, code)
+  }
+  return map
+}
+
+app.get('/api/par/branches/month-end-compare', (req, res) => {
+  try {
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : ''
+
+    const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+    if (!latestPar?.time) {
+      return res.json({
+        previous: null,
+        current: null,
+        performance: null,
+        branches: [],
+      })
+    }
+
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ]
+    const nowParts = nairobiDateParts(new Date())
+    const prevMeta = previousMonthEnd23Nairobi(new Date())
+    const previousTime = findClosestParSnapshotTime(prevMeta.target, { preferOnOrBefore: true })
+    const currentTime = latestPar.time
+
+    const targetParPctRaw = req.query?.targetParPct != null ? Number(req.query.targetParPct) : NaN
+    const targetParPct = Number.isFinite(targetParPctRaw) && targetParPctRaw > 0
+      ? targetParPctRaw
+      : Number(process.env.LOGBOOK_TARGET_PAR_PCT) > 0
+        ? Number(process.env.LOGBOOK_TARGET_PAR_PCT)
+        : 8
+
+    const previousRows = previousTime
+      ? buildParBranchRowsForSnapshot(previousTime, { countryParam, effectiveBranches })
+      : []
+    const currentRows = buildParBranchRowsForSnapshot(currentTime, { countryParam, effectiveBranches })
+
+    const prevByCode = new Map(previousRows.map((b) => [b.code, b]))
+    const currByCode = new Map(currentRows.map((b) => [b.code, b]))
+    const codes = new Set([...prevByCode.keys(), ...currByCode.keys()])
+
+    // Active month MTD window (Africa/Nairobi calendar month → local Date bounds)
+    const monthStart = new Date(nowParts.year, nowParts.month - 1, 1)
+    const monthEnd = new Date(nowParts.year, nowParts.month - 1, nowParts.day, 23, 59, 59, 999)
+
+    let activeBranchesForResolver
+    if (countryParam) {
+      activeBranchesForResolver = listActiveLogbookBranchesForCountry(countryParam)
+    } else {
+      activeBranchesForResolver = db
+        .prepare('SELECT code, name, country FROM Logbook_Branches WHERE active = 1')
+        .all()
+    }
+    const resolver = buildLogbookBranchResolver(activeBranchesForResolver)
+
+    const disbursedByBranch = new Map()
+    const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+    for (const r of disbRows) {
+      const code = resolver.resolve(r.branch)
+      if (!codes.has(code)) continue
+      const d = parseLogbookDirectorDMY(r.disbursed_date)
+      if (!d || d < monthStart || d > monthEnd) continue
+      disbursedByBranch.set(code, (disbursedByBranch.get(code) || 0) + (Number(r.disbursed) || 0))
+    }
+
+    // Collections from loans that were in Opening PAR (attribute to opening PAR branch)
+    const openingParLoanBranch = loadOpeningParLoanBranchMap(previousTime)
+    const collectedFromParByBranch = new Map()
+    if (openingParLoanBranch.size) {
+      const colRows = db
+        .prepare(
+          `SELECT loan_id, repayment_amount, principal_repayment_amount, repayment_collected_date
+           FROM Logbook_collection
+           WHERE repayment_collected_date IS NOT NULL AND TRIM(repayment_collected_date) <> ''`,
+        )
+        .all()
+      for (const r of colRows) {
+        const lid = String(r.loan_id ?? '').trim()
+        if (!lid) continue
+        const branchCode = openingParLoanBranch.get(lid)
+        if (!branchCode || !codes.has(branchCode)) continue
+        const d = parseLogbookDirectorDMY(r.repayment_collected_date)
+        if (!d || d < monthStart || d > monthEnd) continue
+        const principal = Number(r.principal_repayment_amount)
+        const total = Number(r.repayment_amount)
+        const amt = Number.isFinite(principal) && principal > 0
+          ? principal
+          : Number.isFinite(total)
+            ? total
+            : 0
+        if (amt <= 0) continue
+        collectedFromParByBranch.set(
+          branchCode,
+          (collectedFromParByBranch.get(branchCode) || 0) + amt,
+        )
+      }
+    }
+
+    const parRate = (openLoans, pastMissed) =>
+      openLoans > 0 ? (pastMissed / openLoans) * 100 : 0
+
+    const branches = Array.from(codes)
+      .map((code) => {
+        const prev = prevByCode.get(code) || null
+        const curr = currByCode.get(code) || null
+        const name = curr?.name || prev?.name || code
+
+        const openingLoanbook = Number(prev?.openLoans) || 0
+        const openingPar = Number(prev?.pastMissed) || 0
+        const openingParPct = parRate(openingLoanbook, openingPar)
+
+        const targetParAmt = Math.round(openingLoanbook * (targetParPct / 100))
+        const requiredReduction = Math.max(0, Math.round(openingPar - targetParAmt))
+
+        const actualCollectedFromPar = Math.round(collectedFromParByBranch.get(code) || 0)
+        const disbursements = Math.round(disbursedByBranch.get(code) || 0)
+        const netCashflow = actualCollectedFromPar - disbursements
+        // Branch OPEX not stored in app DB yet
+        const branchOpex = null
+        const opexForCalc = 0
+        const netCashPosition = netCashflow - opexForCalc
+
+        const closingPar = Number(curr?.pastMissed) || 0
+        const closingLoanbook = Number(curr?.openLoans) || 0
+        const closingParPct = parRate(closingLoanbook, closingPar)
+        const netParMovement = closingPar - openingPar
+
+        return {
+          code,
+          name,
+          opening: {
+            loanbook: openingLoanbook,
+            par: openingPar,
+            parPct: Number(openingParPct.toFixed(2)),
+          },
+          target: {
+            parPct: targetParPct,
+            parAmt: targetParAmt,
+            requiredReduction,
+          },
+          actual: {
+            collectedFromPar: actualCollectedFromPar,
+            disbursements,
+            netCashflow,
+            branchOpex,
+            netCashPosition,
+            closingPar,
+            closingLoanbook,
+            closingParPct: Number(closingParPct.toFixed(2)),
+            netParMovement,
+          },
+          // Keep legacy shape for any older consumers
+          previous: {
+            openLoans: openingLoanbook,
+            pastMissed: openingPar,
+            missed: Number(prev?.missed) || 0,
+            arrears: Number(prev?.arrears) || 0,
+            pastMaturity: Number(prev?.pastMaturity) || 0,
+          },
+          current: {
+            openLoans: closingLoanbook,
+            pastMissed: closingPar,
+            missed: Number(curr?.missed) || 0,
+            arrears: Number(curr?.arrears) || 0,
+            pastMaturity: Number(curr?.pastMaturity) || 0,
+          },
+          deltaAtRisk: netParMovement,
+        }
+      })
+      .sort((a, b) => (Number(b.opening?.par) || 0) - (Number(a.opening?.par) || 0))
+
+    const formatNairobiStamp = (iso) => {
+      if (!iso) return null
+      try {
+        return new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Africa/Nairobi',
+          year: 'numeric',
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(new Date(iso))
+      } catch {
+        return String(iso)
+      }
+    }
+
+    const monthLabel = `${monthNames[prevMeta.month - 1]} ${prevMeta.year}`
+    const performanceMonthLabel = `${monthNames[nowParts.month - 1]} ${nowParts.year}`
+    const previousMeta = {
+      monthLabel,
+      label: monthLabel,
+      targetLabel: `${prevMeta.day} ${monthNames[prevMeta.month - 1]} ${prevMeta.year} · 23:00 EAT`,
+    }
+
+    res.json({
+      previous: previousTime
+        ? {
+            time: previousTime,
+            ...previousMeta,
+            asOfLabel: formatNairobiStamp(previousTime),
+          }
+        : {
+            time: null,
+            ...previousMeta,
+            asOfLabel: null,
+          },
+      current: {
+        time: currentTime,
+        label: 'Now',
+        asOfLabel: formatNairobiStamp(currentTime),
+      },
+      performance: {
+        monthLabel: performanceMonthLabel,
+        year: nowParts.year,
+        month: nowParts.month,
+        targetParPct,
+        opexAvailable: false,
+      },
+      branches,
+    })
+  } catch (e) {
+    console.error('[PAR month-end compare] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Daily PAR report: SOD (~03:00 EAT) vs EOD (~20:00 EAT) by branch,
+ * plus yesterday's EOD for net change.
+ * GET /api/reports/daily-par?date=YYYY-MM-DD&country=Kenya
+ */
+app.get('/api/reports/daily-par', requireAuth, (req, res) => {
+  try {
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : 'Kenya'
+
+    const dateStr = req.query && req.query.date != null ? String(req.query.date).trim() : ''
+    const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    let year
+    let month
+    let day
+    if (dateMatch) {
+      year = Number(dateMatch[1])
+      month = Number(dateMatch[2])
+      day = Number(dateMatch[3])
+    } else {
+      const parts = nairobiDateParts(new Date())
+      year = parts.year
+      month = parts.month
+      day = parts.day
+    }
+
+    const sodHour = req.query?.sodHour != null && Number.isFinite(Number(req.query.sodHour))
+      ? Number(req.query.sodHour)
+      : 3
+    const eodHour = req.query?.eodHour != null && Number.isFinite(Number(req.query.eodHour))
+      ? Number(req.query.eodHour)
+      : 20
+
+    const sodTarget = nairobiWallClockUtc(year, month, day, sodHour, 0)
+    const eodTarget = nairobiWallClockUtc(year, month, day, eodHour, 0)
+
+    // Yesterday calendar day
+    const yest = new Date(Date.UTC(year, month - 1, day))
+    yest.setUTCDate(yest.getUTCDate() - 1)
+    const yY = yest.getUTCFullYear()
+    const yM = yest.getUTCMonth() + 1
+    const yD = yest.getUTCDate()
+    const eodYestTarget = nairobiWallClockUtc(yY, yM, yD, eodHour, 0)
+
+    const sodTime = findClosestParSnapshotTimeNear(sodTarget, { maxAbsHours: 5 })
+    let eodTime = findClosestParSnapshotTimeNear(eodTarget, { maxAbsHours: 5 })
+    // If report date is today and EOD not yet available, fall back to latest snapshot today (after SOD)
+    if (!eodTime) {
+      const latest = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+      if (latest?.time) {
+        const latestMs = new Date(latest.time).getTime()
+        const sodMs = sodTarget.getTime()
+        const dayEndMs = nairobiWallClockUtc(year, month, day, 23, 59).getTime()
+        if (latestMs >= sodMs && latestMs <= dayEndMs + 3 * 60 * 60 * 1000) {
+          eodTime = latest.time
+        }
+      }
+    }
+    const eodYestTime = findClosestParSnapshotTimeNear(eodYestTarget, { maxAbsHours: 5 })
+
+    const opts = { countryParam, effectiveBranches }
+    const sodRows = sodTime ? buildParBranchRowsForSnapshot(sodTime, opts) : []
+    const eodRows = eodTime ? buildParBranchRowsForSnapshot(eodTime, opts) : []
+    const eodYestRows = eodYestTime ? buildParBranchRowsForSnapshot(eodYestTime, opts) : []
+
+    const sodBy = new Map(sodRows.map((b) => [b.code, b]))
+    const eodBy = new Map(eodRows.map((b) => [b.code, b]))
+    const yestBy = new Map(eodYestRows.map((b) => [b.code, b]))
+    const codes = new Set([...sodBy.keys(), ...eodBy.keys(), ...yestBy.keys()])
+
+    const rate = (open, par) => (open > 0 ? (par / open) * 100 : 0)
+    const shortName = (name) =>
+      String(name || '')
+        .replace(/\s+Branch$/i, '')
+        .replace(/^Boda\s*-\s*/i, '')
+        .trim()
+
+    const branches = Array.from(codes)
+      .map((code) => {
+        const sod = sodBy.get(code)
+        const eod = eodBy.get(code)
+        const yest = yestBy.get(code)
+        const name = shortName(eod?.name || sod?.name || yest?.name || code)
+
+        const sodOpen = Number(sod?.openLoans) || 0
+        const sodPar = Number(sod?.pastMissed) || 0
+        const eodOpen = Number(eod?.openLoans) || 0
+        const eodPar = Number(eod?.pastMissed) || 0
+        const yestOpen = Number(yest?.openLoans) || 0
+        const yestPar = Number(yest?.pastMissed) || 0
+
+        const sodPct = rate(sodOpen, sodPar)
+        const eodPct = rate(eodOpen, eodPar)
+        const yestPct = rate(yestOpen, yestPar)
+        const hasSod = !!sod && sodOpen > 0
+        const hasEod = !!eod && eodOpen > 0
+        const hasYest = !!yest && yestOpen > 0
+
+        return {
+          code,
+          name,
+          hasSod,
+          hasEod,
+          hasYest,
+          eodYesterday: { openLoans: yestOpen, par: yestPar, parPct: Number(yestPct.toFixed(2)) },
+          sod: { openLoans: sodOpen, par: sodPar, parPct: Number(sodPct.toFixed(2)) },
+          eod: { openLoans: eodOpen, par: eodPar, parPct: Number(eodPct.toFixed(2)) },
+          shiftSodToEod:
+            hasSod && hasEod
+              ? {
+                  parAmt: eodPar - sodPar,
+                  parPctPp: Number((eodPct - sodPct).toFixed(2)),
+                }
+              : null,
+          vsYesterdayEod:
+            hasYest && hasEod
+              ? {
+                  parAmt: eodPar - yestPar,
+                  parPctPp: Number((eodPct - yestPct).toFixed(2)),
+                }
+              : null,
+        }
+      })
+      .sort((a, b) => (Number(b.eod?.par) || 0) - (Number(a.eod?.par) || 0))
+
+    const sum = (rows, keyPath) =>
+      rows.reduce((acc, r) => {
+        const [a, b] = keyPath.split('.')
+        acc += Number(r[a]?.[b]) || 0
+        return acc
+      }, 0)
+
+    const overallYestPar = sum(branches, 'eodYesterday.par')
+    const overallYestOpen = sum(branches, 'eodYesterday.openLoans')
+    const overallSodPar = sum(branches, 'sod.par')
+    const overallSodOpen = sum(branches, 'sod.openLoans')
+    const overallEodPar = sum(branches, 'eod.par')
+    const overallEodOpen = sum(branches, 'eod.openLoans')
+
+    const overall = {
+      eodYesterday: {
+        openLoans: overallYestOpen,
+        par: overallYestPar,
+        parPct: Number(rate(overallYestOpen, overallYestPar).toFixed(2)),
+      },
+      sod: {
+        openLoans: overallSodOpen,
+        par: overallSodPar,
+        parPct: Number(rate(overallSodOpen, overallSodPar).toFixed(2)),
+      },
+      eod: {
+        openLoans: overallEodOpen,
+        par: overallEodPar,
+        parPct: Number(rate(overallEodOpen, overallEodPar).toFixed(2)),
+      },
+      netChangeVsYesterday: overallYestPar - overallEodPar, // positive = recovered
+      shiftSodToEod: overallEodPar - overallSodPar,
+    }
+
+    const fmtPct = (v) => `${(Number(v) || 0).toFixed(1)}%`
+    const fmtAmt = (v) => formatDailyParCompact(v)
+
+    // Narrative buckets with human-readable lines (email-style)
+    const used = new Set()
+
+    const topPerformers = branches
+      .filter((b) => b.hasSod && b.hasEod && (b.shiftSodToEod?.parPctPp || 0) <= -0.4)
+      .sort((a, b) => (a.shiftSodToEod.parPctPp || 0) - (b.shiftSodToEod.parPctPp || 0))
+      .slice(0, 5)
+      .map((b) => {
+        used.add(b.code)
+        let text = `${b.name}: ${fmtPct(b.sod.parPct)} → ${fmtPct(b.eod.parPct)} (SOD to EOD)`
+        if (b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) < -0.3) {
+          text += `, also improved on yesterday's close (${fmtPct(b.eodYesterday.parPct)} → ${fmtPct(b.eod.parPct)})`
+        } else if (b.vsYesterdayEod && Math.abs(b.vsYesterdayEod.parPctPp || 0) <= 0.3) {
+          text += `, back near yesterday's level`
+        }
+        const recoveredAmt = -(b.shiftSodToEod?.parAmt || 0)
+        if (recoveredAmt > 100_000) text += ` · ${fmtAmt(recoveredAmt)} off the book intraday`
+        return { code: b.code, name: b.name, text }
+      })
+
+    // Also credit strong recovery vs yesterday even if SOD→EOD flat
+    if (topPerformers.length < 5) {
+      const extras = branches
+        .filter(
+          (b) =>
+            !used.has(b.code) &&
+            b.hasYest &&
+            b.hasEod &&
+            (b.vsYesterdayEod?.parPctPp || 0) <= -0.8 &&
+            (b.vsYesterdayEod?.parAmt || 0) < -100_000,
+        )
+        .sort((a, b) => (a.vsYesterdayEod.parPctPp || 0) - (b.vsYesterdayEod.parPctPp || 0))
+        .slice(0, 5 - topPerformers.length)
+      for (const b of extras) {
+        used.add(b.code)
+        topPerformers.push({
+          code: b.code,
+          name: b.name,
+          text: `${b.name}: ${fmtPct(b.eodYesterday.parPct)} → ${fmtPct(b.eod.parPct)} vs yesterday's close (${fmtAmt(-(b.vsYesterdayEod.parAmt || 0))} recovered)`,
+        })
+      }
+    }
+
+    const holdingSteady = branches
+      .filter((b) => {
+        if (used.has(b.code) || !b.hasEod || (b.eod.parPct || 0) < 0.05) return false
+        const vsY = b.vsYesterdayEod ? Math.abs(b.vsYesterdayEod.parPctPp || 0) : null
+        const shift = b.shiftSodToEod ? Math.abs(b.shiftSodToEod.parPctPp || 0) : null
+        // Stable vs yesterday, and not swinging hard SOD→EOD when SOD exists
+        if (vsY == null) return false
+        if (vsY > 0.5) return false
+        if (shift != null && shift > 1.0) return false
+        return true
+      })
+      .slice(0, 5)
+      .map((b) => {
+        used.add(b.code)
+        let text = `${b.name}: ${fmtPct(b.eod.parPct)}`
+        if (b.hasYest && Math.abs(b.vsYesterdayEod?.parPctPp || 0) <= 0.2) {
+          text += `, back to yesterday's level (${fmtPct(b.eodYesterday.parPct)})`
+        } else if (b.hasYest) {
+          text += `, roughly stable vs yesterday (${fmtPct(b.eodYesterday.parPct)})`
+        } else {
+          text += `, holding steady`
+        }
+        return { code: b.code, name: b.name, text }
+      })
+
+    const watching = branches
+      .filter((b) => {
+        if (used.has(b.code) || !b.hasEod) return false
+        const worseVsY = b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) >= 0.4
+        const worseIntraday = b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4
+        return worseVsY || worseIntraday
+      })
+      .sort((a, b) => {
+        const aScore = Math.max(a.vsYesterdayEod?.parPctPp || 0, a.shiftSodToEod?.parPctPp || 0)
+        const bScore = Math.max(b.vsYesterdayEod?.parPctPp || 0, b.shiftSodToEod?.parPctPp || 0)
+        return bScore - aScore
+      })
+      .slice(0, 5)
+      .map((b) => {
+        used.add(b.code)
+        const parts = []
+        if (b.hasYest && b.vsYesterdayEod) {
+          parts.push(`${fmtPct(b.eodYesterday.parPct)} (yesterday) → ${fmtPct(b.eod.parPct)} (today)`)
+          if ((b.vsYesterdayEod.parPctPp || 0) >= 0.4) {
+            parts.push(`uptick of ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs close`)
+          } else {
+            parts.push('marginal move vs yesterday')
+          }
+        } else {
+          parts.push(`closing ${fmtPct(b.eod.parPct)}`)
+        }
+        if (b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4) {
+          parts.push(`SOD→EOD ${fmtPct(b.sod.parPct)} → ${fmtPct(b.eod.parPct)} (${(b.shiftSodToEod.parPctPp > 0 ? '+' : '')}${(b.shiftSodToEod.parPctPp || 0).toFixed(1)} pp)`)
+        }
+        return { code: b.code, name: b.name, text: `${b.name}: ${parts.join('; ')}` }
+      })
+
+    const clean = branches
+      .filter((b) => b.hasEod && (b.eod.parPct || 0) < 0.05)
+      .slice(0, 8)
+      .map((b) => {
+        used.add(b.code)
+        return { code: b.code, name: b.name, text: `${b.name}: ${fmtPct(b.eod.parPct)}` }
+      })
+
+    const recovered = overall.netChangeVsYesterday
+    const eodPctOverall = overall.eod.parPct
+    const yestPctOverall = overall.eodYesterday.parPct
+    let bottomLine = ''
+    if (recovered > 500_000) {
+      bottomLine = `Good recovery day — ${fmtAmt(recovered)} recovered vs yesterday's close (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}).`
+    } else if (recovered < -500_000) {
+      bottomLine = `PAR slipped by ${fmtAmt(Math.abs(recovered))} vs yesterday (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Tighten collections on the watching list.`
+    } else {
+      bottomLine = `Mixed/flat day overall (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Dig into branches still elevating after SOD.`
+    }
+    const priority = branches.find((b) => b.hasEod && (b.eod.parPct || 0) >= 15)
+    if (priority) {
+      bottomLine += ` ${priority.name} still tops the list at ${fmtPct(priority.eod.parPct)} / ${fmtAmt(priority.eod.par)} — remains priority number one.`
+    }
+    if (topPerformers.length && watching.length === 0) {
+      bottomLine += ' Momentum favours the improvers today.'
+    } else if (watching.length && topPerformers.length === 0) {
+      bottomLine += ' Watchlist pressure outweighs intraday wins.'
+    }
+
+    const formatNairobiStamp = (iso) => {
+      if (!iso) return null
+      try {
+        return new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Africa/Nairobi',
+          year: 'numeric',
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(new Date(iso))
+      } catch {
+        return String(iso)
+      }
+    }
+
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ]
+    const dateLabel = `${day} ${monthNames[month - 1]} ${year}`
+
+    res.json({
+      date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      dateLabel,
+      country: countryParam || null,
+      slots: {
+        sod: {
+          targetHour: sodHour,
+          label: `SOD (~${String(sodHour).padStart(2, '0')}:00 EAT)`,
+          time: sodTime,
+          asOfLabel: formatNairobiStamp(sodTime),
+        },
+        eod: {
+          targetHour: eodHour,
+          label: `EOD (~${String(eodHour).padStart(2, '0')}:00 EAT)`,
+          time: eodTime,
+          asOfLabel: formatNairobiStamp(eodTime),
+        },
+        eodYesterday: {
+          targetHour: eodHour,
+          label: `EOD Yesterday (~${String(eodHour).padStart(2, '0')}:00 EAT)`,
+          time: eodYestTime,
+          asOfLabel: formatNairobiStamp(eodYestTime),
+        },
+      },
+      overall,
+      branches,
+      narrative: {
+        topPerformers,
+        holdingSteady,
+        watching,
+        clean,
+        bottomLine,
+      },
+    })
+  } catch (e) {
+    console.error('[Daily PAR report] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+function formatDailyParCompact(v) {
+  const n = Number(v) || 0
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return `${Math.round(n)}`
+}
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
     const effectiveBranches = getEffectiveLogbookBranches(req)
@@ -10872,6 +11658,7 @@ app.get('/api/hr/sales-force', (req, res) => {
           logbook: { loans: 0, amount: 0 },
           boda: { loans: 0, amount: 0 },
           zidisha: { loans: 0, amount: 0 },
+          advans: { loans: 0, amount: 0 },
         },
         productBreakdown: {},
         matchedSalesNames: [],
@@ -10903,6 +11690,9 @@ app.get('/api/hr/sales-force', (req, res) => {
             TRIM(COALESCE([Branch Name], '')) AS branch,
             CASE
               WHEN LOWER(TRIM(COALESCE([Product Name], ''))) = 'zidisha boda' THEN 'boda'
+              WHEN LOWER(TRIM(COALESCE([Product Name], ''))) LIKE '%advans%'
+                OR LOWER(TRIM(COALESCE([Branch Name], ''))) = 'advans branch'
+              THEN 'advans'
               ELSE 'zidisha'
             END AS family,
             TRIM(COALESCE([Product Name], 'Zidisha')) AS product,
@@ -10910,8 +11700,12 @@ app.get('/api/hr/sales-force', (req, res) => {
             COALESCE(SUM(CAST([Principal Amount] AS REAL)), 0) AS amount
           FROM zidisha_data
           WHERE substr([Disbursed On Date], 1, 7) = ?
-            AND LOWER(TRIM(COALESCE([Product Name], ''))) LIKE 'zidisha%'
             AND TRIM(COALESCE([Loan Officer Name], '')) <> ''
+            AND (
+              LOWER(TRIM(COALESCE([Product Name], ''))) LIKE 'zidisha%'
+              OR LOWER(TRIM(COALESCE([Product Name], ''))) LIKE '%advans%'
+              OR LOWER(TRIM(COALESCE([Branch Name], ''))) = 'advans branch'
+            )
           GROUP BY person, branch, family, product
         `)
         .all(period),
@@ -10958,28 +11752,178 @@ app.get('/api/hr/sales-force', (req, res) => {
 
     const totals = cleanEmployees.reduce(
       (result, employee) => {
-        for (const family of ['logbook', 'boda', 'zidisha']) {
+        for (const family of ['logbook', 'boda', 'zidisha', 'advans']) {
           result[family].loans += employee.products[family].loans
           result[family].amount += employee.products[family].amount
+          if (employee.products[family].loans > 0) result[family].staff += 1
         }
         result.loans += employee.total.loans
         result.amount += employee.total.amount
+        if (employee.total.loans > 0) result.staffWithSales += 1
         return result
       },
       {
-        logbook: { loans: 0, amount: 0 },
-        boda: { loans: 0, amount: 0 },
-        zidisha: { loans: 0, amount: 0 },
+        logbook: { loans: 0, amount: 0, staff: 0 },
+        boda: { loans: 0, amount: 0, staff: 0 },
+        zidisha: { loans: 0, amount: 0, staff: 0 },
+        advans: { loans: 0, amount: 0, staff: 0 },
         loans: 0,
         amount: 0,
+        staffWithSales: 0,
       },
     )
+
+    const classifyTargetFamily = (branchName) => {
+      const branch = String(branchName || '')
+        .trim()
+        .toLowerCase()
+      if (branch.startsWith('boda')) return 'boda'
+      if (branch.includes('advans')) return 'advans'
+      return 'zidisha'
+    }
+
+    const branchKey = (name) =>
+      String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+
+    const ensureBranch = (map, name) => {
+      const key = branchKey(name)
+      if (!key) return null
+      if (!map.has(key)) {
+        map.set(key, {
+          branch: String(name || '').trim() || 'Unassigned',
+          actual: 0,
+          target: 0,
+        })
+      }
+      return map.get(key)
+    }
+
+    const familyBranches = {
+      boda: new Map(),
+      zidisha: new Map(),
+      advans: new Map(),
+      logbook: new Map(),
+    }
+
+    const logbookActualRows = db
+      .prepare(`
+        SELECT
+          COALESCE(NULLIF(TRIM(b.name), ''), NULLIF(TRIM(d.branch), ''), 'Unassigned') AS branch,
+          COALESCE(SUM(CAST(d.disbursed AS REAL)), 0) AS amount
+        FROM Logbook_Disbursement d
+        LEFT JOIN Logbook_Branches b
+          ON TRIM(CAST(b.code AS TEXT)) = TRIM(CAST(d.branch AS TEXT))
+        WHERE substr(d.disbursed_date, 4, 2) = ?
+          AND substr(d.disbursed_date, 7, 4) = ?
+        GROUP BY 1
+      `)
+      .all(monthText, String(year))
+
+    for (const row of logbookActualRows) {
+      const entry = ensureBranch(familyBranches.logbook, row.branch || 'Unassigned')
+      if (entry) entry.actual += Number(row.amount) || 0
+    }
+
+    const zidishaActualBranchRows = db
+      .prepare(`
+        SELECT
+          CASE
+            WHEN LOWER(TRIM(COALESCE([Product Name], ''))) = 'zidisha boda' THEN 'boda'
+            WHEN LOWER(TRIM(COALESCE([Product Name], ''))) LIKE '%advans%'
+              OR LOWER(TRIM(COALESCE([Branch Name], ''))) = 'advans branch'
+            THEN 'advans'
+            ELSE 'zidisha'
+          END AS family,
+          TRIM(COALESCE([Branch Name], 'Unassigned')) AS branch,
+          COALESCE(SUM(CAST([Principal Amount] AS REAL)), 0) AS amount
+        FROM zidisha_data
+        WHERE substr([Disbursed On Date], 1, 7) = ?
+          AND (
+            LOWER(TRIM(COALESCE([Product Name], ''))) LIKE 'zidisha%'
+            OR LOWER(TRIM(COALESCE([Product Name], ''))) LIKE '%advans%'
+            OR LOWER(TRIM(COALESCE([Branch Name], ''))) = 'advans branch'
+          )
+        GROUP BY family, branch
+      `)
+      .all(period)
+
+    for (const row of zidishaActualBranchRows) {
+      const map = familyBranches[row.family]
+      if (!map) continue
+      const entry = ensureBranch(map, row.branch || 'Unassigned')
+      if (entry) entry.actual += Number(row.amount) || 0
+    }
+
+    const logbookTargetRows = db
+      .prepare(`
+        SELECT branch, disbursement_target
+        FROM Logbook_Targets
+        WHERE month = ? AND year = ? AND active = 1
+      `)
+      .all(month, year)
+
+    for (const row of logbookTargetRows) {
+      const entry = ensureBranch(familyBranches.logbook, row.branch || 'Unassigned')
+      if (entry) entry.target += Number(row.disbursement_target) || 0
+    }
+
+    const zidishaTargetRows = db
+      .prepare(`
+        SELECT branch, disbursement_target
+        FROM Zidisha_Targets
+        WHERE month = ? AND year = ? AND active = 1
+      `)
+      .all(month, year)
+
+    for (const row of zidishaTargetRows) {
+      const family = classifyTargetFamily(row.branch)
+      const entry = ensureBranch(familyBranches[family], row.branch || 'Unassigned')
+      if (entry) entry.target += Number(row.disbursement_target) || 0
+    }
+
+    const buildRate = (family) => {
+      const branches = Array.from(familyBranches[family].values())
+        .filter((row) => row.actual > 0 || row.target > 0)
+        .map((row) => {
+          const actual = Math.round(row.actual)
+          const target = Math.round(row.target)
+          return {
+            branch: row.branch,
+            actual,
+            target,
+            rate: target > 0 ? (actual / target) * 100 : 0,
+            hasTarget: target > 0,
+          }
+        })
+        .sort((a, b) => b.actual - a.actual || a.branch.localeCompare(b.branch))
+
+      const actual = branches.reduce((sum, row) => sum + row.actual, 0)
+      const target = branches.reduce((sum, row) => sum + row.target, 0)
+      return {
+        actual,
+        target,
+        rate: target > 0 ? (actual / target) * 100 : 0,
+        hasTarget: target > 0,
+        branches,
+      }
+    }
+
+    const rates = {
+      boda: buildRate('boda'),
+      zidisha: buildRate('zidisha'),
+      advans: buildRate('advans'),
+      logbook: buildRate('logbook'),
+    }
 
     res.json({
       month,
       year,
       employees: cleanEmployees,
       totals,
+      rates,
       matching: {
         matchedLoans,
         totalLoans,
@@ -10989,6 +11933,431 @@ app.get('/api/hr/sales-force', (req, res) => {
     })
   } catch (e) {
     console.error('[HR Sales Force API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/hr/collections-par', (req, res) => {
+  try {
+    const now = new Date()
+    const month = Number.parseInt(req.query.month, 10) || now.getMonth() + 1
+    const year = Number.parseInt(req.query.year, 10) || now.getFullYear()
+    if (month < 1 || month > 12 || year < 2000 || year > 2100) {
+      return res.status(400).json({ error: 'A valid month and year are required' })
+    }
+
+    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
+    const daysInMonth = new Date(year, month, 0).getDate()
+    const cutoffDay = Math.min(
+      Number.parseInt(req.query.cutoffDay, 10) || (isCurrentMonth ? now.getDate() : daysInMonth),
+      daysInMonth,
+    )
+
+    const employees = db
+      .prepare(`
+        SELECT
+          id, employee_id, employee_number, full_name, first_name, middle_name,
+          last_name, job_title, department, region
+        FROM wingubox_employees
+        WHERE active IN ('1', 1)
+          AND (
+            LOWER(COALESCE(department, '')) LIKE '%collect%'
+            OR LOWER(COALESCE(job_title, '')) LIKE '%collect%'
+            OR LOWER(COALESCE(job_title, '')) LIKE '%relationship officer%'
+            OR LOWER(COALESCE(department, '')) LIKE '%bodacash collection%'
+          )
+        ORDER BY full_name COLLATE NOCASE
+      `)
+      .all()
+      .map((employee) => ({
+        ...employee,
+        _nameTokens: salesNameTokens(employee.full_name),
+        _branchKey: normalizeSalesBranch(employee.region),
+        products: {
+          logbook: { loans: 0, amount: 0, expected: 0 },
+          boda: { loans: 0, amount: 0, expected: 0 },
+          zidisha: { loans: 0, amount: 0, expected: 0 },
+          advans: { loans: 0, amount: 0, expected: 0 },
+        },
+        matchedOfficerNames: [],
+      }))
+
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+    const nextMonth = month === 12 ? 1 : month + 1
+    const nextYear = month === 12 ? year + 1 : year
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+    const maturity = zidishaExpectedMaturityExpr('z')
+
+    const collectionRows = []
+
+    // Logbook cash collections by RO (borrower_access_ids → LOs name)
+    const loById = new Map(
+      db
+        .prepare(`SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL`)
+        .all()
+        .map((row) => [String(row.borrower_access_id).trim(), String(row.name || '').trim()]),
+    )
+    const branchNameByCode = new Map(
+      db
+        .prepare(`SELECT code, name FROM Logbook_Branches`)
+        .all()
+        .map((row) => [String(row.code || '').trim(), String(row.name || '').trim()]),
+    )
+
+    const logbookCollectionRows = db
+      .prepare(`
+        SELECT
+          repayment_amount,
+          repayment_collected_date,
+          borrower_access_ids,
+          branch
+        FROM Logbook_collection
+        WHERE repayment_collected_date IS NOT NULL
+          AND TRIM(repayment_collected_date) <> ''
+          AND borrower_access_ids IS NOT NULL
+          AND TRIM(borrower_access_ids) <> ''
+      `)
+      .all()
+
+    const logbookAgg = new Map()
+    for (const row of logbookCollectionRows) {
+      const dateStr = String(row.repayment_collected_date || '').trim()
+      const parts = dateStr.split('/')
+      if (parts.length < 3) continue
+      const rowMonth = Number.parseInt(parts[1], 10)
+      const rowYear = Number.parseInt(parts[2], 10)
+      if (rowMonth !== month || rowYear !== year) continue
+
+      let borrowerIds = []
+      try {
+        const parsed = JSON.parse(row.borrower_access_ids)
+        if (Array.isArray(parsed)) borrowerIds = parsed.map((id) => String(id).trim()).filter(Boolean)
+        else if (parsed) borrowerIds = [String(parsed).trim()].filter(Boolean)
+      } catch {
+        const strId = String(row.borrower_access_ids || '').trim()
+        if (strId) borrowerIds = [strId]
+      }
+
+      const amount = Number(row.repayment_amount) || 0
+      const branchCode = String(row.branch || '').trim()
+      const branch = branchNameByCode.get(branchCode) || branchCode || 'Unassigned'
+
+      for (const borrowerId of borrowerIds) {
+        const person = loById.get(borrowerId)
+        if (!person) continue
+        const key = `${person}||${branch}`
+        if (!logbookAgg.has(key)) {
+          logbookAgg.set(key, { person, branch, family: 'logbook', loans: 0, amount: 0, expected: 0 })
+        }
+        const entry = logbookAgg.get(key)
+        entry.loans += 1
+        entry.amount += amount
+      }
+    }
+    collectionRows.push(...logbookAgg.values())
+
+    // Zidisha / Advans maturity-month collected by officer
+    const zidishaFlat = db
+      .prepare(
+        `SELECT
+           TRIM(z."Branch Name") AS branch,
+           TRIM(COALESCE(z."Loan Officer Name", 'Unknown')) AS officer,
+           CASE
+             WHEN LOWER(TRIM(COALESCE(z."Product Name", ''))) LIKE '%advans%'
+               OR LOWER(TRIM(COALESCE(z."Branch Name", ''))) = 'advans branch'
+             THEN 'advans'
+             ELSE 'zidisha'
+           END AS family,
+           COALESCE(CAST(z."Total Expected Repayment Derived" AS REAL), 0) AS expected,
+           COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0) AS collected
+         FROM zidisha_data z
+         WHERE ${maturity} >= date(?)
+           AND ${maturity} < date(?)
+           AND CAST(strftime('%d', ${maturity}) AS INTEGER) <= ?
+           AND (
+             LOWER(TRIM(COALESCE(z."Product Name", ''))) LIKE 'zidisha%'
+             OR LOWER(TRIM(COALESCE(z."Product Name", ''))) LIKE '%advans%'
+             OR LOWER(TRIM(COALESCE(z."Branch Name", ''))) = 'advans branch'
+           )
+           AND LOWER(TRIM(COALESCE(z."Product Name", ''))) <> 'zidisha boda'`,
+      )
+      .all(monthStart, monthEnd, cutoffDay)
+
+    const zidishaAgg = new Map()
+    for (const row of zidishaFlat) {
+      const person = String(row.officer || '').trim()
+      const branch = String(row.branch || '').trim() || 'Unassigned'
+      const family = row.family === 'advans' ? 'advans' : 'zidisha'
+      if (!person || person.toLowerCase() === 'unknown') continue
+      const key = `${family}||${person}||${branch}`
+      if (!zidishaAgg.has(key)) {
+        zidishaAgg.set(key, { person, branch, family, loans: 0, amount: 0, expected: 0 })
+      }
+      const entry = zidishaAgg.get(key)
+      entry.loans += 1
+      entry.amount += Number(row.collected) || 0
+      entry.expected += Number(row.expected) || 0
+    }
+    collectionRows.push(...zidishaAgg.values())
+
+    // Boda schedule due-month collected by officer
+    const bodaFlat = db
+      .prepare(
+        `SELECT
+           TRIM(s."Branch Name") AS branch,
+           TRIM(COALESCE(z."Loan Officer Name", 'Unknown')) AS officer,
+           COALESCE(CAST(REPLACE(s."Total Expected", ',', '') AS REAL), 0) AS expected,
+           COALESCE(CAST(REPLACE(s."Total Outstanding", ',', '') AS REAL), 0) AS outstanding
+         FROM boda_Schedule s
+         LEFT JOIN zidisha_data z
+           ON TRIM(s."Loan Id") = TRIM(z."Loan ID")
+         WHERE s."Due Date" >= ?
+           AND s."Due Date" < ?
+           AND COALESCE(TRIM(s."Product Name"), '') COLLATE NOCASE = 'Zidisha Boda'
+           AND CAST(strftime('%d', s."Due Date") AS INTEGER) <= ?`,
+      )
+      .all(monthStart, monthEnd, cutoffDay)
+
+    const bodaAgg = new Map()
+    for (const row of bodaFlat) {
+      const person = String(row.officer || '').trim()
+      const branch = String(row.branch || '').trim() || 'Unassigned'
+      if (!person || person.toLowerCase() === 'unknown') continue
+      const expected = Number(row.expected) || 0
+      const collected = Math.max(0, expected - (Number(row.outstanding) || 0))
+      const key = `${person}||${branch}`
+      if (!bodaAgg.has(key)) {
+        bodaAgg.set(key, { person, branch, family: 'boda', loans: 0, amount: 0, expected: 0 })
+      }
+      const entry = bodaAgg.get(key)
+      entry.loans += 1
+      entry.amount += collected
+      entry.expected += expected
+    }
+    collectionRows.push(...bodaAgg.values())
+
+    // Logbook RO targets as expected/target by officer name
+    try {
+      const roTargets = db
+        .prepare(`SELECT loan_officer_name, sum_of_target FROM RO_Targets WHERE month = ? AND year = ?`)
+        .all(month, year)
+      for (const row of roTargets) {
+        const person = String(row.loan_officer_name || '').trim()
+        if (!person) continue
+        const target = Number(row.sum_of_target) || 0
+        if (target <= 0) continue
+        const employee = matchSalesEmployee(person, '', employees)
+        if (employee) employee.products.logbook.expected += target
+      }
+    } catch (e) {
+      console.error('[HR Collections PAR] RO_Targets:', e.message)
+    }
+
+    const unmatched = []
+    let matchedRows = 0
+    let totalRows = 0
+    for (const row of collectionRows) {
+      const loans = Number(row.loans) || 0
+      const amount = Number(row.amount) || 0
+      const expected = Number(row.expected) || 0
+      totalRows += loans
+      const employee = matchSalesEmployee(row.person, row.branch, employees)
+      if (!employee) {
+        unmatched.push({
+          name: row.person,
+          branch: row.branch,
+          family: row.family,
+          loans,
+          amount,
+          expected,
+        })
+        continue
+      }
+      matchedRows += loans
+      employee.products[row.family].loans += loans
+      employee.products[row.family].amount += amount
+      employee.products[row.family].expected += expected
+      if (!employee.matchedOfficerNames.includes(row.person)) {
+        employee.matchedOfficerNames.push(row.person)
+      }
+    }
+
+    const cleanEmployees = employees
+      .map(({ _nameTokens, _branchKey, ...employee }) => {
+        const total = Object.values(employee.products).reduce(
+          (sum, product) => ({
+            loans: sum.loans + product.loans,
+            amount: sum.amount + product.amount,
+            expected: sum.expected + product.expected,
+          }),
+          { loans: 0, amount: 0, expected: 0 },
+        )
+        return { ...employee, total }
+      })
+      .sort((left, right) => right.total.amount - left.total.amount || left.full_name.localeCompare(right.full_name))
+
+    const totals = cleanEmployees.reduce(
+      (result, employee) => {
+        for (const family of ['logbook', 'boda', 'zidisha', 'advans']) {
+          result[family].loans += employee.products[family].loans
+          result[family].amount += employee.products[family].amount
+          result[family].expected += employee.products[family].expected
+          if (employee.products[family].loans > 0 || employee.products[family].amount > 0) {
+            result[family].staff += 1
+          }
+        }
+        result.loans += employee.total.loans
+        result.amount += employee.total.amount
+        result.expected += employee.total.expected
+        if (employee.total.loans > 0 || employee.total.amount > 0) result.staffWithCollections += 1
+        return result
+      },
+      {
+        logbook: { loans: 0, amount: 0, expected: 0, staff: 0 },
+        boda: { loans: 0, amount: 0, expected: 0, staff: 0 },
+        zidisha: { loans: 0, amount: 0, expected: 0, staff: 0 },
+        advans: { loans: 0, amount: 0, expected: 0, staff: 0 },
+        loans: 0,
+        amount: 0,
+        expected: 0,
+        staffWithCollections: 0,
+      },
+    )
+
+    const classifyTargetFamily = (branchName) => {
+      const branch = String(branchName || '')
+        .trim()
+        .toLowerCase()
+      if (branch.startsWith('boda')) return 'boda'
+      if (branch.includes('advans')) return 'advans'
+      return 'zidisha'
+    }
+
+    const branchKey = (name) =>
+      String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+
+    const ensureBranch = (map, name) => {
+      const key = branchKey(name)
+      if (!key) return null
+      if (!map.has(key)) {
+        map.set(key, {
+          branch: String(name || '').trim() || 'Unassigned',
+          actual: 0,
+          target: 0,
+          expected: 0,
+        })
+      }
+      return map.get(key)
+    }
+
+    const familyBranches = {
+      boda: new Map(),
+      zidisha: new Map(),
+      advans: new Map(),
+      logbook: new Map(),
+    }
+
+    for (const row of collectionRows) {
+      const map = familyBranches[row.family]
+      if (!map) continue
+      const entry = ensureBranch(map, row.branch || 'Unassigned')
+      if (!entry) continue
+      entry.actual += Number(row.amount) || 0
+      entry.expected += Number(row.expected) || 0
+    }
+
+    for (const row of db
+      .prepare(`
+        SELECT branch, collection_target
+        FROM Logbook_Targets
+        WHERE month = ? AND year = ? AND active = 1
+      `)
+      .all(month, year)) {
+      const entry = ensureBranch(familyBranches.logbook, row.branch || 'Unassigned')
+      if (entry) entry.target += Number(row.collection_target) || 0
+    }
+
+    for (const row of db
+      .prepare(`
+        SELECT branch, collection_target
+        FROM Zidisha_Targets
+        WHERE month = ? AND year = ? AND active = 1
+      `)
+      .all(month, year)) {
+      const family = classifyTargetFamily(row.branch)
+      const entry = ensureBranch(familyBranches[family], row.branch || 'Unassigned')
+      if (entry) entry.target += Number(row.collection_target) || 0
+    }
+
+    // When explicit collection targets are blank, fall back to schedule expected.
+    for (const family of Object.keys(familyBranches)) {
+      for (const entry of familyBranches[family].values()) {
+        if (entry.target <= 0 && entry.expected > 0) entry.target = entry.expected
+      }
+    }
+
+    // Logbook RO portfolio targets as product-level target if branch targets empty
+    if (
+      Array.from(familyBranches.logbook.values()).every((row) => row.target <= 0) &&
+      totals.logbook.expected > 0
+    ) {
+      const entry = ensureBranch(familyBranches.logbook, 'RO Targets')
+      if (entry) entry.target = totals.logbook.expected
+    }
+
+    const buildRate = (family) => {
+      const branches = Array.from(familyBranches[family].values())
+        .filter((row) => row.actual > 0 || row.target > 0)
+        .map((row) => {
+          const actual = Math.round(row.actual)
+          const target = Math.round(row.target)
+          return {
+            branch: row.branch,
+            actual,
+            target,
+            rate: target > 0 ? (actual / target) * 100 : 0,
+            hasTarget: target > 0,
+          }
+        })
+        .sort((a, b) => b.actual - a.actual || a.branch.localeCompare(b.branch))
+
+      const actual = branches.reduce((sum, row) => sum + row.actual, 0)
+      const target = branches.reduce((sum, row) => sum + row.target, 0)
+      return {
+        actual,
+        target,
+        rate: target > 0 ? (actual / target) * 100 : 0,
+        hasTarget: target > 0,
+        branches,
+      }
+    }
+
+    const rates = {
+      boda: buildRate('boda'),
+      zidisha: buildRate('zidisha'),
+      advans: buildRate('advans'),
+      logbook: buildRate('logbook'),
+    }
+
+    res.json({
+      month,
+      year,
+      cutoffDay,
+      employees: cleanEmployees,
+      totals,
+      rates,
+      matching: {
+        matchedLoans: matchedRows,
+        totalLoans: totalRows,
+        matchRate: totalRows ? (matchedRows / totalRows) * 100 : 0,
+        unmatched,
+      },
+    })
+  } catch (e) {
+    console.error('[HR Collections PAR API] Error:', e)
     res.status(500).json({ error: e.message })
   }
 })

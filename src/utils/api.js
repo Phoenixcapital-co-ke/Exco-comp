@@ -66,6 +66,7 @@ export const API_URLS = {
     bodaTopupQualifiers: `${API_BASE}/api/reports/boda-topup-qualifiers`,
     director: `${API_BASE}/api/reports/director`,
     directorDocx: `${API_BASE}/api/reports/director/docx`,
+    dailyPar: `${API_BASE}/api/reports/daily-par`,
   },
   credit: {
     clientPerformance: (product) => `${API_BASE}/api/credit/client-performance?product=${encodeURIComponent(product || '')}`,
@@ -76,6 +77,7 @@ export const API_URLS = {
     fetchOpen: `${API_BASE}/api/par/open`,
     fetchSnapshot: `${API_BASE}/api/par/snapshot`,
     branches: `${API_BASE}/api/par/branches`,
+    branchesMonthEndCompare: `${API_BASE}/api/par/branches/month-end-compare`,
     progress: `${API_BASE}/api/par/progress`,
     borrowerAccess: `${API_BASE}/api/par/borrower-access`,
     lastRun: `${API_BASE}/api/par/last-run`,
@@ -156,6 +158,7 @@ export const API_URLS = {
   hr: {
     employees: `${API_BASE}/api/hr/employees`,
     salesForce: (month, year) => `${API_BASE}/api/hr/sales-force?month=${month}&year=${year}`,
+    collectionsPar: (month, year) => `${API_BASE}/api/hr/collections-par?month=${month}&year=${year}`,
   },
 }
 
