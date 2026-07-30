@@ -1486,7 +1486,7 @@ function BodaCollection() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100 flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Client Performance</h3>
             <p className="text-xs text-gray-500 mt-0.5">Clients who made a payment today</p>
           </div>
           <div className="flex items-center gap-2">

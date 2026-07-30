@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { TrendingUp, Clock, CheckCircle, AlertCircle, DollarSign, Users } from 'lucide-react'
+import { TrendingUp, Clock, CheckCircle, AlertCircle, DollarSign, Users, ChevronDown, ChevronRight, User, FileText } from 'lucide-react'
 import { 
   BarChart, 
   Bar, 
@@ -21,6 +21,21 @@ import LogbookDataProcessor from '../../utils/LogbookDataProcessor.js'
 import { useLogbookCurrency } from '../../context/LogbookCurrencyContext.jsx'
 import { API_URLS } from '../../utils/api.js'
 
+function parseBorrowerAccessIds(raw) {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.map((id) => String(id).trim()).filter(Boolean)
+    }
+    if (parsed) return [String(parsed).trim()].filter(Boolean)
+  } catch {
+    const str = String(raw).trim()
+    if (str) return [str]
+  }
+  return []
+}
+
 function LogbookCollection({ country }) {
   const { formatMoney } = useLogbookCurrency()
   const [data, setData] = useState(null)
@@ -31,6 +46,19 @@ function LogbookCollection({ country }) {
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
   const [selectedDay, setSelectedDay] = useState(nowInit.getDate())
   const [targets, setTargets] = useState([])
+  const [officerPerfData, setOfficerPerfData] = useState([])
+  const [parOfficerData, setParOfficerData] = useState([])
+  const [loanOfficers, setLoanOfficers] = useState([])
+  const [expandedMonthlyBranch, setExpandedMonthlyBranch] = useState(null)
+  const [expandedDailyBranch, setExpandedDailyBranch] = useState(null)
+  const [dailyOpenLoansBranches, setDailyOpenLoansBranches] = useState([])
+  const [dailyOpenLoansMeta, setDailyOpenLoansMeta] = useState({
+    snapshotTime: null,
+    date: null,
+    scanned: 0,
+    matched: 0,
+  })
+  const [dailyOpenLoansLoading, setDailyOpenLoansLoading] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -66,6 +94,141 @@ function LogbookCollection({ country }) {
     }
     loadTargets()
   }, [country])
+
+  useEffect(() => {
+    if (loading) return
+    const loadOfficerData = async () => {
+      try {
+        const basePerf = API_URLS.logbook.collectorPerformance(selectedMonth, selectedYear)
+        const perfUrl = country ? `${basePerf}&country=${encodeURIComponent(country)}` : basePerf
+        const parBase = API_URLS.par.borrowerAccess
+        const parUrl = country ? `${parBase}?country=${encodeURIComponent(country)}` : parBase
+        const [perfRes, parRes, loRes] = await Promise.all([
+          fetch(perfUrl, { credentials: 'include' }),
+          fetch(parUrl, { credentials: 'include' }),
+          fetch(API_URLS.loanOfficers.list, { credentials: 'include' }),
+        ])
+        if (perfRes.ok) {
+          const perf = await perfRes.json()
+          setOfficerPerfData(Array.isArray(perf) ? perf : [])
+        } else {
+          setOfficerPerfData([])
+        }
+        if (parRes.ok) {
+          const par = await parRes.json()
+          setParOfficerData(Array.isArray(par) ? par : [])
+        } else {
+          setParOfficerData([])
+        }
+        if (loRes.ok) {
+          const lo = await loRes.json()
+          setLoanOfficers(Array.isArray(lo) ? lo : [])
+        } else {
+          setLoanOfficers([])
+        }
+      } catch (e) {
+        console.error('Failed to load officer collection breakdown', e)
+        setOfficerPerfData([])
+        setParOfficerData([])
+        setLoanOfficers([])
+      }
+    }
+    loadOfficerData()
+  }, [loading, selectedMonth, selectedYear, country])
+
+  useEffect(() => {
+    setExpandedMonthlyBranch(null)
+  }, [selectedMonth, selectedYear])
+
+  useEffect(() => {
+    setExpandedDailyBranch(null)
+  }, [selectedMonth, selectedYear, selectedDay])
+
+  useEffect(() => {
+    if (loading) return
+    const loadDailyOpenLoans = async () => {
+      setDailyOpenLoansLoading(true)
+      try {
+        const base = API_URLS.logbook.dailyOpenLoans(selectedMonth, selectedYear, selectedDay)
+        const url = country ? `${base}&country=${encodeURIComponent(country)}` : base
+        const res = await fetch(url, { credentials: 'include' })
+        if (!res.ok) {
+          setDailyOpenLoansBranches([])
+          setDailyOpenLoansMeta({ snapshotTime: null, date: null, scanned: 0, matched: 0 })
+          return
+        }
+        const data = await res.json()
+        setDailyOpenLoansBranches(Array.isArray(data.branches) ? data.branches : [])
+        setDailyOpenLoansMeta({
+          snapshotTime: data.snapshotTime || null,
+          date: data.date || null,
+          scanned: Number(data.meta?.scanned) || 0,
+          matched: Number(data.meta?.matched) || 0,
+        })
+      } catch (e) {
+        console.error('Failed to load daily open loans', e)
+        setDailyOpenLoansBranches([])
+        setDailyOpenLoansMeta({ snapshotTime: null, date: null, scanned: 0, matched: 0 })
+      } finally {
+        setDailyOpenLoansLoading(false)
+      }
+    }
+    loadDailyOpenLoans()
+  }, [loading, selectedMonth, selectedYear, selectedDay, country])
+
+  const mergeDailyOpenLoansBranch = (branchPayload) => {
+    if (!branchPayload?.code) return
+    setDailyOpenLoansBranches((prev) => {
+      const code = String(branchPayload.code).trim()
+      const next = [...prev]
+      const idx = next.findIndex((b) => String(b.code).trim() === code)
+      if (idx >= 0) next[idx] = { ...next[idx], ...branchPayload }
+      else next.push(branchPayload)
+      return next
+    })
+  }
+
+  const loadDailyOpenLoansForBranch = async (branchCode) => {
+    const code = String(branchCode || '').trim()
+    if (!code) return
+    try {
+      const base = API_URLS.logbook.dailyOpenLoans(selectedMonth, selectedYear, selectedDay, code)
+      const url = country ? `${base}&country=${encodeURIComponent(country)}` : base
+      const res = await fetch(url, { credentials: 'include' })
+      if (!res.ok) return
+      const data = await res.json()
+      const branch = (data.branches || []).find((b) => String(b.code).trim() === code)
+      if (branch) mergeDailyOpenLoansBranch(branch)
+      if (data.meta) {
+        setDailyOpenLoansMeta((prev) => ({
+          ...prev,
+          scanned: Number(data.meta.scanned) || prev.scanned,
+          matched: Number(data.meta.matched) || prev.matched,
+        }))
+      }
+    } catch (e) {
+      console.error('Failed to load branch open loans', e)
+    }
+  }
+
+  const handleToggleDailyBranch = async (row) => {
+    const rowKey = String(row.branchCode || row.name)
+    if (expandedDailyBranch === rowKey) {
+      setExpandedDailyBranch(null)
+      return
+    }
+    setExpandedDailyBranch(rowKey)
+    const code = String(row.branchCode || '').trim()
+    if (code) {
+      const existing = dailyOpenLoansBranches.find((b) => String(b.code).trim() === code)
+      const existingLoans = Array.isArray(existing?.loans) ? existing.loans : []
+      if (!existingLoans.length) {
+        setDailyOpenLoansLoading(true)
+        await loadDailyOpenLoansForBranch(code)
+        setDailyOpenLoansLoading(false)
+      }
+    }
+  }
 
   // Listen to global month/year changes from header
   useEffect(() => {
@@ -521,6 +684,18 @@ function LogbookCollection({ country }) {
         .replace(/\s*branch\s*$/i, '')
         .toLowerCase()
 
+    const branchCodeByKey = new Map()
+    if (Array.isArray(proc.branchesData)) {
+      for (const branchRow of proc.branchesData) {
+        const code = String(branchRow.code ?? '').trim()
+        if (!code) continue
+        const displayName = proc.getBranchName ? proc.getBranchName(code) : code
+        branchCodeByKey.set(normalizeBranch(displayName), code)
+        branchCodeByKey.set(normalizeBranch(branchRow.name), code)
+        branchCodeByKey.set(normalizeBranch(code), code)
+      }
+    }
+
     const targetMap = new Map()
     targets
       .filter((target) =>
@@ -531,18 +706,50 @@ function LogbookCollection({ country }) {
       .forEach((target) => {
         const key = normalizeBranch(target.branch)
         if (!key) return
+        const rawBranch = String(target.branch || '').trim()
         targetMap.set(key, {
-          name: String(target.branch || '').replace(/\s*branch\s*$/i, '').trim(),
+          name: rawBranch.replace(/\s*branch\s*$/i, '').trim(),
+          branchCode: branchCodeByKey.get(key) || (/^\d+$/.test(rawBranch) ? rawBranch : ''),
           target: Number(target.collectionTarget) || 0,
           workingDays: Number(target.workingDays) || 0,
           holidays: Array.isArray(target.holidays) ? target.holidays : [],
         })
       })
 
+    const officerIdToBranches = new Map()
+    for (const entry of parOfficerData) {
+      const id = String(entry.officerId ?? '').trim()
+      if (!id) continue
+      officerIdToBranches.set(id, Array.isArray(entry.branches) ? entry.branches : [])
+    }
+
+    const officerPerfById = new Map()
+    for (const row of officerPerfData) {
+      const id = String(row.borrower_access_id ?? '').trim()
+      if (!id) continue
+      officerPerfById.set(id, row)
+    }
+
+    const loanOfficerNameByCode = new Map()
+    for (const officer of loanOfficers) {
+      const code = String(officer.borrowerAccessId ?? '').trim()
+      if (!code) continue
+      loanOfficerNameByCode.set(code, String(officer.name || code).trim() || code)
+    }
+
     const actualMap = new Map()
-    const ensureActual = (key, name) => {
+    const officerCollectedByBranchKey = new Map()
+    const ensureActual = (key, name, branchCode) => {
       if (!actualMap.has(key)) {
-        actualMap.set(key, { name, monthCollected: 0, mtdCollected: 0, dailyCollected: 0 })
+        actualMap.set(key, {
+          name,
+          branchCode: branchCode || '',
+          monthCollected: 0,
+          mtdCollected: 0,
+          dailyCollected: 0,
+        })
+      } else if (branchCode && !actualMap.get(key).branchCode) {
+        actualMap.get(key).branchCode = branchCode
       }
       return actualMap.get(key)
     }
@@ -550,16 +757,29 @@ function LogbookCollection({ country }) {
     for (const repayment of proc.repaymentsData) {
       const date = proc.parseDMY(repayment.repayment_collected_date)
       if (!date || date.getFullYear() !== y || date.getMonth() + 1 !== m) continue
-      const code = repayment.branch || repayment.Branch
+      const code = String(repayment.branch || repayment.Branch || '').trim()
       if (!code) continue
       const name = proc.getBranchName ? proc.getBranchName(code) : String(code)
       const key = normalizeBranch(name)
       if (!key) continue
-      const row = ensureActual(key, name)
+      const row = ensureActual(key, name, code)
       const amount = Number(repayment.repayment_amount) || 0
       row.monthCollected += amount
       if (date.getDate() <= cutoffDay) row.mtdCollected += amount
       if (date.getDate() === day) row.dailyCollected += amount
+
+      const borrowerIds = parseBorrowerAccessIds(repayment.borrower_access_ids)
+      if (borrowerIds.length) {
+        if (!officerCollectedByBranchKey.has(key)) {
+          officerCollectedByBranchKey.set(key, new Map())
+        }
+        const officerMap = officerCollectedByBranchKey.get(key)
+        for (const officerId of borrowerIds) {
+          const branches = officerIdToBranches.get(officerId) || []
+          if (!branches.includes(code)) continue
+          officerMap.set(officerId, (officerMap.get(officerId) || 0) + amount)
+        }
+      }
     }
 
     const targetForDay = (targetInfo, targetDay) => {
@@ -582,11 +802,43 @@ function LogbookCollection({ country }) {
       return expected
     }
 
+    const buildOfficersForBranch = (branchKey, branchCode) => {
+      const officerIds = new Set()
+      if (branchCode) {
+        for (const [officerId, branches] of officerIdToBranches.entries()) {
+          if (branches.includes(branchCode)) officerIds.add(officerId)
+        }
+      }
+      const collectedMap = officerCollectedByBranchKey.get(branchKey)
+      if (collectedMap) {
+        for (const officerId of collectedMap.keys()) officerIds.add(officerId)
+      }
+
+      return Array.from(officerIds)
+        .map((officerId) => {
+          const perf = officerPerfById.get(officerId)
+          const collected = collectedMap?.get(officerId) || 0
+          const expected = Number(perf?.target) || 0
+          const name = loanOfficerNameByCode.get(officerId) || perf?.name || officerId
+          return {
+            id: officerId,
+            name,
+            expected,
+            collected,
+            rate: expected > 0 ? (collected / expected) * 100 : null,
+          }
+        })
+        .filter((officer) => officer.expected > 0 || officer.collected > 0)
+        .sort((a, b) => b.collected - a.collected)
+    }
+
     const keys = new Set([...targetMap.keys(), ...actualMap.keys()])
     const rows = Array.from(keys, (key) => {
       const targetInfo = targetMap.get(key)
       const actual = actualMap.get(key)
       const name = actual?.name || targetInfo?.name || key
+      const branchCode =
+        branchCodeByKey.get(key) || actual?.branchCode || targetInfo?.branchCode || ''
       const expected = targetInfo?.target || 0
       const collected = actual?.monthCollected || 0
       const mtdExpected = mtdTarget(targetInfo)
@@ -595,6 +847,7 @@ function LogbookCollection({ country }) {
       const dailyCollected = actual?.dailyCollected || 0
       return {
         name,
+        branchCode,
         expected,
         collected,
         rate: expected > 0 ? (collected / expected) * 100 : null,
@@ -605,6 +858,7 @@ function LogbookCollection({ country }) {
         dailyExpected,
         dailyCollected,
         dailyRate: dailyExpected > 0 ? (dailyCollected / dailyExpected) * 100 : null,
+        officers: buildOfficersForBranch(key, branchCode),
       }
     })
 
@@ -617,6 +871,56 @@ function LogbookCollection({ country }) {
       cutoffDay,
       selectedDay: day,
     }
+  })()
+
+  const normalizeBranchKey = (value) =>
+    String(value || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/\s*branch\s*$/i, '')
+      .toLowerCase()
+
+  const dailyOpenLoansByCode = (() => {
+    const map = new Map()
+    for (const branch of dailyOpenLoansBranches) {
+      const code = String(branch.code ?? '').trim()
+      if (code) map.set(code, branch.loans || [])
+    }
+    return map
+  })()
+
+  const getDailyLoansForRow = (row) => {
+    const code = String(row.branchCode || '').trim()
+    if (code && dailyOpenLoansByCode.has(code)) {
+      return dailyOpenLoansByCode.get(code) || []
+    }
+    const normName = normalizeBranchKey(row.name)
+    for (const branch of dailyOpenLoansBranches) {
+      if (normalizeBranchKey(branch.name) === normName) {
+        return branch.loans || []
+      }
+    }
+    return []
+  }
+
+  const dailyBranchRowsMerged = (() => {
+    const map = new Map()
+    for (const row of branchCollectionTables.daily) {
+      if (row.branchCode) map.set(row.branchCode, row)
+    }
+    for (const branch of dailyOpenLoansBranches) {
+      const code = String(branch.code ?? '').trim()
+      if (!code || map.has(code)) continue
+      const name = String(branch.name || code).replace(/\s*branch\s*$/i, '').trim()
+      map.set(code, {
+        name,
+        branchCode: code,
+        dailyExpected: 0,
+        dailyCollected: Number(branch.collected) || 0,
+        dailyRate: null,
+      })
+    }
+    return Array.from(map.values())
   })()
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
@@ -897,12 +1201,15 @@ function LogbookCollection({ country }) {
             <h3 className="text-lg font-semibold text-gray-900">
               Expected vs Collected by Branch (Selected Month)
             </h3>
-            <p className="text-xs text-gray-500">Expected uses each branch’s configured monthly collection target.</p>
+            <p className="text-xs text-gray-500">
+              Expected uses each branch’s configured monthly collection target. Click a branch to see loan officers (expected from RO targets).
+            </p>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-2 py-2 text-left font-medium text-gray-600 w-8" />
                   <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
@@ -911,20 +1218,91 @@ function LogbookCollection({ country }) {
               </thead>
               <tbody className="bg-white divide-y divide-gray-100">
                 {branchCollectionTables.monthly.map((row) => (
-                  <tr key={row.name} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.expected)}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.collected)}</td>
-                    <td className={`px-3 py-2 text-right font-semibold ${
-                      row.rate == null ? 'text-gray-500' : row.rate >= 100 ? 'text-green-600' : 'text-orange-600'
-                    }`}>
-                      {row.rate == null ? '—' : `${row.rate.toFixed(1)}%`}
-                    </td>
-                  </tr>
+                  <React.Fragment key={row.name}>
+                    <tr
+                      className={`transition-colors ${
+                        expandedMonthlyBranch === row.name ? 'bg-indigo-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <td className="px-2 py-2">
+                        {row.officers.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedMonthlyBranch(
+                                expandedMonthlyBranch === row.name ? null : row.name,
+                              )
+                            }
+                            className="p-1 rounded hover:bg-indigo-100 text-gray-500 hover:text-indigo-600"
+                            aria-label={expandedMonthlyBranch === row.name ? 'Collapse' : 'Expand'}
+                          >
+                            {expandedMonthlyBranch === row.name ? (
+                              <ChevronDown size={18} />
+                            ) : (
+                              <ChevronRight size={18} />
+                            )}
+                          </button>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(row.expected)}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(row.collected)}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${
+                        row.rate == null ? 'text-gray-500' : row.rate >= 100 ? 'text-green-600' : 'text-orange-600'
+                      }`}>
+                        {row.rate == null ? '—' : `${row.rate.toFixed(1)}%`}
+                      </td>
+                    </tr>
+
+                    {expandedMonthlyBranch === row.name && row.officers.length > 0 && (
+                      <tr className="bg-indigo-50/40">
+                        <td colSpan={5} className="px-4 pb-4 pt-2">
+                          <div className="bg-white rounded-lg border border-indigo-200 overflow-hidden shadow-sm">
+                            <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-blue-50 border-b border-indigo-100">
+                              <h4 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
+                                <User size={15} />
+                                Loan Officers — {row.name}
+                              </h4>
+                            </div>
+                            <table className="min-w-full divide-y divide-gray-100 text-sm">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-4 py-2 text-left font-medium text-gray-600">Loan Officer</th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">Expected</th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">Collected</th>
+                                  <th className="px-4 py-2 text-right font-medium text-gray-600">Rate</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-50">
+                                {row.officers.map((officer) => (
+                                  <tr key={officer.id} className="hover:bg-gray-50">
+                                    <td className="px-4 py-2 text-gray-900">{officer.name}</td>
+                                    <td className="px-4 py-2 text-right">
+                                      {officer.expected > 0 ? formatMoney(officer.expected) : '—'}
+                                    </td>
+                                    <td className="px-4 py-2 text-right">{formatMoney(officer.collected)}</td>
+                                    <td className={`px-4 py-2 text-right font-medium ${
+                                      officer.rate == null
+                                        ? 'text-gray-500'
+                                        : officer.rate >= 100
+                                          ? 'text-green-600'
+                                          : 'text-orange-600'
+                                    }`}>
+                                      {officer.rate == null ? '—' : `${officer.rate.toFixed(1)}%`}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
                 {!branchCollectionTables.monthly.length && (
                   <tr>
-                    <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>
+                    <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
                       No branch data for the selected period.
                     </td>
                   </tr>
@@ -938,7 +1316,18 @@ function LogbookCollection({ country }) {
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Daily Branch Breakdown</h3>
-              <p className="text-xs text-gray-500">Daily expected is the branch target divided by working days.</p>
+              <p className="text-xs text-gray-500">
+                Daily expected uses the branch target divided by working days. Expand a branch to see open loans due on the selected day (latest PAR snapshot).
+              </p>
+              {dailyOpenLoansMeta.snapshotTime && (
+                <p className="text-xs text-gray-400 mt-1">
+                  Open loans from PAR snapshot {dailyOpenLoansMeta.snapshotTime}
+                  {dailyOpenLoansMeta.date ? ` · due ${dailyOpenLoansMeta.date}` : ''}
+                  {dailyOpenLoansMeta.scanned > 0
+                    ? ` · ${dailyOpenLoansMeta.matched} due of ${dailyOpenLoansMeta.scanned} open`
+                    : ''}
+                </p>
+              )}
             </div>
             <label className="flex items-center gap-2 text-xs text-gray-600">
               Day
@@ -957,6 +1346,7 @@ function LogbookCollection({ country }) {
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-2 py-2 text-left font-medium text-gray-600 w-8" />
                   <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-600">Expected</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-600">Collected</th>
@@ -964,22 +1354,117 @@ function LogbookCollection({ country }) {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-100">
-                {branchCollectionTables.daily.map((row) => (
-                  <tr key={row.name} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.dailyExpected)}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.dailyCollected)}</td>
-                    <td className={`px-3 py-2 text-right font-semibold ${
-                      row.dailyRate == null ? 'text-gray-500' : row.dailyRate >= 100 ? 'text-green-600' : 'text-orange-600'
-                    }`}>
-                      {row.dailyRate == null ? '—' : `${row.dailyRate.toFixed(1)}%`}
+                {dailyBranchRowsMerged
+                  .filter((row) => {
+                    const loans = getDailyLoansForRow(row)
+                    return row.dailyExpected > 0 || row.dailyCollected > 0 || loans.length > 0
+                  })
+                  .map((row) => {
+                    const loans = getDailyLoansForRow(row)
+                    const rowKey = String(row.branchCode || row.name)
+                    const isExpanded = expandedDailyBranch === rowKey
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr
+                          className={`transition-colors ${
+                            isExpanded ? 'bg-indigo-50' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <td className="px-2 py-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleDailyBranch(row)}
+                              className="p-1 rounded hover:bg-indigo-100 text-gray-500 hover:text-indigo-600"
+                              aria-label={isExpanded ? 'Collapse' : 'Expand'}
+                            >
+                              {isExpanded ? (
+                                <ChevronDown size={18} />
+                              ) : (
+                                <ChevronRight size={18} />
+                              )}
+                            </button>
+                          </td>
+                          <td className="px-3 py-2 font-medium text-gray-900">
+                            {row.name}
+                            {loans.length > 0 && (
+                              <span className="ml-2 text-xs text-gray-500">({loans.length} loans)</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">{formatMoney(row.dailyExpected)}</td>
+                          <td className="px-3 py-2 text-right">{formatMoney(row.dailyCollected)}</td>
+                          <td className={`px-3 py-2 text-right font-semibold ${
+                            row.dailyRate == null ? 'text-gray-500' : row.dailyRate >= 100 ? 'text-green-600' : 'text-orange-600'
+                          }`}>
+                            {row.dailyRate == null ? '—' : `${row.dailyRate.toFixed(1)}%`}
+                          </td>
+                        </tr>
+
+                        {isExpanded && (
+                          <tr className="bg-indigo-50/40">
+                            <td colSpan={5} className="px-4 pb-4 pt-2">
+                              <div className="bg-white rounded-lg border border-indigo-200 overflow-hidden shadow-sm">
+                                <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-blue-50 border-b border-indigo-100">
+                                  <h4 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
+                                    <FileText size={15} />
+                                    Open Loans Due — {row.name}
+                                    {dailyOpenLoansLoading ? (
+                                      <span className="text-xs font-normal text-indigo-600">Loading…</span>
+                                    ) : null}
+                                  </h4>
+                                </div>
+                                {loans.length ? (
+                                  <table className="min-w-full divide-y divide-gray-100 text-sm">
+                                    <thead className="bg-gray-50">
+                                      <tr>
+                                        <th className="px-4 py-2 text-left font-medium text-gray-600">Loan #</th>
+                                        <th className="px-4 py-2 text-left font-medium text-gray-600">Borrower</th>
+                                        <th className="px-4 py-2 text-left font-medium text-gray-600">Loan Officer</th>
+                                        <th className="px-4 py-2 text-right font-medium text-gray-600">Due Amount</th>
+                                        <th className="px-4 py-2 text-right font-medium text-gray-600">Collected</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-50">
+                                      {loans.map((loan) => (
+                                        <tr key={loan.loanId || `${loan.borrowerName}-${loan.dueAmount}`} className="hover:bg-gray-50">
+                                          <td className="px-4 py-2 text-gray-900 font-medium">{loan.loanId || '—'}</td>
+                                          <td className="px-4 py-2 text-gray-700">{loan.borrowerName || '—'}</td>
+                                          <td className="px-4 py-2 text-gray-600">
+                                            {(loan.officerNames || []).join(', ') || '—'}
+                                          </td>
+                                          <td className="px-4 py-2 text-right">{formatMoney(loan.dueAmount || 0)}</td>
+                                          <td className="px-4 py-2 text-right">{formatMoney(loan.collected || 0)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <p className="px-4 py-6 text-sm text-gray-500 text-center">
+                                    {dailyOpenLoansLoading
+                                      ? 'Loading open loans…'
+                                      : `No open loans with due date ${dailyOpenLoansMeta.date || 'on this day'} in the latest PAR snapshot.`}
+                                  </p>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    )
+                  })}
+                {!dailyBranchRowsMerged.filter((row) => {
+                  const loans = getDailyLoansForRow(row)
+                  return row.dailyExpected > 0 || row.dailyCollected > 0 || loans.length > 0
+                }).length && !dailyOpenLoansLoading && (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
+                      No branch data for the selected day.
                     </td>
                   </tr>
-                ))}
-                {!branchCollectionTables.daily.length && (
+                )}
+                {dailyOpenLoansLoading && (
                   <tr>
-                    <td className="px-3 py-6 text-center text-gray-500" colSpan={4}>
-                      No branch data for the selected day.
+                    <td className="px-3 py-4 text-center text-gray-500" colSpan={5}>
+                      Loading open loans…
                     </td>
                   </tr>
                 )}
@@ -1173,53 +1658,67 @@ function LogbookCollection({ country }) {
         </div>
       </div>
 
-      {/* Recent Collections Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">Recent Collections</h3>
+      {/* Recent Collections */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Recent Collections</h3>
+            <p className="text-xs text-gray-500 mt-1">Latest repayment activity</p>
+          </div>
+          <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2.5 py-1 rounded-full">
+            {data.recentCollections?.length || 0} records
+          </span>
         </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan ID</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Principal</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interest</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fees</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Collector</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {data.recentCollections.slice(0, 20).map((repayment, index) => (
-                <tr key={index} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    #{repayment.loan_id}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatMoney(repayment.repayment_amount)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatMoney(repayment.principal_repayment_amount)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatMoney(repayment.interest_repayment_amount)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatMoney(repayment.fees_repayment_amount)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {repayment.repayment_collected_date}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {repayment.collector_id}
-                  </td>
+
+        {!data.recentCollections?.length ? (
+          <p className="text-sm text-gray-500 text-center py-8">No recent collections found.</p>
+        ) : (
+          <div
+            className="rounded-lg border border-gray-200 overflow-hidden max-h-[min(28rem,60vh)] overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]"
+            style={{ scrollbarWidth: 'thin' }}
+          >
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                <tr>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan ID</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Principal</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interest</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fees</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Collector</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100">
+                {data.recentCollections.map((repayment, index) => (
+                  <tr key={repayment.repayment_id || repayment.loan_id || index} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-900">
+                      #{repayment.loan_id}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-900">
+                      {formatMoney(repayment.repayment_amount)}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
+                      {formatMoney(repayment.principal_repayment_amount)}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
+                      {formatMoney(repayment.interest_repayment_amount)}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
+                      {formatMoney(repayment.fees_repayment_amount)}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
+                      {repayment.repayment_collected_date}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-600">
+                      {repayment.collector_id || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )

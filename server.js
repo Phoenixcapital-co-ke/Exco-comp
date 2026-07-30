@@ -6206,6 +6206,264 @@ app.get('/api/logbook/collections', (req, res) => {
   res.json(rows)
 });
 
+/** Parse calendar date parts from Loandisk-style strings (DD/MM/YYYY, YYYY-MM-DD, with optional time). */
+function parseLogbookCalendarDateParts(str) {
+  if (!str) return null
+  const s = String(str).trim().split(/\s+/)[0]
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (iso) {
+    return { yyyy: parseInt(iso[1], 10), mm: parseInt(iso[2], 10), dd: parseInt(iso[3], 10) }
+  }
+  const parts = s.split(/[\/\-]/).map((p) => parseInt(p, 10))
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return null
+  if (parts[0] > 31) {
+    return { yyyy: parts[0], mm: parts[1], dd: parts[2] }
+  }
+  return { dd: parts[0], mm: parts[1], yyyy: parts[2] }
+}
+
+function logbookCalendarDateMatches(str, year, month, day) {
+  const p = parseLogbookCalendarDateParts(str)
+  return p && p.yyyy === year && p.mm === month && p.dd === day
+}
+
+function parseLoandiskScheduleField(raw) {
+  if (!raw) return []
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+/** Due installment amount on a calendar day from schedule JSON fields when due_date alone is missing. */
+function openLoanDueOnCalendarDay(loan, row, year, month, day) {
+  const dueStr = loan?.due_date ?? row?.due_date
+  if (logbookCalendarDateMatches(dueStr, year, month, day)) {
+    return {
+      dueAmount:
+        Number(loan?.pending_due ?? row?.pending_due) ||
+        Number(loan?.total_amount_due ?? row?.total_amount_due) ||
+        0,
+      dueDate: dueStr || null,
+      matchedBy: 'due_date',
+    }
+  }
+
+  const scheduleFields = ['amortization', 'loan_principal_schedule', 'loan_interest_schedule']
+  let scheduleTotal = 0
+  let scheduleDate = null
+  for (const field of scheduleFields) {
+    const entries = parseLoandiskScheduleField(loan?.[field] ?? row?.[field])
+    for (const entry of entries) {
+      const entryDate =
+        entry?.date ??
+        entry?.due_date ??
+        entry?.dueDate ??
+        entry?.collection_date ??
+        entry?.repayment_date
+      if (!logbookCalendarDateMatches(entryDate, year, month, day)) continue
+      scheduleTotal +=
+        Number(
+          entry?.amount ??
+            entry?.principal ??
+            entry?.due ??
+            entry?.total ??
+            entry?.repayment_amount ??
+            0,
+        ) || 0
+      scheduleDate = entryDate || scheduleDate
+    }
+  }
+  if (scheduleTotal > 0) {
+    return { dueAmount: scheduleTotal, dueDate: scheduleDate, matchedBy: 'schedule' }
+  }
+
+  return null
+}
+
+/** Open loans due on a calendar day (latest PAR snapshot) for Daily Branch Breakdown drill-down. */
+app.get('/api/logbook/collection/daily-open-loans', (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const day = parseInt(req.query.day, 10)
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: 'month (1-12) is required' })
+    }
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({ error: 'valid year is required' })
+    }
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      return res.status(400).json({ error: 'day (1-31) is required' })
+    }
+
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    if (countryParam && effectiveBranches.length === 0) {
+      return res.json({ snapshotTime: null, date: null, branches: [] })
+    }
+    const allowedSet = effectiveBranches.length > 0 ? new Set(effectiveBranches) : null
+
+    const latestPar = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+    if (!latestPar?.time) {
+      return res.json({ snapshotTime: null, date: null, branches: [] })
+    }
+    const snapshotTime = latestPar.time
+    const branchFilter = req.query.branch != null ? String(req.query.branch).trim() : ''
+
+    const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`
+
+    const collectionsByLoan = new Map()
+    const collectionsByBranch = new Map()
+    let collectionRows = db.prepare(`
+      SELECT loan_id, branch, repayment_amount, repayment_collected_date
+      FROM Logbook_collection
+      WHERE repayment_collected_date IS NOT NULL AND TRIM(repayment_collected_date) <> ''
+    `).all()
+    if (allowedSet) {
+      collectionRows = collectionRows.filter((r) => {
+        const code = String(r.branch ?? '').trim()
+        return code && allowedSet.has(code)
+      })
+    }
+    for (const r of collectionRows) {
+      const p = parseLogbookCalendarDateParts(r.repayment_collected_date)
+      if (!p || p.dd !== day || p.mm !== month || p.yyyy !== year) continue
+      const loanId = String(r.loan_id ?? '').trim()
+      const branchCode = String(r.branch ?? '').trim()
+      const amt = Number(r.repayment_amount) || 0
+      if (loanId) collectionsByLoan.set(loanId, (collectionsByLoan.get(loanId) || 0) + amt)
+      if (branchCode) collectionsByBranch.set(branchCode, (collectionsByBranch.get(branchCode) || 0) + amt)
+    }
+
+    const loNameByCode = new Map()
+    try {
+      for (const lo of dbRW.prepare('SELECT borrower_access_id, name FROM LOs').all()) {
+        const id = String(lo.borrower_access_id || '').trim()
+        if (id) loNameByCode.set(id, String(lo.name || id).trim() || id)
+      }
+    } catch (e) {
+      console.error('daily-open-loans LOs lookup:', e.message)
+    }
+
+    const branchNameByCode = new Map()
+    for (const b of dbRW.prepare('SELECT code, name FROM Logbook_Branches WHERE active = 1').all()) {
+      const code = String(b.code ?? '').trim()
+      if (code) branchNameByCode.set(code, String(b.name || code).trim())
+    }
+
+    const parseOfficerIds = (loan, row) => {
+      const raw = loan?.borrower_access_ids ?? row?.borrower_access_ids
+      if (!raw) return []
+      if (Array.isArray(raw)) return raw.map((id) => String(id).trim()).filter(Boolean)
+      try {
+        const parsed = JSON.parse(String(raw))
+        if (Array.isArray(parsed)) return parsed.map((id) => String(id).trim()).filter(Boolean)
+        if (parsed) return [String(parsed).trim()].filter(Boolean)
+      } catch {
+        const str = String(raw).trim()
+        return str ? [str] : []
+      }
+      return []
+    }
+
+    const openRows = db
+      .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`)
+      .all(snapshotTime)
+
+    const byBranch = new Map()
+    let scanned = 0
+    let matched = 0
+    const sampleDueDates = []
+
+    for (const row of openRows) {
+      const branchCode = String(row.branch_code || '').trim()
+      if (!branchCode) continue
+      if (allowedSet && !allowedSet.has(branchCode)) continue
+      if (branchFilter && branchCode !== branchFilter) continue
+
+      scanned += 1
+      const loan = parseLoandiskLoanRecord(row)
+      const dueMatch = openLoanDueOnCalendarDay(loan, row, year, month, day)
+      if (!dueMatch) {
+        const sample = loan?.due_date ?? row?.due_date
+        if (sample && sampleDueDates.length < 12) sampleDueDates.push(String(sample))
+        continue
+      }
+      matched += 1
+
+      const loanId = String(loan?.loan_id ?? row.loan_id ?? '').trim()
+      const pendingDue = dueMatch.dueAmount
+      const borrowerName =
+        [
+          loan?.borrower_firstname ?? row.borrower_firstname,
+          loan?.borrower_lastname ?? row.borrower_lastname,
+          loan?.borrower_business_name ?? row.borrower_business_name,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || '—'
+
+      const officerIds = parseOfficerIds(loan, row)
+      const officerNames = officerIds.map((id) => loNameByCode.get(id) || id)
+      const collected = loanId ? collectionsByLoan.get(loanId) || 0 : 0
+
+      if (!byBranch.has(branchCode)) {
+        byBranch.set(branchCode, {
+          code: branchCode,
+          name: branchNameByCode.get(branchCode) || branchCode,
+          openLoansExpected: 0,
+          loans: [],
+        })
+      }
+      const entry = byBranch.get(branchCode)
+      entry.openLoansExpected += pendingDue
+      entry.loans.push({
+        loanId,
+        borrowerName,
+        dueAmount: pendingDue,
+        collected,
+        dueDate: dueMatch.dueDate || row.due_date || loan?.due_date || null,
+        matchedBy: dueMatch.matchedBy,
+        principalBalance: Number(loan?.principal_balance_amount ?? row.principal_balance_amount) || 0,
+        officerIds,
+        officerNames,
+      })
+    }
+
+    const branches = Array.from(byBranch.values())
+      .map((b) => ({
+        code: b.code,
+        name: b.name,
+        openLoansExpected: b.openLoansExpected,
+        collected:
+          collectionsByBranch.get(b.code) ||
+          b.loans.reduce((sum, loan) => sum + (Number(loan.collected) || 0), 0),
+        loans: b.loans.sort((a, bb) => (bb.dueAmount || 0) - (a.dueAmount || 0)),
+      }))
+      .sort((a, b) => b.openLoansExpected - a.openLoansExpected)
+
+    res.json({
+      snapshotTime,
+      date: dateLabel,
+      month,
+      year,
+      day,
+      branches,
+      meta: {
+        scanned,
+        matched,
+        sampleDueDates,
+      },
+    })
+  } catch (e) {
+    console.error('daily-open-loans error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/logbook/collector-performance', (req, res) => {
   try {
     const { month, year } = req.query;

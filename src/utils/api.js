@@ -37,6 +37,15 @@ export const API_URLS = {
     branches: `${API_BASE}/api/logbook/branches`,
     collectorPerformance: (month, year) => `${API_BASE}/api/logbook/collector-performance?month=${month}&year=${year}`,
     productivitySales: (month, year) => `${API_BASE}/api/logbook/productivity-sales?month=${month}&year=${year}`,
+    dailyOpenLoans: (month, year, day, branch) => {
+      const params = new URLSearchParams({
+        month: String(month),
+        year: String(year),
+        day: String(day),
+      })
+      if (branch) params.set('branch', String(branch))
+      return `${API_BASE}/api/logbook/collection/daily-open-loans?${params.toString()}`
+    },
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,

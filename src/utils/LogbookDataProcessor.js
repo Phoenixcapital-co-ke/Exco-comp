@@ -315,6 +315,17 @@ export class LogbookDataProcessor {
     const pct = (cur, prev) => (prev > 0 ? ((cur - prev) / prev) * 100 : 0)
     const momCollectedChangePct = pct(thisMonthCollected, prevMonthCollected)
 
+    const recentCollections = [...this.repaymentsData]
+      .sort((a, b) => {
+        const da = this.parseDMY(a.repayment_collected_date)
+        const db = this.parseDMY(b.repayment_collected_date)
+        if (!da && !db) return 0
+        if (!da) return 1
+        if (!db) return -1
+        return db - da
+      })
+      .slice(0, 50)
+
     return {
       totalCollected,
       totalPrincipal,
@@ -322,7 +333,7 @@ export class LogbookDataProcessor {
       totalFees,
       totalPenalty,
       collectorStats,
-      recentCollections: this.repaymentsData.slice(-20),
+      recentCollections,
       // monthly
       currentMonthKey,
       previousMonthKey,
