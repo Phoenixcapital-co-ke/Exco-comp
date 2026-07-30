@@ -36,19 +36,19 @@ function formatSignedPp(v) {
   return `${sign}${n.toFixed(1)}%`
 }
 
-/** SOD→EOD amount down = PAR fell (red pill "down"); up = rose (green "up"). */
+/** Positive = risk reduced (PAR fell); green. Negative = risk rose; red. */
 function pillClassForParAmt(amt) {
   const n = Number(amt) || 0
-  if (n < -1000) return 'down'
   if (n > 1000) return 'up'
+  if (n < -1000) return 'down'
   return 'flat'
 }
 
-/** Same semantics for percentage-point shifts. */
+/** Same semantics for % shifts (risk-reduction signed). */
 function pillClassForParPp(pp) {
   const n = Number(pp) || 0
-  if (n < -0.05) return 'down'
   if (n > 0.05) return 'up'
+  if (n < -0.05) return 'down'
   return 'flat'
 }
 
@@ -106,10 +106,11 @@ export function renderDailyParReportHTML(payload) {
     Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
       ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
       : null
-  const totalShift = Number(overall.shiftSodToEod) || 0
+  // Display as risk reduced: SOD − EOD (positive when PAR fell). Underlying data is still EOD − SOD.
+  const totalShift = -(Number(overall.shiftSodToEod) || 0)
   const totalShiftPp =
     Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
-      ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
+      ? Number(overall.sod.parPct) - Number(overall.eod.parPct)
       : 0
 
   const bottomLineRaw = narrative.bottomLine || claude?.bottomLine || '—'
@@ -126,6 +127,8 @@ export function renderDailyParReportHTML(payload) {
   const rowsHtml = branches
     .map((b) => {
       const shift = b.shiftSodToEod
+      const riskReducedAmt = shift ? -(Number(shift.parAmt) || 0) : null
+      const riskReducedPct = shift ? -(Number(shift.parPctPp) || 0) : null
       const tone = rowTone(b)
       return `<tr class="${tone}">
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
@@ -136,13 +139,13 @@ export function renderDailyParReportHTML(payload) {
         <td><strong>${formatPct(b.eod?.parPct)}</strong></td>
         <td class="amt">${formatCompact(b.eod?.par)}</td>
         <td>${
-          shift
-            ? `<span class="pill ${pillClassForParAmt(shift.parAmt)}">${formatSignedCompact(shift.parAmt)}</span>`
+          riskReducedAmt != null
+            ? `<span class="pill ${pillClassForParAmt(riskReducedAmt)}">${formatSignedCompact(riskReducedAmt)}</span>`
             : '<span class="pill flat">—</span>'
         }</td>
         <td>${
-          shift
-            ? `<span class="pill ${pillClassForParPp(shift.parPctPp)}">${formatSignedPp(shift.parPctPp)}</span>`
+          riskReducedPct != null
+            ? `<span class="pill ${pillClassForParPp(riskReducedPct)}">${formatSignedPp(riskReducedPct)}</span>`
             : '<span class="pill flat">—</span>'
         }</td>
       </tr>`
@@ -606,7 +609,7 @@ export function renderDailyParReportHTML(payload) {
       <div class="kpi-sub"><strong>${formatCompact(overall.eod?.par)}</strong> at risk</div>
       ${
         eodVsSodPp != null
-          ? `<div class="kpi-delta ${eodVsSodPp <= 0 ? 'down' : 'up'}">${eodVsSodPp <= 0 ? '▼' : '▲'} ${formatSignedPp(eodVsSodPp)} vs SOD</div>`
+          ? `<div class="kpi-delta ${eodVsSodPp <= 0 ? 'up' : 'down'}">${eodVsSodPp <= 0 ? '▲' : '▼'} ${formatSignedPp(-(eodVsSodPp))} vs SOD</div>`
           : ''
       }
     </div>
@@ -627,7 +630,7 @@ export function renderDailyParReportHTML(payload) {
           <th class="col-group-header" colspan="2">EOD Yesterday</th>
           <th class="col-group-header" colspan="2">SOD Today</th>
           <th class="col-group-header" colspan="2">EOD Today</th>
-          <th class="col-group-header" colspan="2">SOD → EOD</th>
+          <th class="col-group-header" colspan="2">EOD − SOD</th>
         </tr>
         <tr>
           <th style="text-align:left">Branch</th>
@@ -637,8 +640,8 @@ export function renderDailyParReportHTML(payload) {
           <th>Amount</th>
           <th>%</th>
           <th>Amount</th>
-          <th>Δ Amt</th>
-          <th>Δ %</th>
+          <th>Amount</th>
+          <th>%</th>
         </tr>
       </thead>
       <tbody>
