@@ -33,7 +33,7 @@ function formatSignedCompact(v) {
 function formatSignedPp(v) {
   const n = Number(v) || 0
   const sign = n > 0 ? '+' : ''
-  return `${sign}${n.toFixed(1)} pp`
+  return `${sign}${n.toFixed(1)}%`
 }
 
 /** SOD→EOD amount down = PAR fell (red pill "down"); up = rose (green "up"). */
@@ -49,13 +49,6 @@ function pillClassForParPp(pp) {
   const n = Number(pp) || 0
   if (n < -0.05) return 'down'
   if (n > 0.05) return 'up'
-  return 'flat'
-}
-
-function recoveredPillClass(recoveredAmt) {
-  const n = Number(recoveredAmt) || 0
-  if (n > 1000) return 'up'
-  if (n < -1000) return 'down'
   return 'flat'
 }
 
@@ -105,7 +98,6 @@ export function renderDailyParReportHTML(payload) {
   const claude = payload?.claudeAnalysis || null
   const claudeError = payload?.claudeError || null
 
-  const recovered = Number(overall.netChangeVsYesterday) || 0
   const sodVsYestPp =
     Number.isFinite(Number(overall.sod?.parPct)) && Number.isFinite(Number(overall.eodYesterday?.parPct))
       ? Number(overall.sod.parPct) - Number(overall.eodYesterday.parPct)
@@ -124,7 +116,7 @@ export function renderDailyParReportHTML(payload) {
   // Emphasize amounts / branch names lightly for the dark banner
   const bottomLineHtml = escapeHtml(bottomLineRaw)
     .replace(/(\d+(?:\.\d+)?M|\d+(?:\.\d+)?K)/g, '<em>$1</em>')
-    .replace(/\b(priority number one|Good recovery day|PAR slipped|Mixed\/flat day)\b/gi, '<em>$1</em>')
+    .replace(/\b(priority number one|PAR slipped|Mixed\/flat day)\b/gi, '<em>$1</em>')
 
   const topItems = narrative.topPerformers || []
   const holdItems = narrative.holdingSteady || []
@@ -134,8 +126,6 @@ export function renderDailyParReportHTML(payload) {
   const rowsHtml = branches
     .map((b) => {
       const shift = b.shiftSodToEod
-      const vsY = b.vsYesterdayEod
-      const recoveredAmt = vsY ? -(Number(vsY.parAmt) || 0) : null
       const tone = rowTone(b)
       return `<tr class="${tone}">
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
@@ -155,11 +145,6 @@ export function renderDailyParReportHTML(payload) {
             ? `<span class="pill ${pillClassForParPp(shift.parPctPp)}">${formatSignedPp(shift.parPctPp)}</span>`
             : '<span class="pill flat">—</span>'
         }</td>
-        <td>${
-          recoveredAmt != null
-            ? `<span class="pill ${recoveredPillClass(recoveredAmt)}">${formatSignedCompact(recoveredAmt)}</span>`
-            : '<span class="pill flat">—</span>'
-        }</td>
       </tr>`
     })
     .join('')
@@ -167,7 +152,6 @@ export function renderDailyParReportHTML(payload) {
   const sodHour = String(slots.sod?.targetHour ?? 3).padStart(2, '0')
   const eodHour = String(slots.eod?.targetHour ?? 20).padStart(2, '0')
 
-  const netKpiClass = recovered >= 0 ? 'positive' : 'negative'
   const eodKpiClass = eodVsSodPp != null && eodVsSodPp < 0 ? 'positive' : eodVsSodPp != null && eodVsSodPp > 0 ? 'negative' : 'neutral-mid'
 
   return `<!DOCTYPE html>
@@ -272,7 +256,7 @@ export function renderDailyParReportHTML(payload) {
 
   .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 12px;
     margin-bottom: 22px;
   }
@@ -626,12 +610,6 @@ export function renderDailyParReportHTML(payload) {
           : ''
       }
     </div>
-    <div class="kpi-card ${netKpiClass}">
-      <div class="kpi-label">Net vs Yesterday</div>
-      <div class="kpi-value">${recovered >= 0 ? '↓' : '↑'} ${formatCompact(Math.abs(recovered))}</div>
-      <div class="kpi-sub">${recovered >= 0 ? 'recovered vs yesterday\'s close' : 'increase vs yesterday\'s close'}</div>
-      <div class="kpi-delta ${recovered >= 0 ? 'up' : 'down'}">● ${recovered >= 0 ? 'Good recovery day' : 'Watchlist day'}</div>
-    </div>
   </div>
 
   ${
@@ -650,7 +628,6 @@ export function renderDailyParReportHTML(payload) {
           <th class="col-group-header" colspan="2">SOD Today</th>
           <th class="col-group-header" colspan="2">EOD Today</th>
           <th class="col-group-header" colspan="2">SOD → EOD</th>
-          <th class="col-group-header">Recovered<br>vs Yest.</th>
         </tr>
         <tr>
           <th style="text-align:left">Branch</th>
@@ -661,14 +638,13 @@ export function renderDailyParReportHTML(payload) {
           <th>%</th>
           <th>Amount</th>
           <th>Δ Amt</th>
-          <th>Δ pp</th>
-          <th>Recovered</th>
+          <th>Δ %</th>
         </tr>
       </thead>
       <tbody>
         ${
           rowsHtml ||
-          '<tr><td colspan="10" style="text-align:center;color:#a0aec0;padding:20px">No branch PAR snapshots found for this date.</td></tr>'
+          '<tr><td colspan="9" style="text-align:center;color:#a0aec0;padding:20px">No branch PAR snapshots found for this date.</td></tr>'
         }
       </tbody>
       <tfoot>
@@ -682,7 +658,6 @@ export function renderDailyParReportHTML(payload) {
           <td class="amt">${formatCompact(overall.eod?.par)}</td>
           <td>${formatSignedCompact(totalShift)}</td>
           <td>${formatSignedPp(totalShiftPp)}</td>
-          <td style="color:${recovered >= 0 ? 'var(--green)' : 'var(--red)'}">${formatSignedCompact(recovered)}</td>
         </tr>
       </tfoot>
     </table>

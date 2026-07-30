@@ -10510,7 +10510,7 @@ async function buildDailyParReportPayload({
         const pp = Math.abs(b.shiftSodToEod?.parPctPp || 0).toFixed(1)
         const recoveredAmt = -(b.shiftSodToEod?.parAmt || 0)
         const vsY = b.vsYesterdayEod?.parPctPp
-        let text = `${b.name}: dropped ${pp} pp from SOD to EOD`
+        let text = `${b.name}: dropped ${pp}% from SOD to EOD`
         if (vsY != null && vsY < -0.3) {
           text += ` and also improved on yesterday's close`
         }
@@ -10518,7 +10518,7 @@ async function buildDailyParReportPayload({
         if (idx === 0) text += ` the clearest positive signal of the day`
         else if (vsY != null && Math.abs(vsY) <= 0.3) text += ` elevated SOD largely unwound by close, ending near yesterday`
         else text += ` encouraging intraday trajectory`
-        if (recoveredAmt > 100_000) text += `, recovering ${fmtAmt(recoveredAmt)}`
+        if (recoveredAmt > 100_000) text += `, PAR down ${fmtAmt(recoveredAmt)} from SOD to EOD`
         text += `. Still closes at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)}`
         if (largestEod && largestEod.code === b.code) {
           text += ` — remains the single largest PAR exposure in the portfolio`
@@ -10545,7 +10545,7 @@ async function buildDailyParReportPayload({
         topPerformers.push({
           code: b.code,
           name: b.name,
-          text: `${b.name}: improved ${Math.abs(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs yesterday's close (${fmtAmt(recoveredAmt)} recovered) — solid day-over-day progress even if the intraday SOD→EOD move was quieter.`,
+          text: `${b.name}: improved ${Math.abs(b.vsYesterdayEod.parPctPp || 0).toFixed(1)}% vs yesterday's close (${fmtAmt(recoveredAmt)} net change) — solid day-over-day progress even if the intraday SOD→EOD move was quieter.`,
         })
       }
     }
@@ -10593,11 +10593,11 @@ async function buildDailyParReportPayload({
         const vsYUp = b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) >= 0.4
         let text = `${b.name}: `
         if (intradayUp) {
-          text += `PAR grew through the day (+${(b.shiftSodToEod.parPctPp || 0).toFixed(1)} pp SOD→EOD`
+          text += `PAR grew through the day (+${(b.shiftSodToEod.parPctPp || 0).toFixed(1)}% SOD→EOD`
           if (vsYUp) text += `, ${(b.vsYesterdayEod.parAmt || 0) > 0 ? '+' : ''}${fmtAmt(b.vsYesterdayEod.parAmt)} vs yesterday`
           text += `). Unlike branches that spiked at SOD and recovered, this expanded into the close — a second consecutive uptick tomorrow would warrant escalation.`
         } else {
-          text += `up ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs yesterday's close to ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} — keep on the watchlist until the trend reverses.`
+          text += `up ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)}% vs yesterday's close to ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} — keep on the watchlist until the trend reverses.`
         }
         return { code: b.code, name: b.name, text }
       })
@@ -10620,7 +10620,7 @@ async function buildDailyParReportPayload({
           },
         ]
 
-    const recovered = overall.netChangeVsYesterday
+    const netChangeVsYest = overall.netChangeVsYesterday
     const eodPctOverall = overall.eod.parPct
     const yestPctOverall = overall.eodYesterday.parPct
     const shiftOverallPp =
@@ -10630,19 +10630,19 @@ async function buildDailyParReportPayload({
     const topDriver = topPerformers[0]
     const watchDriver = watching[0]
     let bottomLine = ''
-    if (recovered > 500_000) {
-      bottomLine = `Good recovery day — ${fmtAmt(recovered)} recovered vs yesterday's close`
+    if (netChangeVsYest > 500_000) {
+      bottomLine = `PAR improved by ${fmtAmt(netChangeVsYest)} vs yesterday's close`
       if (topDriver) bottomLine += `, driven largely by ${topDriver.name}`
       bottomLine += '.'
-    } else if (recovered < -500_000) {
-      bottomLine = `PAR slipped by ${fmtAmt(Math.abs(recovered))} vs yesterday (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Tighten collections on the watching list.`
+    } else if (netChangeVsYest < -500_000) {
+      bottomLine = `PAR slipped by ${fmtAmt(Math.abs(netChangeVsYest))} vs yesterday (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Tighten collections on the watching list.`
     } else {
       bottomLine = `Mixed/flat day overall (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Dig into branches still elevating after SOD.`
     }
     if (shiftOverallPp != null && shiftOverallPp <= -0.4) {
-      bottomLine += ` Portfolio-wide PAR fell ${Math.abs(shiftOverallPp).toFixed(1)} pp intra-day — a positive signal.`
+      bottomLine += ` Portfolio-wide PAR fell ${Math.abs(shiftOverallPp).toFixed(1)}% intra-day — a positive signal.`
     } else if (shiftOverallPp != null && shiftOverallPp >= 0.4) {
-      bottomLine += ` Portfolio-wide PAR rose ${shiftOverallPp.toFixed(1)} pp from SOD to EOD — not a recovery day.`
+      bottomLine += ` Portfolio-wide PAR rose ${shiftOverallPp.toFixed(1)}% from SOD to EOD — not a recovery day.`
     }
     if (largestEod && (largestEod.eod.parPct || 0) >= 10) {
       bottomLine += ` However, ${largestEod.name} at ${fmtPct(largestEod.eod.parPct)} / ${fmtAmt(largestEod.eod.par)} remains priority number one.`
@@ -10953,11 +10953,11 @@ function formatDailyParCompact(v) {
 
 function buildDailyParClaudePrompt(payload) {
   const overall = payload?.overall || {}
-  const recovered = Number(overall.netChangeVsYesterday) || 0
-  const recoveredLabel =
-    recovered >= 0
-      ? `${formatDailyParCompact(recovered)} recovered`
-      : `${formatDailyParCompact(Math.abs(recovered))} increase`
+  const netChangeVsYest = Number(overall.netChangeVsYesterday) || 0
+  const netChangeLabel =
+    netChangeVsYest >= 0
+      ? `${formatDailyParCompact(netChangeVsYest)} improvement vs yesterday`
+      : `${formatDailyParCompact(Math.abs(netChangeVsYest))} increase vs yesterday`
   const shiftPp =
     overall.eod?.parPct != null && overall.sod?.parPct != null
       ? Number((Number(overall.eod.parPct) - Number(overall.sod.parPct)).toFixed(1))
@@ -10984,8 +10984,8 @@ Your job is INTERPRETATION, not a scoreboard. The branch table already shows the
 Match this commentary style EXACTLY (tone, length, judgment):
 
 TOP PERFORMERS TODAY:
-- TOWN: dropped 2.5 pp from SOD to EOD and also improved on yesterday's close — encouraging trajectory, though at 23.6% / 13.0M it remains the single largest PAR exposure in the portfolio.
-- Utawala: posted the biggest intra-day improvement at −3.0 pp, recovering 751K vs yesterday. The clearest positive signal of the day.
+- TOWN: dropped 2.5% from SOD to EOD and also improved on yesterday's close — encouraging trajectory, though at 23.6% / 13.0M it remains the single largest PAR exposure in the portfolio.
+- Utawala: posted the biggest intra-day improvement at −3.0%, with 751K net PAR reduction vs yesterday. The clearest positive signal of the day.
 - Kitengela & Kilimani: both had elevated SOD readings that unwound by close, ending near or below yesterday's levels — likely morning timing effects rather than new stress.
 
 HOLDING STEADY:
@@ -10993,13 +10993,13 @@ HOLDING STEADY:
 - Mombasa Road: at 100.0% PAR is a standing concern. Daily stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.
 
 WATCHING:
-- Kiambu: is the only branch where PAR grew through the day — unlike others that spiked at SOD and recovered, Kiambu expanded from open to close (+1.4 pp, −499.9K vs yesterday). A second consecutive uptick tomorrow would warrant escalation.
+- Kiambu: is the only branch where PAR grew through the day — unlike others that spiked at SOD and recovered, Kiambu expanded from open to close (+1.4%, −499.9K vs yesterday). A second consecutive uptick tomorrow would warrant escalation.
 
 CLEAN:
 - No zero-PAR branches at EOD. All branches carry residual at-risk balances — focus on reducing high-PAR outliers rather than celebrating clean branches. (If some branches are ~0%, name them and note they stayed clean.)
 
 BOTTOM LINE:
-Good recovery day — 1.2M recovered vs yesterday's close, driven largely by TOWN and Utawala. The portfolio-wide PAR rate fell 1.1 pp intra-day, which is a positive signal. However, TOWN at 23.6% / 13.0M remains priority number one, and Kiambu's rising trend is the one to watch tomorrow.
+Good day overall — 1.2M PAR improvement vs yesterday's close, driven largely by TOWN and Utawala. The portfolio-wide PAR rate fell 1.1% intra-day, which is a positive signal. However, TOWN at 23.6% / 13.0M remains priority number one, and Kiambu's rising trend is the one to watch tomorrow.
 
 Return EXACTLY this JSON (no markdown):
 {
@@ -11021,13 +11021,13 @@ Return EXACTLY this JSON (no markdown):
 
 Hard rules:
 - Every bullet MUST start with "BranchName: " then genuine commentary. Never stop at "X% → Y% (SOD to EOD)".
-- Weave in 1–2 key figures only where they support the judgment (pp moves, recovered amount, closing % / amount).
+- Weave in 1–2 key figures only where they support the judgment (% moves, net change vs yesterday, closing % / amount).
 - Prefer SOD→EOD for Top Performers; flag rising PAR for Watching; treat flat high-PAR as Holding Steady (not good news).
 - Call out morning timing effects when SOD spikes unwind by EOD.
 - Name the largest residual exposure and any structural problems (e.g. ~100% PAR books).
 - Max 4 bullets per list (3 is fine). Skip empty sections with [].
 - Use ONLY figures from DATA. Format amounts as 49M / 2.9M / 751K.
-- Do not invent branches. Net change today = ${recoveredLabel}${shiftPp != null ? `; overall SOD→EOD = ${shiftPp >= 0 ? '+' : ''}${shiftPp} pp` : ''}.
+- Do not invent branches. Net change today = ${netChangeLabel}${shiftPp != null ? `; overall SOD→EOD = ${shiftPp >= 0 ? '+' : ''}${shiftPp}%` : ''}.
 - Return ONLY JSON.
 
 === DATA ===
@@ -11042,7 +11042,7 @@ ${JSON.stringify(
         eod: overall.eod,
         netChangeVsYesterday: overall.netChangeVsYesterday,
         shiftSodToEod: overall.shiftSodToEod,
-        recoveredLabel,
+        netChangeLabel,
         overallShiftSodToEodPp: shiftPp,
       },
       branches: branchSummary,
