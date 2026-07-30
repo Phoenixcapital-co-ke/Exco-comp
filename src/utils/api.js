@@ -67,6 +67,7 @@ export const API_URLS = {
     director: `${API_BASE}/api/reports/director`,
     directorDocx: `${API_BASE}/api/reports/director/docx`,
     dailyPar: `${API_BASE}/api/reports/daily-par`,
+    dailyParSend: `${API_BASE}/api/reports/daily-par/send`,
   },
   credit: {
     clientPerformance: (product) => `${API_BASE}/api/credit/client-performance?product=${encodeURIComponent(product || '')}`,

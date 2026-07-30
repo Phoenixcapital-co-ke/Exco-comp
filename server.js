@@ -25,6 +25,7 @@ import {
 import { logLogin, logLogout, logPageView, logAction, logLoginFailed, logError, setActivityDb } from './lib/telegramLogger.mjs'
 import { initUserActivityTable } from './lib/userActivity.mjs'
 import { startTelegramBot } from './lib/telegramBot.mjs'
+import { renderDailyParReportHTML } from './src/reports/dailyParReportTemplate.js'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -2107,14 +2108,23 @@ const getMailer = () => {
   })
 }
 
-const sendEmail = async ({ to, subject, text, html }) => {
+const sendEmail = async ({ to, cc, bcc, subject, text, html, attachments }) => {
   const from = process.env.SMTP_FROM || 'no-reply@phoenixcapitalkenya.com'
   const mailer = getMailer()
   if (!mailer) {
-    console.log('[email] SMTP not configured. Would send:', { to, subject, text })
+    console.log('[email] SMTP not configured. Would send:', { to, cc, subject, text })
     return { ok: false, skipped: true }
   }
-  await mailer.sendMail({ from, to, subject, text, html })
+  await mailer.sendMail({
+    from,
+    to,
+    cc: cc || undefined,
+    bcc: bcc || undefined,
+    subject,
+    text,
+    html,
+    attachments: attachments || undefined,
+  })
   return { ok: true }
 }
 
@@ -10035,18 +10045,14 @@ app.get('/api/par/branches/month-end-compare', (req, res) => {
   }
 })
 
-/**
- * Daily PAR report: SOD (~03:00 EAT) vs EOD (~20:00 EAT) by branch,
- * plus yesterday's EOD for net change.
- * GET /api/reports/daily-par?date=YYYY-MM-DD&country=Kenya
- */
-app.get('/api/reports/daily-par', requireAuth, (req, res) => {
-  try {
-    const effectiveBranches = getEffectiveLogbookBranches(req)
-    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : 'Kenya'
-
-    const dateStr = req.query && req.query.date != null ? String(req.query.date).trim() : ''
-    const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+async function buildDailyParReportPayload({
+  dateStr = '',
+  countryParam = 'Kenya',
+  effectiveBranches = [],
+  sodHour: sodHourIn = 3,
+  eodHour: eodHourIn = 20,
+} = {}) {
+    const dateMatch = String(dateStr || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
     let year
     let month
     let day
@@ -10061,12 +10067,8 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
       day = parts.day
     }
 
-    const sodHour = req.query?.sodHour != null && Number.isFinite(Number(req.query.sodHour))
-      ? Number(req.query.sodHour)
-      : 3
-    const eodHour = req.query?.eodHour != null && Number.isFinite(Number(req.query.eodHour))
-      ? Number(req.query.eodHour)
-      : 20
+    const sodHour = Number.isFinite(Number(sodHourIn)) ? Number(sodHourIn) : 3
+    const eodHour = Number.isFinite(Number(eodHourIn)) ? Number(eodHourIn) : 20
 
     const sodTarget = nairobiWallClockUtc(year, month, day, sodHour, 0)
     const eodTarget = nairobiWallClockUtc(year, month, day, eodHour, 0)
@@ -10197,28 +10199,39 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
     const fmtPct = (v) => `${(Number(v) || 0).toFixed(1)}%`
     const fmtAmt = (v) => formatDailyParCompact(v)
 
-    // Narrative buckets with human-readable lines (email-style)
+    // Heuristic narrative buckets (fallback if Claude unavailable) — interpretive, not bare scoreboard
     const used = new Set()
+    const largestEod = [...branches]
+      .filter((b) => b.hasEod)
+      .sort((a, b) => (b.eod?.par || 0) - (a.eod?.par || 0))[0]
 
     const topPerformers = branches
       .filter((b) => b.hasSod && b.hasEod && (b.shiftSodToEod?.parPctPp || 0) <= -0.4)
       .sort((a, b) => (a.shiftSodToEod.parPctPp || 0) - (b.shiftSodToEod.parPctPp || 0))
-      .slice(0, 5)
-      .map((b) => {
+      .slice(0, 4)
+      .map((b, idx) => {
         used.add(b.code)
-        let text = `${b.name}: ${fmtPct(b.sod.parPct)} → ${fmtPct(b.eod.parPct)} (SOD to EOD)`
-        if (b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) < -0.3) {
-          text += `, also improved on yesterday's close (${fmtPct(b.eodYesterday.parPct)} → ${fmtPct(b.eod.parPct)})`
-        } else if (b.vsYesterdayEod && Math.abs(b.vsYesterdayEod.parPctPp || 0) <= 0.3) {
-          text += `, back near yesterday's level`
-        }
+        const pp = Math.abs(b.shiftSodToEod?.parPctPp || 0).toFixed(1)
         const recoveredAmt = -(b.shiftSodToEod?.parAmt || 0)
-        if (recoveredAmt > 100_000) text += ` · ${fmtAmt(recoveredAmt)} off the book intraday`
+        const vsY = b.vsYesterdayEod?.parPctPp
+        let text = `${b.name}: dropped ${pp} pp from SOD to EOD`
+        if (vsY != null && vsY < -0.3) {
+          text += ` and also improved on yesterday's close`
+        }
+        text += ` —`
+        if (idx === 0) text += ` the clearest positive signal of the day`
+        else if (vsY != null && Math.abs(vsY) <= 0.3) text += ` elevated SOD largely unwound by close, ending near yesterday`
+        else text += ` encouraging intraday trajectory`
+        if (recoveredAmt > 100_000) text += `, recovering ${fmtAmt(recoveredAmt)}`
+        text += `. Still closes at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)}`
+        if (largestEod && largestEod.code === b.code) {
+          text += ` — remains the single largest PAR exposure in the portfolio`
+        }
+        text += '.'
         return { code: b.code, name: b.name, text }
       })
 
-    // Also credit strong recovery vs yesterday even if SOD→EOD flat
-    if (topPerformers.length < 5) {
+    if (topPerformers.length < 4) {
       const extras = branches
         .filter(
           (b) =>
@@ -10229,13 +10242,14 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
             (b.vsYesterdayEod?.parAmt || 0) < -100_000,
         )
         .sort((a, b) => (a.vsYesterdayEod.parPctPp || 0) - (b.vsYesterdayEod.parPctPp || 0))
-        .slice(0, 5 - topPerformers.length)
+        .slice(0, 4 - topPerformers.length)
       for (const b of extras) {
         used.add(b.code)
+        const recoveredAmt = -(b.vsYesterdayEod?.parAmt || 0)
         topPerformers.push({
           code: b.code,
           name: b.name,
-          text: `${b.name}: ${fmtPct(b.eodYesterday.parPct)} → ${fmtPct(b.eod.parPct)} vs yesterday's close (${fmtAmt(-(b.vsYesterdayEod.parAmt || 0))} recovered)`,
+          text: `${b.name}: improved ${Math.abs(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs yesterday's close (${fmtAmt(recoveredAmt)} recovered) — solid day-over-day progress even if the intraday SOD→EOD move was quieter.`,
         })
       }
     }
@@ -10245,22 +10259,21 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
         if (used.has(b.code) || !b.hasEod || (b.eod.parPct || 0) < 0.05) return false
         const vsY = b.vsYesterdayEod ? Math.abs(b.vsYesterdayEod.parPctPp || 0) : null
         const shift = b.shiftSodToEod ? Math.abs(b.shiftSodToEod.parPctPp || 0) : null
-        // Stable vs yesterday, and not swinging hard SOD→EOD when SOD exists
         if (vsY == null) return false
         if (vsY > 0.5) return false
         if (shift != null && shift > 1.0) return false
         return true
       })
-      .slice(0, 5)
+      .slice(0, 4)
       .map((b) => {
         used.add(b.code)
-        let text = `${b.name}: ${fmtPct(b.eod.parPct)}`
-        if (b.hasYest && Math.abs(b.vsYesterdayEod?.parPctPp || 0) <= 0.2) {
-          text += `, back to yesterday's level (${fmtPct(b.eodYesterday.parPct)})`
-        } else if (b.hasYest) {
-          text += `, roughly stable vs yesterday (${fmtPct(b.eodYesterday.parPct)})`
+        let text = `${b.name}: `
+        if ((b.eod.parPct || 0) >= 80) {
+          text += `at ${fmtPct(b.eod.parPct)} PAR this is a standing concern. Daily stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.`
+        } else if ((b.eod.parPct || 0) >= 20) {
+          text += `flat with little movement — at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} this is a structurally elevated rate that has shown no meaningful trend in either direction.`
         } else {
-          text += `, holding steady`
+          text += `holding near yesterday (${fmtPct(b.eod.parPct)}) with no material intraday swing — quiet, not a problem, but not a recovery story either.`
         }
         return { code: b.code, name: b.name, text }
       })
@@ -10277,53 +10290,71 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
         const bScore = Math.max(b.vsYesterdayEod?.parPctPp || 0, b.shiftSodToEod?.parPctPp || 0)
         return bScore - aScore
       })
-      .slice(0, 5)
+      .slice(0, 4)
       .map((b) => {
         used.add(b.code)
-        const parts = []
-        if (b.hasYest && b.vsYesterdayEod) {
-          parts.push(`${fmtPct(b.eodYesterday.parPct)} (yesterday) → ${fmtPct(b.eod.parPct)} (today)`)
-          if ((b.vsYesterdayEod.parPctPp || 0) >= 0.4) {
-            parts.push(`uptick of ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs close`)
-          } else {
-            parts.push('marginal move vs yesterday')
-          }
+        const intradayUp = b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4
+        const vsYUp = b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) >= 0.4
+        let text = `${b.name}: `
+        if (intradayUp) {
+          text += `PAR grew through the day (+${(b.shiftSodToEod.parPctPp || 0).toFixed(1)} pp SOD→EOD`
+          if (vsYUp) text += `, ${(b.vsYesterdayEod.parAmt || 0) > 0 ? '+' : ''}${fmtAmt(b.vsYesterdayEod.parAmt)} vs yesterday`
+          text += `). Unlike branches that spiked at SOD and recovered, this expanded into the close — a second consecutive uptick tomorrow would warrant escalation.`
         } else {
-          parts.push(`closing ${fmtPct(b.eod.parPct)}`)
+          text += `up ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)} pp vs yesterday's close to ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} — keep on the watchlist until the trend reverses.`
         }
-        if (b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4) {
-          parts.push(`SOD→EOD ${fmtPct(b.sod.parPct)} → ${fmtPct(b.eod.parPct)} (${(b.shiftSodToEod.parPctPp > 0 ? '+' : '')}${(b.shiftSodToEod.parPctPp || 0).toFixed(1)} pp)`)
-        }
-        return { code: b.code, name: b.name, text: `${b.name}: ${parts.join('; ')}` }
+        return { code: b.code, name: b.name, text }
       })
 
-    const clean = branches
-      .filter((b) => b.hasEod && (b.eod.parPct || 0) < 0.05)
-      .slice(0, 8)
-      .map((b) => {
-        used.add(b.code)
-        return { code: b.code, name: b.name, text: `${b.name}: ${fmtPct(b.eod.parPct)}` }
-      })
+    const cleanBranches = branches.filter((b) => b.hasEod && (b.eod.parPct || 0) < 0.05)
+    const clean = cleanBranches.length
+      ? cleanBranches.slice(0, 4).map((b) => {
+          used.add(b.code)
+          return {
+            code: b.code,
+            name: b.name,
+            text: `${b.name}: stayed clean at ${fmtPct(b.eod.parPct)} — no residual stress showing at EOD.`,
+          }
+        })
+      : [
+          {
+            code: '_none',
+            name: '',
+            text: `No zero-PAR branches at EOD. All tracked branches carry residual at-risk balances — focus on reducing high-PAR outliers${largestEod ? ` (led by ${largestEod.name})` : ''} rather than celebrating clean branches.`,
+          },
+        ]
 
     const recovered = overall.netChangeVsYesterday
     const eodPctOverall = overall.eod.parPct
     const yestPctOverall = overall.eodYesterday.parPct
+    const shiftOverallPp =
+      overall.eod?.parPct != null && overall.sod?.parPct != null
+        ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
+        : null
+    const topDriver = topPerformers[0]
+    const watchDriver = watching[0]
     let bottomLine = ''
     if (recovered > 500_000) {
-      bottomLine = `Good recovery day — ${fmtAmt(recovered)} recovered vs yesterday's close (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}).`
+      bottomLine = `Good recovery day — ${fmtAmt(recovered)} recovered vs yesterday's close`
+      if (topDriver) bottomLine += `, driven largely by ${topDriver.name}`
+      bottomLine += '.'
     } else if (recovered < -500_000) {
       bottomLine = `PAR slipped by ${fmtAmt(Math.abs(recovered))} vs yesterday (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Tighten collections on the watching list.`
     } else {
       bottomLine = `Mixed/flat day overall (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Dig into branches still elevating after SOD.`
     }
-    const priority = branches.find((b) => b.hasEod && (b.eod.parPct || 0) >= 15)
-    if (priority) {
-      bottomLine += ` ${priority.name} still tops the list at ${fmtPct(priority.eod.parPct)} / ${fmtAmt(priority.eod.par)} — remains priority number one.`
+    if (shiftOverallPp != null && shiftOverallPp <= -0.4) {
+      bottomLine += ` Portfolio-wide PAR fell ${Math.abs(shiftOverallPp).toFixed(1)} pp intra-day — a positive signal.`
+    } else if (shiftOverallPp != null && shiftOverallPp >= 0.4) {
+      bottomLine += ` Portfolio-wide PAR rose ${shiftOverallPp.toFixed(1)} pp from SOD to EOD — not a recovery day.`
     }
-    if (topPerformers.length && watching.length === 0) {
+    if (largestEod && (largestEod.eod.parPct || 0) >= 10) {
+      bottomLine += ` However, ${largestEod.name} at ${fmtPct(largestEod.eod.parPct)} / ${fmtAmt(largestEod.eod.par)} remains priority number one.`
+    }
+    if (watchDriver) {
+      bottomLine += ` ${watchDriver.name}'s rising trend is the one to watch tomorrow.`
+    } else if (topPerformers.length && watching.length === 0) {
       bottomLine += ' Momentum favours the improvers today.'
-    } else if (watching.length && topPerformers.length === 0) {
-      bottomLine += ' Watchlist pressure outweighs intraday wins.'
     }
 
     const formatNairobiStamp = (iso) => {
@@ -10349,7 +10380,7 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
     ]
     const dateLabel = `${day} ${monthNames[month - 1]} ${year}`
 
-    res.json({
+    const payloadBase = {
       date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
       dateLabel,
       country: countryParam || null,
@@ -10382,9 +10413,236 @@ app.get('/api/reports/daily-par', requireAuth, (req, res) => {
         clean,
         bottomLine,
       },
+    }
+
+    // Claude analysis (email-style EOD PAR commentary)
+    let claudeAnalysis = null
+    let claudeError = null
+    try {
+      claudeAnalysis = await generateDailyParClaudeAnalysis(payloadBase)
+    } catch (e) {
+      claudeError = e.message || 'Claude analysis unavailable'
+      console.warn('[Daily PAR] Claude analysis skipped:', claudeError)
+    }
+
+    // Prefer Claude bullets in the narrative cards when present
+    if (claudeAnalysis) {
+      const toItems = (arr) =>
+        (Array.isArray(arr) ? arr : [])
+          .map((t) => String(t || '').trim())
+          .filter(Boolean)
+          .slice(0, 6)
+          .map((text) => ({ text }))
+      if (toItems(claudeAnalysis.topPerformers).length) {
+        payloadBase.narrative.topPerformers = toItems(claudeAnalysis.topPerformers)
+      }
+      if (toItems(claudeAnalysis.holdingSteady).length) {
+        payloadBase.narrative.holdingSteady = toItems(claudeAnalysis.holdingSteady)
+      }
+      if (toItems(claudeAnalysis.watching).length) {
+        payloadBase.narrative.watching = toItems(claudeAnalysis.watching)
+      }
+      if (toItems(claudeAnalysis.clean).length) {
+        payloadBase.narrative.clean = toItems(claudeAnalysis.clean)
+      }
+      if (claudeAnalysis.bottomLine) {
+        payloadBase.narrative.bottomLine = String(claudeAnalysis.bottomLine).slice(0, 700)
+      }
+    }
+
+    return {
+      ...payloadBase,
+      claudeAnalysis,
+      claudeError,
+    }
+}
+
+/**
+ * Daily PAR report: SOD (~03:00 EAT) vs EOD (~20:00 EAT) by branch,
+ * plus yesterday's EOD for net change + Claude analysis.
+ * GET /api/reports/daily-par?date=YYYY-MM-DD&country=Kenya
+ */
+app.get('/api/reports/daily-par', requireAuth, async (req, res) => {
+  try {
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : 'Kenya'
+    const dateStr = req.query && req.query.date != null ? String(req.query.date).trim() : ''
+    const sodHour = req.query?.sodHour != null && Number.isFinite(Number(req.query.sodHour))
+      ? Number(req.query.sodHour)
+      : 3
+    const eodHour = req.query?.eodHour != null && Number.isFinite(Number(req.query.eodHour))
+      ? Number(req.query.eodHour)
+      : 20
+    const payload = await buildDailyParReportPayload({
+      dateStr,
+      countryParam,
+      effectiveBranches,
+      sodHour,
+      eodHour,
     })
+    res.json(payload)
   } catch (e) {
     console.error('[Daily PAR report] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Parse comma/semicolon email lists from env. */
+function parseEmailList(raw) {
+  return String(raw || '')
+    .split(/[,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@'))
+}
+
+/**
+ * Recipients for the scheduled Daily PAR email.
+ * Env:
+ *   DAILY_PAR_EMAIL_TO=a@x.com,b@y.com
+ *   DAILY_PAR_EMAIL_CC=c@x.com
+ *   DAILY_PAR_EMAIL_ROLES=admin,superuser   (optional — pulls active Users by role)
+ */
+function getDailyParEmailRecipients() {
+  const fromEnv = parseEmailList(process.env.DAILY_PAR_EMAIL_TO)
+  const cc = parseEmailList(process.env.DAILY_PAR_EMAIL_CC)
+  const roles = String(process.env.DAILY_PAR_EMAIL_ROLES || '')
+    .split(/[,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+
+  const fromDb = []
+  if (roles.length) {
+    try {
+      const placeholders = roles.map(() => '?').join(',')
+      const rows = dbRW
+        .prepare(
+          `SELECT email FROM Users
+           WHERE active = 1
+             AND email IS NOT NULL AND trim(email) != ''
+             AND lower(role) IN (${placeholders})`,
+        )
+        .all(...roles)
+      for (const r of rows) {
+        const e = String(r.email || '').trim().toLowerCase()
+        if (e.includes('@')) fromDb.push(e)
+      }
+    } catch (e) {
+      console.warn('[Daily PAR email] role lookup failed:', e.message)
+    }
+  }
+
+  const to = [...new Set([...fromEnv, ...fromDb])]
+  const ccFiltered = cc.filter((e) => !to.includes(e))
+  return { to, cc: ccFiltered }
+}
+
+function isDailyParEmailEnabled() {
+  const flag = String(process.env.DAILY_PAR_EMAIL_ENABLED ?? 'true').toLowerCase()
+  if (['0', 'false', 'no', 'off'].includes(flag)) return false
+  return true
+}
+
+/**
+ * Build + email the Daily PAR HTML report (Mon–Sat 20:00 EAT cron, or manual trigger).
+ */
+async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force = false } = {}) {
+  if (!force && !isDailyParEmailEnabled()) {
+    return { ok: false, skipped: true, reason: 'DAILY_PAR_EMAIL_ENABLED is off' }
+  }
+
+  const { to, cc } = getDailyParEmailRecipients()
+  if (!to.length) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+    }
+  }
+
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const payload = await buildDailyParReportPayload({
+    dateStr,
+    countryParam: country,
+    effectiveBranches: [],
+    sodHour: 3,
+    eodHour: 20,
+  })
+
+  const html = renderDailyParReportHTML(payload)
+  const dateLabel = payload.dateLabel || payload.date || ''
+  const overall = payload.overall || {}
+  const bottom = payload.narrative?.bottomLine || payload.claudeAnalysis?.bottomLine || ''
+  const subject = `Daily PAR — ${dateLabel} (${country})`
+
+  const text = [
+    `Daily PAR Report — ${dateLabel}`,
+    `Country: ${country}`,
+    '',
+    `EOD Yesterday: ${overall.eodYesterday?.parPct ?? '—'}% | ${formatDailyParCompact(overall.eodYesterday?.par)}`,
+    `SOD Today: ${overall.sod?.parPct ?? '—'}% | ${formatDailyParCompact(overall.sod?.par)}`,
+    `EOD Today: ${overall.eod?.parPct ?? '—'}% | ${formatDailyParCompact(overall.eod?.par)}`,
+    `Net vs yesterday: ${formatDailyParCompact(overall.netChangeVsYesterday)}`,
+    '',
+    bottom ? `Bottom line: ${bottom}` : '',
+    '',
+    'Open the HTML attachment for the full report.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const filename = `daily-par-${payload.date || 'report'}.html`
+  const result = await sendEmail({
+    to: to.join(', '),
+    cc: cc.length ? cc.join(', ') : undefined,
+    subject,
+    text,
+    html,
+    attachments: [
+      {
+        filename,
+        content: html,
+        contentType: 'text/html; charset=utf-8',
+      },
+    ],
+  })
+
+  return {
+    ok: !!result.ok,
+    skipped: !!result.skipped,
+    to,
+    cc,
+    subject,
+    date: payload.date,
+    dateLabel,
+    country,
+    claudeError: payload.claudeError || null,
+  }
+}
+
+/**
+ * Manual trigger (admin/superuser): POST /api/reports/daily-par/send
+ * Body/query: { date?, country? }
+ */
+app.post('/api/reports/daily-par/send', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin or superuser only' })
+    }
+    const dateStr =
+      (req.body && req.body.date != null ? String(req.body.date).trim() : '') ||
+      (req.query && req.query.date != null ? String(req.query.date).trim() : '')
+    const countryParam =
+      (req.body && req.body.country != null ? String(req.body.country).trim() : '') ||
+      (req.query && req.query.country != null ? String(req.query.country).trim() : '')
+
+    const result = await sendDailyParReportEmail({ dateStr, countryParam, force: true })
+    if (result.skipped && !result.ok) {
+      return res.status(400).json(result)
+    }
+    res.json(result)
+  } catch (e) {
+    console.error('[Daily PAR email] send failed:', e)
     res.status(500).json({ error: e.message })
   }
 })
@@ -10396,6 +10654,158 @@ function formatDailyParCompact(v) {
   if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return `${Math.round(n)}`
 }
+
+function buildDailyParClaudePrompt(payload) {
+  const overall = payload?.overall || {}
+  const recovered = Number(overall.netChangeVsYesterday) || 0
+  const recoveredLabel =
+    recovered >= 0
+      ? `${formatDailyParCompact(recovered)} recovered`
+      : `${formatDailyParCompact(Math.abs(recovered))} increase`
+  const shiftPp =
+    overall.eod?.parPct != null && overall.sod?.parPct != null
+      ? Number((Number(overall.eod.parPct) - Number(overall.sod.parPct)).toFixed(1))
+      : null
+
+  const branchSummary = (Array.isArray(payload?.branches) ? payload.branches : []).slice(0, 25).map((b) => ({
+    branch: b.name,
+    eodYesterdayPct: b.eodYesterday?.parPct,
+    eodYesterdayAmt: b.eodYesterday?.par,
+    sodPct: b.sod?.parPct,
+    sodAmt: b.sod?.par,
+    eodPct: b.eod?.parPct,
+    eodAmt: b.eod?.par,
+    shiftSodToEodPp: b.shiftSodToEod?.parPctPp,
+    shiftSodToEodAmt: b.shiftSodToEod?.parAmt,
+    vsYesterdayPp: b.vsYesterdayEod?.parPctPp,
+    vsYesterdayAmt: b.vsYesterdayEod?.parAmt,
+  }))
+
+  return `You are the credit-ops analyst writing Phoenix Capital's Daily PAR report cards for Logbook ${payload.country || 'Kenya'} on ${payload.dateLabel}.
+
+Your job is INTERPRETATION, not a scoreboard. The branch table already shows the numbers — your cards must explain what the moves mean, why they matter, and what to do next.
+
+Match this commentary style EXACTLY (tone, length, judgment):
+
+TOP PERFORMERS TODAY:
+- TOWN: dropped 2.5 pp from SOD to EOD and also improved on yesterday's close — encouraging trajectory, though at 23.6% / 13.0M it remains the single largest PAR exposure in the portfolio.
+- Utawala: posted the biggest intra-day improvement at −3.0 pp, recovering 751K vs yesterday. The clearest positive signal of the day.
+- Kitengela & Kilimani: both had elevated SOD readings that unwound by close, ending near or below yesterday's levels — likely morning timing effects rather than new stress.
+
+HOLDING STEADY:
+- Thika: is flat with no movement in amount — at 30.0% this is a structurally elevated rate that has shown no meaningful trend in either direction.
+- Mombasa Road: at 100.0% PAR is a standing concern. Daily stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.
+
+WATCHING:
+- Kiambu: is the only branch where PAR grew through the day — unlike others that spiked at SOD and recovered, Kiambu expanded from open to close (+1.4 pp, −499.9K vs yesterday). A second consecutive uptick tomorrow would warrant escalation.
+
+CLEAN:
+- No zero-PAR branches at EOD. All branches carry residual at-risk balances — focus on reducing high-PAR outliers rather than celebrating clean branches. (If some branches are ~0%, name them and note they stayed clean.)
+
+BOTTOM LINE:
+Good recovery day — 1.2M recovered vs yesterday's close, driven largely by TOWN and Utawala. The portfolio-wide PAR rate fell 1.1 pp intra-day, which is a positive signal. However, TOWN at 23.6% / 13.0M remains priority number one, and Kiambu's rising trend is the one to watch tomorrow.
+
+Return EXACTLY this JSON (no markdown):
+{
+  "greeting": "Hi Sir,",
+  "headline": "EOD PAR REPORT — ${payload.dateLabel}",
+  "overallLines": [
+    "EOD Yesterday: X.X% | XM",
+    "SOD Today: X.X% | XM",
+    "EOD Today: X.X% | XM",
+    "Net change vs yesterday: …"
+  ],
+  "topPerformers": ["Branch: interpretive sentence…", "Branch: …"],
+  "holdingSteady": ["Branch: interpretive sentence…"],
+  "watching": ["Branch: interpretive sentence…"],
+  "clean": ["interpretive sentence about clean / residual-PAR branches…"],
+  "bottomLine": "2–4 sentences: call the day, name drivers, #1 priority, and tomorrow's watch item",
+  "emailBody": "Full plain-text email for Sir using the interpretive bullets (not bare % arrows)"
+}
+
+Hard rules:
+- Every bullet MUST start with "BranchName: " then genuine commentary. Never stop at "X% → Y% (SOD to EOD)".
+- Weave in 1–2 key figures only where they support the judgment (pp moves, recovered amount, closing % / amount).
+- Prefer SOD→EOD for Top Performers; flag rising PAR for Watching; treat flat high-PAR as Holding Steady (not good news).
+- Call out morning timing effects when SOD spikes unwind by EOD.
+- Name the largest residual exposure and any structural problems (e.g. ~100% PAR books).
+- Max 4 bullets per list (3 is fine). Skip empty sections with [].
+- Use ONLY figures from DATA. Format amounts as 49M / 2.9M / 751K.
+- Do not invent branches. Net change today = ${recoveredLabel}${shiftPp != null ? `; overall SOD→EOD = ${shiftPp >= 0 ? '+' : ''}${shiftPp} pp` : ''}.
+- Return ONLY JSON.
+
+=== DATA ===
+${JSON.stringify(
+    {
+      dateLabel: payload.dateLabel,
+      country: payload.country,
+      slots: payload.slots,
+      overall: {
+        eodYesterday: overall.eodYesterday,
+        sod: overall.sod,
+        eod: overall.eod,
+        netChangeVsYesterday: overall.netChangeVsYesterday,
+        shiftSodToEod: overall.shiftSodToEod,
+        recoveredLabel,
+        overallShiftSodToEodPp: shiftPp,
+      },
+      branches: branchSummary,
+    },
+    null,
+    2,
+  )}`
+}
+
+async function generateDailyParClaudeAnalysis(payload) {
+  const apiKey = getAnthropicApiKey()
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY not configured')
+  }
+  const model = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001').trim()
+  const prompt = buildDailyParClaudePrompt(payload)
+  const response = await axios.post(
+    'https://api.anthropic.com/v1/messages',
+    {
+      model,
+      max_tokens: 2200,
+      messages: [{ role: 'user', content: prompt }],
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      timeout: 90000,
+    },
+  )
+  const raw = response.data?.content?.[0]?.text
+  if (!raw) throw new Error('Empty Claude response')
+  const parsed = parseAnthropicCommentaryJson(raw)
+  const clipBullet = (s, n = 420) => String(s).slice(0, n)
+  return {
+    greeting: String(parsed.greeting || 'Hi Sir,').slice(0, 80),
+    headline: String(parsed.headline || `EOD PAR REPORT — ${payload.dateLabel}`).slice(0, 160),
+    overallLines: Array.isArray(parsed.overallLines)
+      ? parsed.overallLines.map((s) => String(s).slice(0, 160)).slice(0, 6)
+      : [],
+    topPerformers: Array.isArray(parsed.topPerformers)
+      ? parsed.topPerformers.map((s) => clipBullet(s)).slice(0, 5)
+      : [],
+    holdingSteady: Array.isArray(parsed.holdingSteady)
+      ? parsed.holdingSteady.map((s) => clipBullet(s)).slice(0, 5)
+      : [],
+    watching: Array.isArray(parsed.watching)
+      ? parsed.watching.map((s) => clipBullet(s)).slice(0, 5)
+      : [],
+    clean: Array.isArray(parsed.clean)
+      ? parsed.clean.map((s) => clipBullet(s, 360)).slice(0, 6)
+      : [],
+    bottomLine: String(parsed.bottomLine || '').slice(0, 700),
+    emailBody: String(parsed.emailBody || '').slice(0, 5000),
+  }
+}
+
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
     const effectiveBranches = getEffectiveLogbookBranches(req)
@@ -12542,6 +12952,24 @@ cron.schedule('*/30 * * * *', async () => {
   scheduled: true,
   timezone: 'Africa/Nairobi'
 })
+
+// Daily PAR email: Monday–Saturday 20:00 Africa/Nairobi
+cron.schedule(
+  '0 20 * * 1-6',
+  async () => {
+    console.log(`[CRON] Running Daily PAR email job at ${new Date().toISOString()}`)
+    try {
+      const result = await sendDailyParReportEmail({})
+      console.log('[CRON] Daily PAR email result:', result)
+    } catch (e) {
+      console.error('[CRON] Daily PAR email failed:', e.message)
+    }
+  },
+  {
+    scheduled: true,
+    timezone: 'Africa/Nairobi',
+  },
+)
 
 // Every 10 minutes: run ingestion without borrowers (fast refresh)
 cron.schedule('*/10 * * * *', () => {

@@ -71,6 +71,8 @@ function DataOverview() {
   const [dailyParError, setDailyParError] = useState(null)
   const [showDailyParReport, setShowDailyParReport] = useState(false)
   const [showDailyParDownloadMenu, setShowDailyParDownloadMenu] = useState(false)
+  const [dailyParEmailSending, setDailyParEmailSending] = useState(false)
+  const [dailyParEmailStatus, setDailyParEmailStatus] = useState(null)
 
   // Boda Top Up Qualifiers Report State
   const [bodaTopupRows, setBodaTopupRows] = useState([])
@@ -1467,6 +1469,7 @@ function DataOverview() {
       setDailyParLoading(true)
       setDailyParError(null)
       setDailyParReportHtml('')
+      setDailyParEmailStatus(null)
       const params = new URLSearchParams()
       if (dailyParDate) params.set('date', dailyParDate)
       if (dailyParCountry) params.set('country', dailyParCountry)
@@ -1486,6 +1489,38 @@ function DataOverview() {
     }
   }
 
+  const sendDailyParEmail = async () => {
+    try {
+      setDailyParEmailSending(true)
+      setDailyParEmailStatus(null)
+      const res = await fetch(API_URLS.reports.dailyParSend, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: dailyParDate, country: dailyParCountry }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || data.reason || `Send failed (${res.status})`)
+      }
+      if (data.skipped) {
+        setDailyParEmailStatus({
+          ok: false,
+          message: data.reason || 'Email skipped (check SMTP / recipients)',
+        })
+      } else {
+        setDailyParEmailStatus({
+          ok: true,
+          message: `Sent to ${(data.to || []).join(', ') || 'recipients'}${data.cc?.length ? ` (cc: ${data.cc.join(', ')})` : ''}`,
+        })
+      }
+    } catch (e) {
+      setDailyParEmailStatus({ ok: false, message: e.message || 'Failed to send email' })
+    } finally {
+      setDailyParEmailSending(false)
+    }
+  }
+
   const downloadDailyParHTML = () => {
     const safeName = 'daily-par-report'
     const blob = new Blob([dailyParReportHtml], { type: 'text/html' })
@@ -1498,19 +1533,19 @@ function DataOverview() {
   }
 
   const downloadDailyParPDF = async () => {
-    // Capture at a fixed wide width (keeps 4 KPI cards in one row), then scale
-    // the image to fit exactly one A4 landscape page.
+    // Capture at design page width (794px ≈ A4 @ 96dpi), then scale to one A4 portrait page.
     try {
       const html2canvas = (await import('html2canvas')).default
       const { jsPDF } = await import('jspdf')
       const safeName = 'daily-par-report'
+      const PAGE_W = 794
 
       const iframe = document.createElement('iframe')
       iframe.style.position = 'fixed'
       iframe.style.left = '-10000px'
       iframe.style.top = '0'
-      iframe.style.width = '900px'
-      iframe.style.height = '1270px'
+      iframe.style.width = `${PAGE_W}px`
+      iframe.style.height = '1200px'
       iframe.style.border = 'none'
       iframe.style.opacity = '0'
       iframe.style.pointerEvents = 'none'
@@ -1519,7 +1554,8 @@ function DataOverview() {
       iframe.contentDocument.open()
       iframe.contentDocument.write(dailyParReportHtml)
       iframe.contentDocument.close()
-      await new Promise((resolve) => setTimeout(resolve, 450))
+      // Allow Inter @import + layout paint before capture
+      await new Promise((resolve) => setTimeout(resolve, 800))
 
       const element = iframe.contentDocument.querySelector('.page') || iframe.contentDocument.body
       const canvas = await html2canvas(element, {
@@ -1527,8 +1563,8 @@ function DataOverview() {
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff',
-        windowWidth: 900,
-        width: 900,
+        windowWidth: PAGE_W,
+        width: PAGE_W,
         scrollX: 0,
         scrollY: 0,
       })
@@ -2702,6 +2738,17 @@ function DataOverview() {
                     )}
                   </button>
 
+                  {['admin', 'superuser'].includes(String(user?.role || '').toLowerCase()) && (
+                    <button
+                      onClick={sendDailyParEmail}
+                      disabled={dailyParEmailSending || dailyParLoading}
+                      className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      title="Email the report now (uses DAILY_PAR_EMAIL_TO / roles). Also auto-sends Mon–Sat 20:00 EAT."
+                    >
+                      {dailyParEmailSending ? 'Sending…' : 'Send Email Now'}
+                    </button>
+                  )}
+
                   {dailyParReportHtml && !dailyParLoading && (
                     <div className="relative">
                       <button
@@ -2742,13 +2789,25 @@ function DataOverview() {
 
               <p className="text-xs text-gray-500 mb-4">
                 Uses closest PAR snapshots to <strong>03:00 EAT</strong> (start of day) and <strong>20:00 EAT</strong> (end of day),
-                plus yesterday&apos;s EOD for net recovery.
+                plus yesterday&apos;s EOD for net recovery. Auto-emailed <strong>Mon–Sat at 20:00 EAT</strong> when SMTP + recipients are configured.
               </p>
+
+              {dailyParEmailStatus && (
+                <div
+                  className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+                    dailyParEmailStatus.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {dailyParEmailStatus.message}
+                </div>
+              )}
 
               {dailyParLoading ? (
                 <div className="p-12 text-center">
                   <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
-                  <p className="mt-4 text-sm text-gray-500">Building daily PAR table...</p>
+                  <p className="mt-4 text-sm text-gray-500">Building daily PAR table + Claude analysis...</p>
                 </div>
               ) : dailyParError ? (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

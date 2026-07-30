@@ -1,3 +1,5 @@
+import phoenixLogo from './phoenixLogoDataUri.js'
+
 function escapeHtml(v) {
   return String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -34,16 +36,60 @@ function formatSignedPp(v) {
   return `${sign}${n.toFixed(1)} pp`
 }
 
-function shiftClass(amt) {
+/** SOD→EOD amount down = PAR fell (red pill "down"); up = rose (green "up"). */
+function pillClassForParAmt(amt) {
   const n = Number(amt) || 0
-  if (n < -1000) return 'good'
-  if (n > 1000) return 'bad'
+  if (n < -1000) return 'down'
+  if (n > 1000) return 'up'
   return 'flat'
 }
 
-function bulletLine(item) {
-  const text = item?.text || item?.name || ''
-  return `<li>${escapeHtml(text)}</li>`
+/** Same semantics for percentage-point shifts. */
+function pillClassForParPp(pp) {
+  const n = Number(pp) || 0
+  if (n < -0.05) return 'down'
+  if (n > 0.05) return 'up'
+  return 'flat'
+}
+
+function recoveredPillClass(recoveredAmt) {
+  const n = Number(recoveredAmt) || 0
+  if (n > 1000) return 'up'
+  if (n < -1000) return 'down'
+  return 'flat'
+}
+
+function rowTone(b) {
+  const shiftPp = b.shiftSodToEod?.parPctPp
+  const vsYPp = b.vsYesterdayEod?.parPctPp
+  if (shiftPp != null && shiftPp <= -0.4) return 'row-improved'
+  if (vsYPp != null && vsYPp >= 0.4) return 'row-watch'
+  if (shiftPp != null && shiftPp >= 0.4) return 'row-worsened'
+  return 'row-neutral'
+}
+
+function narrItems(list) {
+  const items = Array.isArray(list) ? list : []
+  if (!items.length) return '<div class="narr-item"><span class="narr-bullet"></span><div><span class="change">None flagged.</span></div></div>'
+  return items
+    .map((item) => {
+      const text = String(item?.text || item?.name || item || '').trim()
+      if (!text) return ''
+      // Prefer "Branch: rest" split
+      const m = text.match(/^([^:]+):\s*(.*)$/)
+      if (m) {
+        return `<div class="narr-item">
+          <span class="narr-bullet"></span>
+          <div><span class="branch">${escapeHtml(m[1].trim())}</span> <span class="change">${escapeHtml(m[2].trim())}</span></div>
+        </div>`
+      }
+      return `<div class="narr-item">
+        <span class="narr-bullet"></span>
+        <div><span class="change">${escapeHtml(text)}</span></div>
+      </div>`
+    })
+    .filter(Boolean)
+    .join('')
 }
 
 /**
@@ -56,339 +102,651 @@ export function renderDailyParReportHTML(payload) {
   const slots = payload?.slots || {}
   const branches = Array.isArray(payload?.branches) ? payload.branches : []
   const narrative = payload?.narrative || {}
+  const claude = payload?.claudeAnalysis || null
+  const claudeError = payload?.claudeError || null
 
   const recovered = Number(overall.netChangeVsYesterday) || 0
-  const recoveredLabel =
-    recovered >= 0
-      ? `${formatCompact(recovered)} recovered`
-      : `${formatCompact(Math.abs(recovered))} increase`
+  const sodVsYestPp =
+    Number.isFinite(Number(overall.sod?.parPct)) && Number.isFinite(Number(overall.eodYesterday?.parPct))
+      ? Number(overall.sod.parPct) - Number(overall.eodYesterday.parPct)
+      : null
+  const eodVsSodPp =
+    Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
+      ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
+      : null
+  const totalShift = Number(overall.shiftSodToEod) || 0
+  const totalShiftPp =
+    Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
+      ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
+      : 0
 
-  const topHtml = (narrative.topPerformers || []).map(bulletLine).join('')
-  const holdHtml = (narrative.holdingSteady || []).map(bulletLine).join('')
-  const watchHtml = (narrative.watching || []).map(bulletLine).join('')
-  const cleanHtml = (narrative.clean || []).map(bulletLine).join('')
+  const bottomLineRaw = narrative.bottomLine || claude?.bottomLine || '—'
+  // Emphasize amounts / branch names lightly for the dark banner
+  const bottomLineHtml = escapeHtml(bottomLineRaw)
+    .replace(/(\d+(?:\.\d+)?M|\d+(?:\.\d+)?K)/g, '<em>$1</em>')
+    .replace(/\b(priority number one|Good recovery day|PAR slipped|Mixed\/flat day)\b/gi, '<em>$1</em>')
+
+  const topItems = narrative.topPerformers || []
+  const holdItems = narrative.holdingSteady || []
+  const watchItems = narrative.watching || []
+  const cleanItems = narrative.clean || []
 
   const rowsHtml = branches
     .map((b) => {
       const shift = b.shiftSodToEod
       const vsY = b.vsYesterdayEod
-      const cls = shift ? shiftClass(shift.parAmt) : 'flat'
-      const recoveredCls = vsY ? shiftClass(-(vsY.parAmt || 0)) : 'flat'
-      return `<tr>
-        <td class="branch">${escapeHtml(b.name)}</td>
-        <td class="num">${formatPct(b.eodYesterday?.parPct)}</td>
-        <td class="num muted">${formatCompact(b.eodYesterday?.par)}</td>
-        <td class="num">${b.hasSod === false ? '—' : formatPct(b.sod?.parPct)}</td>
-        <td class="num muted">${b.hasSod === false ? '—' : formatCompact(b.sod?.par)}</td>
-        <td class="num">${formatPct(b.eod?.parPct)}</td>
-        <td class="num muted">${formatCompact(b.eod?.par)}</td>
-        <td class="num ${cls}">${shift ? formatSignedCompact(shift.parAmt) : '—'}</td>
-        <td class="num ${cls}">${shift ? formatSignedPp(shift.parPctPp) : '—'}</td>
-        <td class="num ${recoveredCls}">${vsY ? formatSignedCompact(-(vsY.parAmt || 0)) : '—'}</td>
+      const recoveredAmt = vsY ? -(Number(vsY.parAmt) || 0) : null
+      const tone = rowTone(b)
+      return `<tr class="${tone}">
+        <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
+        <td>${formatPct(b.eodYesterday?.parPct)}</td>
+        <td class="amt">${formatCompact(b.eodYesterday?.par)}</td>
+        <td>${b.hasSod === false ? '—' : formatPct(b.sod?.parPct)}</td>
+        <td class="amt">${b.hasSod === false ? '—' : formatCompact(b.sod?.par)}</td>
+        <td><strong>${formatPct(b.eod?.parPct)}</strong></td>
+        <td class="amt">${formatCompact(b.eod?.par)}</td>
+        <td>${
+          shift
+            ? `<span class="pill ${pillClassForParAmt(shift.parAmt)}">${formatSignedCompact(shift.parAmt)}</span>`
+            : '<span class="pill flat">—</span>'
+        }</td>
+        <td>${
+          shift
+            ? `<span class="pill ${pillClassForParPp(shift.parPctPp)}">${formatSignedPp(shift.parPctPp)}</span>`
+            : '<span class="pill flat">—</span>'
+        }</td>
+        <td>${
+          recoveredAmt != null
+            ? `<span class="pill ${recoveredPillClass(recoveredAmt)}">${formatSignedCompact(recoveredAmt)}</span>`
+            : '<span class="pill flat">—</span>'
+        }</td>
       </tr>`
     })
     .join('')
 
-  const totalShift = Number(overall.shiftSodToEod) || 0
-  const totalVsYestRecovered = recovered
+  const sodHour = String(slots.sod?.targetHour ?? 3).padStart(2, '0')
+  const eodHour = String(slots.eod?.targetHour ?? 20).padStart(2, '0')
+
+  const netKpiClass = recovered >= 0 ? 'positive' : 'negative'
+  const eodKpiClass = eodVsSodPp != null && eodVsSodPp < 0 ? 'positive' : eodVsSodPp != null && eodVsSodPp > 0 ? 'negative' : 'neutral-mid'
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Daily PAR Report — ${dateLabel}</title>
-  <style>
-    @page { size: A4 portrait; margin: 8mm; }
-    :root {
-      --ink: #1a1a1a;
-      --muted: #6b7280;
-      --line: #e5e7eb;
-      --bg: #f8fafc;
-      --brand: #E04B2A;
-      --green: #047857;
-      --red: #b91c1c;
-      --sky: #0c4a6e;
-    }
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-      color: var(--ink);
-      background: #fff;
-      font-size: 10.5px;
-      line-height: 1.3;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-    .page {
-      width: 900px;
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 0 8px 6px;
-    }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 12px;
-      border-bottom: 2px solid var(--brand);
-      padding-bottom: 8px;
-      margin-bottom: 10px;
-    }
-    .header h1 { margin: 0; font-size: 16px; letter-spacing: -0.02em; }
-    .header .sub { color: var(--muted); font-size: 9.5px; margin-top: 2px; }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #fff7ed;
-      color: var(--brand);
-      font-weight: 700;
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      margin-bottom: 2px;
-    }
-    /* Always one row of 4 KPI cards — never wrap for PDF/print */
-    .kpis {
-      display: grid !important;
-      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-      gap: 8px;
-      margin-bottom: 10px;
-      width: 100%;
-    }
-    .kpi {
-      background: var(--bg);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px 10px;
-      min-width: 0;
-      break-inside: avoid;
-      page-break-inside: avoid;
-    }
-    .kpi .label { font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }
-    .kpi .pct { font-size: 18px; font-weight: 800; margin-top: 2px; line-height: 1.1; white-space: nowrap; }
-    .kpi .amt { font-size: 10px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .kpi.highlight { border-color: #fed7aa; background: #fff7ed; }
-    .kpi.good .pct { color: var(--green); }
-    .kpi.bad .pct { color: var(--red); }
-    h2 {
-      font-size: 10px;
-      margin: 8px 0 5px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--sky);
-    }
-    .narrative {
-      display: grid !important;
-      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-      grid-template-rows: auto auto;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 6px 8px;
-      background: #fff;
-      min-width: 0;
-      break-inside: avoid;
-      page-break-inside: avoid;
-    }
-    .card h3 {
-      margin: 0 0 4px;
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--muted);
-    }
-    .card ul { margin: 0; padding-left: 14px; }
-    .card li { margin-bottom: 2px; font-size: 9px; }
-    .card p { margin: 0; font-size: 9px; }
-    .bottom {
-      margin: 6px 0 4px;
-      padding: 6px 10px;
-      border-left: 3px solid var(--brand);
-      background: #fff7ed;
-      border-radius: 0 6px 6px 0;
-      font-size: 10px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 9px;
-      table-layout: fixed;
-    }
-    thead th {
-      background: #0f172a;
-      color: #fff;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      font-size: 7.5px;
-      padding: 4px 3px;
-      text-align: right;
-      white-space: nowrap;
-    }
-    thead th.branch, tbody td.branch, tfoot td.branch { text-align: left; width: 12%; }
-    thead th.group-sod { background: #334155; }
-    thead th.group-eod { background: #0c4a6e; }
-    tbody td {
-      padding: 3px 3px;
-      border-bottom: 1px solid var(--line);
-      text-align: right;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    tbody td.branch { font-weight: 600; }
-    tbody td.muted { color: var(--muted); font-weight: 500; }
-    tbody tr:nth-child(even) { background: #fafafa; }
-    tfoot td {
-      padding: 4px 3px;
-      font-weight: 800;
-      border-top: 2px solid #0f172a;
-      background: #f1f5f9;
-      text-align: right;
-      font-size: 9px;
-    }
-    .good { color: var(--green) !important; font-weight: 700; }
-    .bad { color: var(--red) !important; font-weight: 700; }
-    .flat { color: var(--muted); }
-    .meta {
-      margin-top: 4px;
-      font-size: 8px;
-      color: var(--muted);
-    }
-    @media print {
-      html, body { width: 100%; }
-      .page {
-        width: 100% !important;
-        max-width: none !important;
-        padding: 0 !important;
-        margin: 0 !important;
-      }
-      .kpis {
-        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-      }
-      .narrative {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-      }
-      .page, .kpis, .kpi, table, .narrative, .bottom {
-        break-inside: avoid;
-        page-break-inside: avoid;
-      }
-      thead { display: table-header-group; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily PAR Report — ${dateLabel}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --red: #e53e3e;
+    --red-light: #fff5f5;
+    --red-mid: #feb2b2;
+    --green: #276749;
+    --green-light: #f0fff4;
+    --green-mid: #9ae6b4;
+    --amber: #b7791f;
+    --amber-light: #fffbeb;
+    --amber-mid: #fbd38d;
+    --blue: #2b6cb0;
+    --blue-light: #ebf8ff;
+    --ink: #1a202c;
+    --muted: #718096;
+    --border: #e2e8f0;
+    --bg: #f7f8fa;
+    --white: #ffffff;
+    --accent: #e8561e;
+  }
+
+  @page { size: A4 portrait; margin: 0; }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    width: 794px;
+    min-height: 1123px;
+    margin: 0 auto;
+    background: var(--white);
+    padding: 32px 36px 36px;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 20px;
+    border-bottom: 3px solid var(--accent);
+    margin-bottom: 22px;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .header-logo {
+    height: 60px;
+    width: auto;
+    display: block;
+    flex-shrink: 0;
+  }
+
+  .report-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .report-title {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .report-subtitle {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .header-right {
+    text-align: right;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  .header-right strong { color: var(--ink); font-weight: 600; }
+
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  .kpi-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .kpi-card.neutral::before  { background: #cbd5e0; }
+  .kpi-card.neutral-mid::before { background: #718096; }
+  .kpi-card.positive::before { background: var(--green); }
+  .kpi-card.negative::before { background: var(--red); }
+
+  .kpi-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .kpi-card.neutral .kpi-value,
+  .kpi-card.neutral-mid .kpi-value { color: var(--ink); }
+  .kpi-card.positive .kpi-value { color: var(--green); }
+  .kpi-card.negative .kpi-value { color: var(--red); }
+
+  .kpi-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .kpi-sub strong { color: var(--ink); font-weight: 600; }
+
+  .kpi-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-top: 6px;
+    padding: 2px 6px;
+    border-radius: 20px;
+  }
+  .kpi-delta.down { background: var(--red-light); color: var(--red); }
+  .kpi-delta.up   { background: var(--green-light); color: var(--green); }
+
+  .section-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .section-ai-badge {
+    font-size: 9px;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 20px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .claude-warn {
+    margin-bottom: 12px;
+    font-size: 11px;
+    color: #b7791f;
+    background: #fffbeb;
+    border: 1px solid #fbd38d;
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+
+  .table-wrap {
+    margin-bottom: 22px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  thead tr { background: #1a202c; color: #fff; }
+
+  thead th {
+    padding: 8px 10px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    text-align: right;
+    white-space: nowrap;
+  }
+  thead th:first-child { text-align: left; }
+
+  .col-group-header {
+    background: #2d3748;
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: #a0aec0;
+    padding: 4px 10px;
+    text-align: center;
+    border-bottom: none;
+  }
+  .col-group-header.first { text-align: left; }
+
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr.total-row,
+  tfoot tr.total-row {
+    background: #edf2f7;
+    font-weight: 700;
+    border-top: 2px solid #cbd5e0;
+  }
+
+  td {
+    padding: 9px 10px;
+    text-align: right;
+    vertical-align: middle;
+  }
+  td:first-child { text-align: left; font-weight: 600; }
+
+  .branch-name { font-weight: 600; color: var(--ink); }
+  .amt { font-size: 11px; color: var(--muted); }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .pill.up   { background: var(--green-light); color: var(--green); }
+  .pill.down { background: var(--red-light); color: var(--red); }
+  .pill.flat { background: #edf2f7; color: var(--muted); }
+
+  .row-improved { background: #f0fff4; }
+  .row-worsened { background: #fff5f5; }
+  .row-watch    { background: #fffbeb; }
+  .row-neutral  { background: var(--white); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: -14px;
+    margin-bottom: 20px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .swatch {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  .narrative-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  .narr-card {
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+  }
+  .narr-card.green  { border-color: var(--green-mid); background: var(--green-light); }
+  .narr-card.amber  { border-color: var(--amber-mid); background: var(--amber-light); }
+  .narr-card.blue   { border-color: #90cdf4; background: var(--blue-light); }
+  .narr-card.grey   { border-color: #cbd5e0; background: #f7fafc; }
+
+  .narr-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .narr-icon {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .narr-card.green .narr-icon  { background: var(--green); }
+  .narr-card.amber .narr-icon  { background: var(--amber); }
+  .narr-card.blue  .narr-icon  { background: var(--blue); }
+  .narr-card.grey  .narr-icon  { background: #718096; }
+
+  .narr-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+  }
+  .narr-card.green .narr-title { color: var(--green); }
+  .narr-card.amber .narr-title { color: var(--amber); }
+  .narr-card.blue  .narr-title { color: var(--blue); }
+  .narr-card.grey  .narr-title { color: #4a5568; }
+
+  .narr-item {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    align-items: flex-start;
+  }
+  .narr-item:last-child { margin-bottom: 0; }
+  .narr-bullet {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .narr-card.green .narr-bullet { background: var(--green); }
+  .narr-card.amber .narr-bullet { background: var(--amber); }
+  .narr-card.blue  .narr-bullet { background: var(--blue); }
+  .narr-card.grey  .narr-bullet { background: #718096; }
+
+  .narr-item .branch { font-weight: 700; color: var(--ink); }
+  .narr-item .change { color: var(--muted); font-size: 11px; }
+
+  .bottom-line {
+    background: #1a202c;
+    color: #fff;
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .bl-icon { font-size: 22px; flex-shrink: 0; }
+  .bl-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: #a0aec0;
+    margin-bottom: 3px;
+  }
+  .bl-text {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: #fff;
+  }
+  .bl-text em {
+    font-style: normal;
+    color: #fbd38d;
+  }
+
+  .footer {
+    font-size: 10px;
+    color: #a0aec0;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  @media print {
+    body { background: white; }
+    .page { margin: 0; box-shadow: none; width: 100%; min-height: auto; padding: 16px 18px; }
+  }
+</style>
 </head>
 <body>
-  <div class="page">
-    <div class="header">
+<div class="page">
+
+  <div class="header">
+    <div class="header-left">
+      <img src="${phoenixLogo}" alt="Phoenix Capital" class="header-logo" />
       <div>
-        <div class="badge">EOD PAR Report</div>
-        <h1>Daily PAR — ${dateLabel}</h1>
-        <div class="sub">${country} · SOD ≈ ${escapeHtml(String(slots.sod?.targetHour ?? 3).padStart(2, '0'))}:00 EAT · EOD ≈ ${escapeHtml(String(slots.eod?.targetHour ?? 20).padStart(2, '0'))}:00 EAT</div>
-      </div>
-      <div class="sub" style="text-align:right">
-        <div>SOD snapshot: ${escapeHtml(slots.sod?.asOfLabel || '—')} EAT</div>
-        <div>EOD snapshot: ${escapeHtml(slots.eod?.asOfLabel || '—')} EAT</div>
-        <div>Yest. EOD: ${escapeHtml(slots.eodYesterday?.asOfLabel || '—')} EAT</div>
+        <div class="report-label">EOD PAR Report</div>
+        <div class="report-title">Daily PAR — ${dateLabel}</div>
+        <div class="report-subtitle">${country} · SOD = ${escapeHtml(sodHour)}:00 EAT · EOD ≈ ${escapeHtml(eodHour)}:00 EAT</div>
       </div>
     </div>
-
-    <div class="kpis">
-      <div class="kpi">
-        <div class="label">EOD Yesterday</div>
-        <div class="pct">${formatPct(overall.eodYesterday?.parPct)}</div>
-        <div class="amt">${formatCompact(overall.eodYesterday?.par)} at risk</div>
-      </div>
-      <div class="kpi">
-        <div class="label">SOD Today</div>
-        <div class="pct">${formatPct(overall.sod?.parPct)}</div>
-        <div class="amt">${formatCompact(overall.sod?.par)} at risk</div>
-      </div>
-      <div class="kpi">
-        <div class="label">EOD Today</div>
-        <div class="pct">${formatPct(overall.eod?.parPct)}</div>
-        <div class="amt">${formatCompact(overall.eod?.par)} at risk</div>
-      </div>
-      <div class="kpi highlight ${recovered >= 0 ? 'good' : 'bad'}">
-        <div class="label">Net vs Yesterday</div>
-        <div class="pct">${recovered >= 0 ? '↓' : '↑'} ${formatCompact(Math.abs(recovered))}</div>
-        <div class="amt">${recoveredLabel}</div>
-      </div>
+    <div class="header-right">
+      <div><strong>SOD snapshot:</strong> ${escapeHtml(slots.sod?.asOfLabel || '—')} EAT</div>
+      <div><strong>EOD snapshot:</strong> ${escapeHtml(slots.eod?.asOfLabel || '—')} EAT</div>
+      <div><strong>Yesterday EOD:</strong> ${escapeHtml(slots.eodYesterday?.asOfLabel || '—')} EAT</div>
     </div>
+  </div>
 
-    <h2>Branch movement</h2>
+  <div class="kpi-grid">
+    <div class="kpi-card neutral">
+      <div class="kpi-label">EOD Yesterday</div>
+      <div class="kpi-value">${formatPct(overall.eodYesterday?.parPct)}</div>
+      <div class="kpi-sub"><strong>${formatCompact(overall.eodYesterday?.par)}</strong> at risk</div>
+    </div>
+    <div class="kpi-card neutral-mid">
+      <div class="kpi-label">SOD Today</div>
+      <div class="kpi-value">${formatPct(overall.sod?.parPct)}</div>
+      <div class="kpi-sub"><strong>${formatCompact(overall.sod?.par)}</strong> at risk</div>
+      ${
+        sodVsYestPp != null
+          ? `<div class="kpi-delta ${sodVsYestPp >= 0 ? 'up' : 'down'}">${sodVsYestPp >= 0 ? '▲' : '▼'} ${formatSignedPp(sodVsYestPp)} vs yesterday</div>`
+          : ''
+      }
+    </div>
+    <div class="kpi-card ${eodKpiClass}">
+      <div class="kpi-label">EOD Today</div>
+      <div class="kpi-value">${formatPct(overall.eod?.parPct)}</div>
+      <div class="kpi-sub"><strong>${formatCompact(overall.eod?.par)}</strong> at risk</div>
+      ${
+        eodVsSodPp != null
+          ? `<div class="kpi-delta ${eodVsSodPp <= 0 ? 'down' : 'up'}">${eodVsSodPp <= 0 ? '▼' : '▲'} ${formatSignedPp(eodVsSodPp)} vs SOD</div>`
+          : ''
+      }
+    </div>
+    <div class="kpi-card ${netKpiClass}">
+      <div class="kpi-label">Net vs Yesterday</div>
+      <div class="kpi-value">${recovered >= 0 ? '↓' : '↑'} ${formatCompact(Math.abs(recovered))}</div>
+      <div class="kpi-sub">${recovered >= 0 ? 'recovered vs yesterday\'s close' : 'increase vs yesterday\'s close'}</div>
+      <div class="kpi-delta ${recovered >= 0 ? 'up' : 'down'}">● ${recovered >= 0 ? 'Good recovery day' : 'Watchlist day'}</div>
+    </div>
+  </div>
+
+  ${
+    claudeError && !claude
+      ? `<div class="claude-warn">Claude analysis unavailable: ${escapeHtml(claudeError)}. Showing rule-based narrative below.</div>`
+      : ''
+  }
+
+  <div class="section-title">Branch Movement</div>
+  <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th class="branch" rowspan="2">Branch</th>
-          <th colspan="2">EOD Yesterday</th>
-          <th class="group-sod" colspan="2">SOD Today</th>
-          <th class="group-eod" colspan="2">EOD Today</th>
-          <th colspan="2">SOD → EOD</th>
-          <th rowspan="2">Recovered vs Yest.</th>
+          <th class="col-group-header first" style="width:16%">Branch</th>
+          <th class="col-group-header" colspan="2">EOD Yesterday</th>
+          <th class="col-group-header" colspan="2">SOD Today</th>
+          <th class="col-group-header" colspan="2">EOD Today</th>
+          <th class="col-group-header" colspan="2">SOD → EOD</th>
+          <th class="col-group-header">Recovered<br>vs Yest.</th>
         </tr>
         <tr>
-          <th>%</th><th>Amt</th>
-          <th class="group-sod">%</th><th class="group-sod">Amt</th>
-          <th class="group-eod">%</th><th class="group-eod">Amt</th>
-          <th>Δ Amt</th><th>Δ pp</th>
+          <th style="text-align:left">Branch</th>
+          <th>%</th>
+          <th>Amount</th>
+          <th>%</th>
+          <th>Amount</th>
+          <th>%</th>
+          <th>Amount</th>
+          <th>Δ Amt</th>
+          <th>Δ pp</th>
+          <th>Recovered</th>
         </tr>
       </thead>
       <tbody>
-        ${rowsHtml || '<tr><td colspan="10" style="text-align:center;color:#9ca3af;padding:12px">No branch PAR snapshots found for this date.</td></tr>'}
+        ${
+          rowsHtml ||
+          '<tr><td colspan="10" style="text-align:center;color:#a0aec0;padding:20px">No branch PAR snapshots found for this date.</td></tr>'
+        }
       </tbody>
       <tfoot>
-        <tr>
-          <td class="branch">OVERALL</td>
-          <td class="num">${formatPct(overall.eodYesterday?.parPct)}</td>
-          <td class="num">${formatCompact(overall.eodYesterday?.par)}</td>
-          <td class="num">${formatPct(overall.sod?.parPct)}</td>
-          <td class="num">${formatCompact(overall.sod?.par)}</td>
-          <td class="num">${formatPct(overall.eod?.parPct)}</td>
-          <td class="num">${formatCompact(overall.eod?.par)}</td>
-          <td class="num ${shiftClass(totalShift)}">${formatSignedCompact(totalShift)}</td>
-          <td class="num ${shiftClass(totalShift)}">${formatSignedPp(
-            (Number(overall.eod?.parPct) || 0) - (Number(overall.sod?.parPct) || 0),
-          )}</td>
-          <td class="num ${recovered >= 0 ? 'good' : 'bad'}">${formatSignedCompact(totalVsYestRecovered)}</td>
+        <tr class="total-row">
+          <td>OVERALL</td>
+          <td>${formatPct(overall.eodYesterday?.parPct)}</td>
+          <td class="amt">${formatCompact(overall.eodYesterday?.par)}</td>
+          <td>${formatPct(overall.sod?.parPct)}</td>
+          <td class="amt">${formatCompact(overall.sod?.par)}</td>
+          <td>${formatPct(overall.eod?.parPct)}</td>
+          <td class="amt">${formatCompact(overall.eod?.par)}</td>
+          <td>${formatSignedCompact(totalShift)}</td>
+          <td>${formatSignedPp(totalShiftPp)}</td>
+          <td style="color:${recovered >= 0 ? 'var(--green)' : 'var(--red)'}">${formatSignedCompact(recovered)}</td>
         </tr>
       </tfoot>
     </table>
+  </div>
 
-    <h2>Narrative</h2>
-    <div class="narrative">
-      <div class="card">
-        <h3>Top performers today</h3>
-        ${topHtml ? `<ul>${topHtml}</ul>` : '<p class="flat">No clear improvers on SOD→EOD or vs yesterday&apos;s close.</p>'}
+  <div class="legend">
+    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> Improved (SOD→EOD)</span>
+    <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Worsened (SOD→EOD)</span>
+    <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Watch (PAR rising)</span>
+    <span><span class="swatch" style="background:#f7fafc;border:1px solid #cbd5e0"></span> Stable</span>
+  </div>
+
+  <div class="section-title">
+    <span>Claude Analysis</span>
+    <span class="section-ai-badge">AI</span>
+  </div>
+  <div class="narrative-grid">
+    <div class="narr-card green">
+      <div class="narr-header">
+        <div class="narr-icon">✓</div>
+        <div class="narr-title">Top Performers Today</div>
       </div>
-      <div class="card">
-        <h3>Holding steady</h3>
-        ${holdHtml ? `<ul>${holdHtml}</ul>` : '<p class="flat">No branches holding flat vs yesterday.</p>'}
-      </div>
-      <div class="card">
-        <h3>Watching</h3>
-        ${watchHtml ? `<ul>${watchHtml}</ul>` : '<p class="flat">No material upticks vs yesterday or through the day.</p>'}
-      </div>
-      <div class="card">
-        <h3>Clean</h3>
-        ${cleanHtml ? `<ul>${cleanHtml}</ul>` : '<p class="flat">No zero-PAR branches at EOD.</p>'}
-      </div>
+      ${narrItems(topItems)}
     </div>
-
-    <div class="bottom">
-      <strong>Bottom line:</strong> ${escapeHtml(narrative.bottomLine || '—')}
+    <div class="narr-card grey">
+      <div class="narr-header">
+        <div class="narr-icon">→</div>
+        <div class="narr-title">Holding Steady</div>
+      </div>
+      ${narrItems(holdItems)}
     </div>
-
-    <div class="meta">
-      Closest PAR snapshots to ${escapeHtml(String(slots.sod?.targetHour ?? 3).padStart(2, '0'))}:00 and ${escapeHtml(String(slots.eod?.targetHour ?? 20).padStart(2, '0'))}:00 Africa/Nairobi · Single-page A4 portrait PDF
+    <div class="narr-card amber">
+      <div class="narr-header">
+        <div class="narr-icon">⚠</div>
+        <div class="narr-title">Watching</div>
+      </div>
+      ${narrItems(watchItems)}
+    </div>
+    <div class="narr-card blue">
+      <div class="narr-header">
+        <div class="narr-icon">✦</div>
+        <div class="narr-title">Clean</div>
+      </div>
+      ${
+        cleanItems.length
+          ? narrItems(cleanItems)
+          : '<div class="narr-item"><span class="narr-bullet"></span><div><span class="change">No zero-PAR branches at EOD.</span></div></div>'
+      }
     </div>
   </div>
+
+  <div class="bottom-line">
+    <div class="bl-icon">📊</div>
+    <div>
+      <div class="bl-label">Bottom Line · Claude Analysis</div>
+      <div class="bl-text">${bottomLineHtml}</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Closest PAR snapshots to ${escapeHtml(sodHour)}:00 and ${escapeHtml(eodHour)}:00 Africa/Nairobi · Single-page A4 portrait
+  </div>
+
+</div>
 </body>
 </html>`
 }
