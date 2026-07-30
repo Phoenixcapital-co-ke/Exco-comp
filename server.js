@@ -6493,16 +6493,40 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     const borrowerMap = new Map();
     const borrowerNameMap = new Map();
     const normalizeName = (v) => String(v || '').trim().toLowerCase()
-    
+
+    const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all();
+    const loNameMap = new Map();
+    const accessIdToLoName = new Map();
+    for (const loRow of loRows) {
+      const normalizedName = normalizeName(loRow.name);
+      const accessId = String(loRow.borrower_access_id).trim();
+      if (!accessId) continue;
+      accessIdToLoName.set(accessId, loRow.name);
+      if (normalizedName) {
+        loNameMap.set(normalizedName, {
+          borrower_access_id: accessId,
+          name: loRow.name,
+        });
+      }
+    }
+
+    const findLoForRoName = (roName) => {
+      const norm = normalizeName(roName);
+      if (!norm) return null;
+      if (loNameMap.has(norm)) return loNameMap.get(norm);
+      for (const [loNorm, lo] of loNameMap.entries()) {
+        if (norm.includes(loNorm) || loNorm.includes(norm)) return lo;
+      }
+      return null;
+    };
+
     try {
-      // Get all loan officer names from RO_Targets for the selected month/year
       let targetRows = []
       try {
         targetRows = dbRW
           .prepare('SELECT loan_officer_name FROM RO_Targets WHERE month = ? AND year = ?')
           .all(monthNum, yearNum)
       } catch (e) {
-        // Fallback to RO_Target (singular) for backward compatibility
         try {
           targetRows = dbRW
             .prepare('SELECT loan_officer_name FROM RO_Target WHERE month = ? AND year = ?')
@@ -6511,34 +6535,19 @@ app.get('/api/logbook/collector-performance', (req, res) => {
           console.error('Error fetching RO targets:', e2.message)
         }
       }
-      
-      // Get all LOs to match names to borrower_access_ids
-      const loRows = dbRW.prepare('SELECT borrower_access_id, name FROM LOs WHERE borrower_access_id IS NOT NULL').all();
-      const loNameMap = new Map(); // normalized name -> borrower_access_id
-      for (const loRow of loRows) {
-        const normalizedName = normalizeName(loRow.name);
-        if (normalizedName) {
-          loNameMap.set(normalizedName, {
-            borrower_access_id: String(loRow.borrower_access_id).trim(),
-            name: loRow.name
-          });
-        }
-      }
-      
-      // Match RO_Targets names to borrower_access_ids
+
       for (const targetRow of targetRows) {
-        const targetName = normalizeName(targetRow.loan_officer_name);
-        if (!targetName) continue;
-        
-        const loMatch = loNameMap.get(targetName);
+        const loMatch = findLoForRoName(targetRow.loan_officer_name);
         if (loMatch) {
           const borrowerId = loMatch.borrower_access_id;
           if (borrowerId && !borrowerMap.has(borrowerId)) {
             borrowerMap.set(borrowerId, {
               borrower_access_id: borrowerId,
               total_repayment_amount: 0,
-              transaction_count: 0
+              transaction_count: 0,
             });
+          }
+          if (borrowerId) {
             borrowerNameMap.set(borrowerId, loMatch.name);
           }
         }
@@ -6614,8 +6623,13 @@ app.get('/api/logbook/collector-performance', (req, res) => {
           borrowerMap.set(borrowerId, {
             borrower_access_id: borrowerId,
             total_repayment_amount: 0,
-            transaction_count: 0
+            transaction_count: 0,
           });
+        }
+
+        if (!borrowerNameMap.has(borrowerId)) {
+          const loName = accessIdToLoName.get(borrowerId);
+          if (loName) borrowerNameMap.set(borrowerId, loName);
         }
         
         const entry = borrowerMap.get(borrowerId);
@@ -6626,40 +6640,56 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     
     // Convert to array and sort by total repayment amount (descending)
     let rows = Array.from(borrowerMap.values())
-      .map(row => ({
-      ...row,
-      name: borrowerNameMap.get(String(row.borrower_access_id)) || null
+      .map((row) => ({
+        ...row,
+        name:
+          borrowerNameMap.get(String(row.borrower_access_id)) ||
+          accessIdToLoName.get(String(row.borrower_access_id)) ||
+          null,
       }))
       .sort((a, b) => (b.total_repayment_amount || 0) - (a.total_repayment_amount || 0));
 
-    // Join with RO_Targets to get target by name for the selected month/year
+    // Join with RO_Targets to get target by loan officer (access id + name)
     const targetByLoanOfficerName = new Map()
+    const targetByAccessId = new Map()
+    const principalBalanceByAccessId = new Map()
     try {
-      // Primary table name
       const targetRows = dbRW
         .prepare(
-          'SELECT loan_officer_name, sum_of_target FROM RO_Targets WHERE month = ? AND year = ?'
+          'SELECT loan_officer_name, sum_of_target, sum_of_principal_balance FROM RO_Targets WHERE month = ? AND year = ?',
         )
         .all(monthNum, yearNum)
 
       for (const t of targetRows) {
         const key = normalizeName(t.loan_officer_name)
-        if (!key) continue
-        targetByLoanOfficerName.set(key, Number(t.sum_of_target) || 0)
+        const amount = Number(t.sum_of_target) || 0
+        const principal = Number(t.sum_of_principal_balance) || 0
+        if (key) targetByLoanOfficerName.set(key, amount)
+        const loMatch = findLoForRoName(t.loan_officer_name)
+        if (loMatch?.borrower_access_id) {
+          targetByAccessId.set(loMatch.borrower_access_id, amount)
+          if (principal > 0) principalBalanceByAccessId.set(loMatch.borrower_access_id, principal)
+        }
       }
     } catch (e) {
       // Backward-compat (if someone created RO_Target instead of RO_Targets)
       try {
         const targetRows = dbRW
           .prepare(
-            'SELECT loan_officer_name, sum_of_target FROM RO_Target WHERE month = ? AND year = ?'
+            'SELECT loan_officer_name, sum_of_target, sum_of_principal_balance FROM RO_Target WHERE month = ? AND year = ?',
           )
           .all(monthNum, yearNum)
 
         for (const t of targetRows) {
           const key = normalizeName(t.loan_officer_name)
-          if (!key) continue
-          targetByLoanOfficerName.set(key, Number(t.sum_of_target) || 0)
+          const amount = Number(t.sum_of_target) || 0
+          const principal = Number(t.sum_of_principal_balance) || 0
+          if (key) targetByLoanOfficerName.set(key, amount)
+          const loMatch = findLoForRoName(t.loan_officer_name)
+          if (loMatch?.borrower_access_id) {
+            targetByAccessId.set(loMatch.borrower_access_id, amount)
+            if (principal > 0) principalBalanceByAccessId.set(loMatch.borrower_access_id, principal)
+          }
         }
       } catch (e2) {
         console.error('Error fetching RO targets:', e2.message)
@@ -6667,10 +6697,18 @@ app.get('/api/logbook/collector-performance', (req, res) => {
     }
 
     rows = rows.map((row) => {
-      const key = normalizeName(row.name)
+      const id = String(row.borrower_access_id || '').trim()
+      const name = borrowerNameMap.get(id) || accessIdToLoName.get(id) || null
+      const key = normalizeName(name)
+      const target =
+        (id && targetByAccessId.has(id) ? targetByAccessId.get(id) : null) ??
+        (key ? targetByLoanOfficerName.get(key) : null) ??
+        null
       return {
         ...row,
-        target: key ? (targetByLoanOfficerName.get(key) ?? null) : null,
+        name,
+        target,
+        sum_of_principal_balance: id ? principalBalanceByAccessId.get(id) || 0 : 0,
       }
     })
 

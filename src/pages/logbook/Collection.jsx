@@ -49,6 +49,7 @@ function LogbookCollection({ country }) {
   const [officerPerfData, setOfficerPerfData] = useState([])
   const [parOfficerData, setParOfficerData] = useState([])
   const [loanOfficers, setLoanOfficers] = useState([])
+  const [roTargets, setROTargets] = useState([])
   const [expandedMonthlyBranch, setExpandedMonthlyBranch] = useState(null)
   const [expandedDailyBranch, setExpandedDailyBranch] = useState(null)
   const [dailyOpenLoansBranches, setDailyOpenLoansBranches] = useState([])
@@ -103,10 +104,11 @@ function LogbookCollection({ country }) {
         const perfUrl = country ? `${basePerf}&country=${encodeURIComponent(country)}` : basePerf
         const parBase = API_URLS.par.borrowerAccess
         const parUrl = country ? `${parBase}?country=${encodeURIComponent(country)}` : parBase
-        const [perfRes, parRes, loRes] = await Promise.all([
+        const [perfRes, parRes, loRes, roRes] = await Promise.all([
           fetch(perfUrl, { credentials: 'include' }),
           fetch(parUrl, { credentials: 'include' }),
           fetch(API_URLS.loanOfficers.list, { credentials: 'include' }),
+          fetch(API_URLS.targets.ro.list, { credentials: 'include' }),
         ])
         if (perfRes.ok) {
           const perf = await perfRes.json()
@@ -126,11 +128,18 @@ function LogbookCollection({ country }) {
         } else {
           setLoanOfficers([])
         }
+        if (roRes.ok) {
+          const ro = await roRes.json()
+          setROTargets(Array.isArray(ro) ? ro : [])
+        } else {
+          setROTargets([])
+        }
       } catch (e) {
         console.error('Failed to load officer collection breakdown', e)
         setOfficerPerfData([])
         setParOfficerData([])
         setLoanOfficers([])
+        setROTargets([])
       }
     }
     loadOfficerData()
@@ -737,6 +746,45 @@ function LogbookCollection({ country }) {
       loanOfficerNameByCode.set(code, String(officer.name || code).trim() || code)
     }
 
+    const normalizeOfficerName = (value) =>
+      String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+
+    const matchLoAccessIdForRoName = (roName) => {
+      const roNorm = normalizeOfficerName(roName)
+      if (!roNorm) return ''
+      for (const lo of loanOfficers) {
+        const id = String(lo.borrowerAccessId ?? '').trim()
+        if (!id) continue
+        const loNorm = normalizeOfficerName(lo.name)
+        if (loNorm === roNorm || roNorm.includes(loNorm) || loNorm.includes(roNorm)) return id
+      }
+      return ''
+    }
+
+    const roTargetByAccessId = new Map()
+    const roPrincipalByAccessId = new Map()
+    for (const target of roTargets) {
+      if (Number(target.month) !== m || Number(target.year) !== y) continue
+      const accessId = matchLoAccessIdForRoName(target.loanOfficerName)
+      if (!accessId) continue
+      roTargetByAccessId.set(accessId, Number(target.sumOfTarget) || 0)
+      const principal = Number(target.sumOfPrincipalBalance) || 0
+      if (principal > 0) roPrincipalByAccessId.set(accessId, principal)
+    }
+
+    const getParPortfolioForOfficer = (officerId, branchCodeForFilter) => {
+      const entry = parOfficerData.find((e) => String(e.officerId ?? '').trim() === officerId)
+      if (!entry) return 0
+      if (branchCodeForFilter) {
+        const branches = Array.isArray(entry.branches) ? entry.branches : []
+        if (branches.length && !branches.includes(branchCodeForFilter)) return 0
+      }
+      return Number(entry.openLoans) || 0
+    }
+
     const actualMap = new Map()
     const officerCollectedByBranchKey = new Map()
     const ensureActual = (key, name, branchCode) => {
@@ -802,7 +850,7 @@ function LogbookCollection({ country }) {
       return expected
     }
 
-    const buildOfficersForBranch = (branchKey, branchCode) => {
+    const buildOfficersForBranch = (branchKey, branchCode, branchCollectionExpected) => {
       const officerIds = new Set()
       if (branchCode) {
         for (const [officerId, branches] of officerIdToBranches.entries()) {
@@ -814,22 +862,51 @@ function LogbookCollection({ country }) {
         for (const officerId of collectedMap.keys()) officerIds.add(officerId)
       }
 
-      return Array.from(officerIds)
+      let list = Array.from(officerIds)
         .map((officerId) => {
           const perf = officerPerfById.get(officerId)
           const collected = collectedMap?.get(officerId) || 0
-          const expected = Number(perf?.target) || 0
+          const expected =
+            Number(perf?.target) ||
+            roTargetByAccessId.get(officerId) ||
+            0
           const name = loanOfficerNameByCode.get(officerId) || perf?.name || officerId
           return {
             id: officerId,
             name,
             expected,
             collected,
+            principalBalance:
+              Number(perf?.sum_of_principal_balance) ||
+              roPrincipalByAccessId.get(officerId) ||
+              getParPortfolioForOfficer(officerId, branchCode) ||
+              0,
             rate: expected > 0 ? (collected / expected) * 100 : null,
           }
         })
         .filter((officer) => officer.expected > 0 || officer.collected > 0)
-        .sort((a, b) => b.collected - a.collected)
+
+      const branchExpected = Number(branchCollectionExpected) || 0
+      const needsAllocation = branchExpected > 0 && list.some((o) => !o.expected)
+      if (needsAllocation) {
+        const weights = list.map(
+          (o) => o.principalBalance || getParPortfolioForOfficer(o.id, branchCode) || 0,
+        )
+        const totalWeight = weights.reduce((sum, w) => sum + w, 0)
+        if (totalWeight > 0) {
+          list = list.map((o, index) => {
+            const allocated = branchExpected * (weights[index] / totalWeight)
+            const expected = o.expected || allocated
+            return {
+              ...o,
+              expected,
+              rate: expected > 0 ? (o.collected / expected) * 100 : null,
+            }
+          })
+        }
+      }
+
+      return list.sort((a, b) => b.collected - a.collected)
     }
 
     const keys = new Set([...targetMap.keys(), ...actualMap.keys()])
@@ -858,7 +935,7 @@ function LogbookCollection({ country }) {
         dailyExpected,
         dailyCollected,
         dailyRate: dailyExpected > 0 ? (dailyCollected / dailyExpected) * 100 : null,
-        officers: buildOfficersForBranch(key, branchCode),
+        officers: buildOfficersForBranch(key, branchCode, expected),
       }
     })
 
@@ -1202,7 +1279,7 @@ function LogbookCollection({ country }) {
               Expected vs Collected by Branch (Selected Month)
             </h3>
             <p className="text-xs text-gray-500">
-              Expected uses each branch’s configured monthly collection target. Click a branch to see loan officers (expected from RO targets).
+              Branch expected uses each branch’s monthly collection target. Officer expected uses RO Targets for the selected month, or a share of the branch target by portfolio when RO targets are missing.
             </p>
           </div>
           <div className="overflow-x-auto">
