@@ -26,6 +26,7 @@ import { logLogin, logLogout, logPageView, logAction, logLoginFailed, logError, 
 import { initUserActivityTable } from './lib/userActivity.mjs'
 import { startTelegramBot } from './lib/telegramBot.mjs'
 import { renderDailyParReportHTML } from './src/reports/dailyParReportTemplate.js'
+import { renderHtmlToPdfBuffer } from './src/reports/htmlToPdf.js'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -10865,6 +10866,14 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
   })
 
   const html = renderDailyParReportHTML(payload)
+  let pdfBuffer
+  try {
+    pdfBuffer = await renderHtmlToPdfBuffer(html)
+  } catch (err) {
+    console.error('[Daily PAR email] PDF generation failed:', err)
+    throw new Error(`Failed to generate Daily PAR PDF: ${err.message || err}`)
+  }
+
   const dateLabel = payload.dateLabel || payload.date || ''
   const overall = payload.overall || {}
   const bottom = payload.narrative?.bottomLine || payload.claudeAnalysis?.bottomLine || ''
@@ -10881,23 +10890,36 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
     '',
     bottom ? `Bottom line: ${bottom}` : '',
     '',
-    'Open the HTML attachment for the full report.',
+    'The full report is attached as a PDF.',
   ]
     .filter(Boolean)
     .join('\n')
 
-  const filename = `daily-par-${payload.date || 'report'}.html`
+  const emailHtml = `<!DOCTYPE html>
+<html><body style="font-family:system-ui,sans-serif;color:#1a202c;line-height:1.5;font-size:14px">
+  <p><strong>Daily PAR Report — ${escapeDailyParEmailHtml(dateLabel)}</strong></p>
+  <p>Country: ${escapeDailyParEmailHtml(country)}</p>
+  <ul>
+    <li>EOD Yesterday: ${escapeDailyParEmailHtml(String(overall.eodYesterday?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.eodYesterday?.par))}</li>
+    <li>SOD Today: ${escapeDailyParEmailHtml(String(overall.sod?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.sod?.par))}</li>
+    <li>EOD Today: ${escapeDailyParEmailHtml(String(overall.eod?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.eod?.par))}</li>
+  </ul>
+  ${bottom ? `<p><strong>Bottom line:</strong> ${escapeDailyParEmailHtml(bottom)}</p>` : ''}
+  <p>The full report is attached as a PDF.</p>
+</body></html>`
+
+  const filename = `Daily-PAR-${payload.date || 'report'}.pdf`
   const result = await sendEmail({
     to: to.join(', '),
     cc: cc.length ? cc.join(', ') : undefined,
     subject,
     text,
-    html,
+    html: emailHtml,
     attachments: [
       {
         filename,
-        content: html,
-        contentType: 'text/html; charset=utf-8',
+        content: pdfBuffer,
+        contentType: 'application/pdf',
       },
     ],
   })
@@ -10949,6 +10971,15 @@ function formatDailyParCompact(v) {
   if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return `${Math.round(n)}`
+}
+
+function escapeDailyParEmailHtml(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function buildDailyParClaudePrompt(payload) {
