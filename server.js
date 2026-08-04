@@ -26,7 +26,7 @@ import { logLogin, logLogout, logPageView, logAction, logLoginFailed, logError, 
 import { initUserActivityTable } from './lib/userActivity.mjs'
 import { startTelegramBot } from './lib/telegramBot.mjs'
 import { renderDailyParReportHTML } from './src/reports/dailyParReportTemplate.js'
-import { renderHtmlToPdfBuffer } from './src/reports/htmlToPdf.js'
+import { renderWeeklyParReportHTML } from './src/reports/weeklyParReportTemplate.js'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -10868,6 +10868,7 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
   const html = renderDailyParReportHTML(payload)
   let pdfBuffer
   try {
+    const { renderHtmlToPdfBuffer } = await import('./src/reports/htmlToPdf.js')
     pdfBuffer = await renderHtmlToPdfBuffer(html)
   } catch (err) {
     console.error('[Daily PAR email] PDF generation failed:', err)
@@ -10875,38 +10876,9 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
   }
 
   const dateLabel = payload.dateLabel || payload.date || ''
-  const overall = payload.overall || {}
-  const bottom = payload.narrative?.bottomLine || payload.claudeAnalysis?.bottomLine || ''
   const subject = `Daily PAR — ${dateLabel} (${country})`
-
-  const text = [
-    `Daily PAR Report — ${dateLabel}`,
-    `Country: ${country}`,
-    '',
-    `EOD Yesterday: ${overall.eodYesterday?.parPct ?? '—'}% | ${formatDailyParCompact(overall.eodYesterday?.par)}`,
-    `SOD Today: ${overall.sod?.parPct ?? '—'}% | ${formatDailyParCompact(overall.sod?.par)}`,
-    `EOD Today: ${overall.eod?.parPct ?? '—'}% | ${formatDailyParCompact(overall.eod?.par)}`,
-    `Net vs yesterday: ${formatDailyParCompact(overall.netChangeVsYesterday)}`,
-    '',
-    bottom ? `Bottom line: ${bottom}` : '',
-    '',
-    'The full report is attached as a PDF.',
-  ]
-    .filter(Boolean)
-    .join('\n')
-
-  const emailHtml = `<!DOCTYPE html>
-<html><body style="font-family:system-ui,sans-serif;color:#1a202c;line-height:1.5;font-size:14px">
-  <p><strong>Daily PAR Report — ${escapeDailyParEmailHtml(dateLabel)}</strong></p>
-  <p>Country: ${escapeDailyParEmailHtml(country)}</p>
-  <ul>
-    <li>EOD Yesterday: ${escapeDailyParEmailHtml(String(overall.eodYesterday?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.eodYesterday?.par))}</li>
-    <li>SOD Today: ${escapeDailyParEmailHtml(String(overall.sod?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.sod?.par))}</li>
-    <li>EOD Today: ${escapeDailyParEmailHtml(String(overall.eod?.parPct ?? '—'))}% | ${escapeDailyParEmailHtml(formatDailyParCompact(overall.eod?.par))}</li>
-  </ul>
-  ${bottom ? `<p><strong>Bottom line:</strong> ${escapeDailyParEmailHtml(bottom)}</p>` : ''}
-  <p>The full report is attached as a PDF.</p>
-</body></html>`
+  const text = buildDailyParPlainEmailBody(payload, country)
+  const emailHtml = dailyParEmailBodyToHtml(text)
 
   const filename = `Daily-PAR-${payload.date || 'report'}.pdf`
   const result = await sendEmail({
@@ -10980,6 +10952,150 @@ function escapeDailyParEmailHtml(v) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+function formatDailyParPct(v, digits = 2) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return `${n.toFixed(digits)}%`
+}
+
+/** Plain-language email body (PDF carries the full report). */
+function buildDailyParPlainEmailBody(payload, country = 'Kenya') {
+  const overall = payload?.overall || {}
+  const branches = Array.isArray(payload?.branches) ? payload.branches : []
+  const narrative = payload?.narrative || {}
+
+  const eodPct = Number(overall.eod?.parPct)
+  const eodAmt = Number(overall.eod?.par) || 0
+  const yestPct = Number(overall.eodYesterday?.parPct)
+  const yestAmt = Number(overall.eodYesterday?.par) || 0
+  const sodPct = Number(overall.sod?.parPct)
+  const sodAmt = Number(overall.sod?.par) || 0
+
+  const vsYestPp =
+    Number.isFinite(eodPct) && Number.isFinite(yestPct) ? eodPct - yestPct : null
+  const sodToEodPp =
+    Number.isFinite(eodPct) && Number.isFinite(sodPct) ? eodPct - sodPct : null
+  const sodToEodAmt = eodAmt - sodAmt
+
+  let overview = `Portfolio PAR closed at ${formatDailyParPct(eodPct)} (${formatDailyParCompact(eodAmt)})`
+  if (vsYestPp != null && Number.isFinite(yestPct)) {
+    const dir = vsYestPp > 0.02 ? 'up' : vsYestPp < -0.02 ? 'down' : 'flat'
+    if (dir === 'flat') {
+      overview += ` — essentially flat vs yesterday's ${formatDailyParPct(yestPct)} (${formatDailyParCompact(yestAmt)}).`
+    } else {
+      overview += ` — ${dir} ${Math.abs(vsYestPp).toFixed(2)}% vs yesterday's ${formatDailyParPct(yestPct)} (${formatDailyParCompact(yestAmt)}).`
+    }
+  } else {
+    overview += '.'
+  }
+
+  if (sodToEodPp != null) {
+    const flatIntraday = Math.abs(sodToEodPp) < 0.15 && Math.abs(sodToEodAmt) < 200_000
+    if (flatIntraday) {
+      overview +=
+        vsYestPp != null && vsYestPp > 0.05
+          ? ' SOD-to-EOD movement was flat, meaning the increase was driven overnight.'
+          : vsYestPp != null && vsYestPp < -0.05
+            ? ' SOD-to-EOD movement was flat, so the improvement vs yesterday came overnight.'
+            : ' SOD-to-EOD movement was flat.'
+    } else if (sodToEodPp < -0.15) {
+      overview += ` Intraday, PAR fell ${Math.abs(sodToEodPp).toFixed(2)}% from SOD to EOD.`
+    } else {
+      overview += ` Intraday, PAR rose ${sodToEodPp.toFixed(2)}% from SOD to EOD.`
+    }
+  }
+
+  // Overnight / day-over-day drivers (PAR amount up vs yesterday)
+  const overnightDrivers = branches
+    .filter((b) => b.hasEod && b.hasYest && (b.vsYesterdayEod?.parAmt || 0) > 100_000)
+    .sort((a, b) => (b.vsYesterdayEod?.parAmt || 0) - (a.vsYesterdayEod?.parAmt || 0))
+    .slice(0, 3)
+  if (overnightDrivers.length && vsYestPp != null && vsYestPp > 0.05) {
+    const bits = overnightDrivers.map(
+      (b) => `${b.name} (+${formatDailyParCompact(b.vsYesterdayEod.parAmt)})`,
+    )
+    overview += ` Primary drivers: ${bits.join(', ')}.`
+  } else if (overnightDrivers.length === 0 && vsYestPp != null && vsYestPp < -0.05) {
+    const improvers = branches
+      .filter((b) => b.hasEod && b.hasYest && (b.vsYesterdayEod?.parAmt || 0) < -100_000)
+      .sort((a, b) => (a.vsYesterdayEod?.parAmt || 0) - (b.vsYesterdayEod?.parAmt || 0))
+      .slice(0, 3)
+    if (improvers.length) {
+      const bits = improvers.map(
+        (b) => `${b.name} (${formatDailyParCompact(b.vsYesterdayEod.parAmt)})`,
+      )
+      overview += ` Led by ${bits.join(', ')}.`
+    }
+  }
+
+  const priorityBranch = [...branches]
+    .filter((b) => b.hasEod)
+    .sort((a, b) => (b.eod?.par || 0) - (a.eod?.par || 0))[0]
+  let priority = ''
+  if (priorityBranch && (priorityBranch.eod?.par || 0) > 0) {
+    priority = `${priorityBranch.name} remains the largest single exposure at ${formatDailyParPct(priorityBranch.eod.parPct)} / ${formatDailyParCompact(priorityBranch.eod.par)}.`
+  }
+
+  const watchRaw =
+    (Array.isArray(narrative.watching) && narrative.watching[0]?.text) ||
+    (Array.isArray(narrative.watching) && narrative.watching[0]?.name) ||
+    ''
+  let watch = String(watchRaw || '').trim()
+  if (!watch) {
+    const rising = branches
+      .filter(
+        (b) =>
+          b.hasEod &&
+          b.hasYest &&
+          (b.vsYesterdayEod?.parPctPp || 0) >= 0.3 &&
+          (b.vsYesterdayEod?.parAmt || 0) > 50_000,
+      )
+      .sort((a, b) => (b.vsYesterdayEod?.parPctPp || 0) - (a.vsYesterdayEod?.parPctPp || 0))[0]
+    if (rising) {
+      watch = `${rising.name} posted rising PAR vs yesterday (+${(rising.vsYesterdayEod.parPctPp || 0).toFixed(2)}%, ${formatDailyParCompact(rising.vsYesterdayEod.parAmt)}). Watch for a further uptick tomorrow.`
+    }
+  }
+
+  const lines = [
+    'Hi team,',
+    '',
+    "Please find today's PAR report attached.",
+    '',
+    `Overview: ${overview}`,
+  ]
+  if (priority) {
+    lines.push('', `Priority: ${priority}`)
+  }
+  if (watch) {
+    lines.push('', `Watch: ${watch}`)
+  }
+  lines.push(
+    '',
+    'The full branch breakdown, trend analysis, and commentary are in the attached PDF.',
+    '',
+    'Regards,',
+    `Phoenix Capital — ${country} Operations`,
+  )
+  return lines.join('\n')
+}
+
+function dailyParEmailBodyToHtml(textBody) {
+  const paras = String(textBody || '')
+    .split(/\n\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const htmlParas = paras
+    .map((p) => {
+      const withBreaks = escapeDailyParEmailHtml(p).replace(/\n/g, '<br>')
+      return `<p style="margin:0 0 14px;line-height:1.55">${withBreaks}</p>`
+    })
+    .join('\n')
+  return `<!DOCTYPE html>
+<html><body style="font-family:Georgia,'Times New Roman',serif;color:#1a202c;font-size:15px;max-width:640px">
+${htmlParas}
+</body></html>`
 }
 
 function buildDailyParClaudePrompt(payload) {
@@ -11132,6 +11248,643 @@ async function generateDailyParClaudeAnalysis(payload) {
     emailBody: String(parsed.emailBody || '').slice(0, 5000),
   }
 }
+
+// ─── Weekly PAR (Sun 03:00 → Sat 20:00 EAT) ─────────────────────────────────
+
+function formatParNairobiStamp(iso) {
+  if (!iso) return null
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(iso))
+  } catch {
+    return String(iso)
+  }
+}
+
+function addCalendarDaysYmd(year, month, day, delta) {
+  const dt = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)))
+  dt.setUTCDate(dt.getUTCDate() + Number(delta) || 0)
+  return {
+    year: dt.getUTCFullYear(),
+    month: dt.getUTCMonth() + 1,
+    day: dt.getUTCDate(),
+  }
+}
+
+function nairobiWeekdaySun0(year, month, day) {
+  const utc = nairobiWallClockUtc(year, month, day, 12, 0)
+  const wd = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Africa/Nairobi',
+    weekday: 'short',
+  }).format(utc)
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  return map[wd] ?? 0
+}
+
+/** Week = Sunday–Saturday (Africa/Nairobi). `dateStr` may be any day in the week. */
+function resolveWeeklyParBounds(dateStr = '') {
+  const dateMatch = String(dateStr || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  let year
+  let month
+  let day
+  if (dateMatch) {
+    year = Number(dateMatch[1])
+    month = Number(dateMatch[2])
+    day = Number(dateMatch[3])
+  } else {
+    const parts = nairobiDateParts(new Date())
+    year = parts.year
+    month = parts.month
+    day = parts.day
+  }
+  const wd = nairobiWeekdaySun0(year, month, day)
+  const sun = addCalendarDaysYmd(year, month, day, -wd)
+  const sat = addCalendarDaysYmd(sun.year, sun.month, sun.day, 6)
+  const priorSat = addCalendarDaysYmd(sun.year, sun.month, sun.day, -1)
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ]
+  const fmtShort = (p) => `${p.day} ${monthNames[p.month - 1]}`
+  const weekLabel = `${fmtShort(sun)} – ${fmtShort(sat)} ${sat.year}`
+  const weekEndIso = `${sat.year}-${String(sat.month).padStart(2, '0')}-${String(sat.day).padStart(2, '0')}`
+  const weekStartIso = `${sun.year}-${String(sun.month).padStart(2, '0')}-${String(sun.day).padStart(2, '0')}`
+  return { sun, sat, priorSat, weekLabel, weekStartIso, weekEndIso }
+}
+
+async function buildWeeklyParReportPayload({
+  dateStr = '',
+  countryParam = 'Kenya',
+  effectiveBranches = [],
+  sowHour: sowHourIn = 3,
+  eowHour: eowHourIn = 20,
+} = {}) {
+  const { sun, sat, priorSat, weekLabel, weekStartIso, weekEndIso } = resolveWeeklyParBounds(dateStr)
+  const sowHour = Number.isFinite(Number(sowHourIn)) ? Number(sowHourIn) : 3
+  const eowHour = Number.isFinite(Number(eowHourIn)) ? Number(eowHourIn) : 20
+
+  const sowTarget = nairobiWallClockUtc(sun.year, sun.month, sun.day, sowHour, 0)
+  const eowTarget = nairobiWallClockUtc(sat.year, sat.month, sat.day, eowHour, 0)
+  const priorEowTarget = nairobiWallClockUtc(priorSat.year, priorSat.month, priorSat.day, eowHour, 0)
+
+  const sowTime = findClosestParSnapshotTimeNear(sowTarget, { maxAbsHours: 8 })
+  let eowTime = findClosestParSnapshotTimeNear(eowTarget, { maxAbsHours: 8 })
+  if (!eowTime) {
+    const latest = db.prepare('SELECT time FROM PAR ORDER BY time DESC LIMIT 1').get()
+    if (latest?.time) {
+      const latestMs = new Date(latest.time).getTime()
+      const sowMs = sowTarget.getTime()
+      const weekEndMs = nairobiWallClockUtc(sat.year, sat.month, sat.day, 23, 59).getTime()
+      if (latestMs >= sowMs && latestMs <= weekEndMs + 3 * 60 * 60 * 1000) {
+        eowTime = latest.time
+      }
+    }
+  }
+  const priorEowTime = findClosestParSnapshotTimeNear(priorEowTarget, { maxAbsHours: 8 })
+
+  const opts = { countryParam, effectiveBranches }
+  const sowRows = sowTime ? buildParBranchRowsForSnapshot(sowTime, opts) : []
+  const eowRows = eowTime ? buildParBranchRowsForSnapshot(eowTime, opts) : []
+  const priorRows = priorEowTime ? buildParBranchRowsForSnapshot(priorEowTime, opts) : []
+
+  const sowBy = new Map(sowRows.map((b) => [b.code, b]))
+  const eowBy = new Map(eowRows.map((b) => [b.code, b]))
+  const priorBy = new Map(priorRows.map((b) => [b.code, b]))
+  const codes = new Set([...sowBy.keys(), ...eowBy.keys(), ...priorBy.keys()])
+
+  const rate = (open, par) => (open > 0 ? (par / open) * 100 : 0)
+  const shortName = (name) =>
+    String(name || '')
+      .replace(/\s+Branch$/i, '')
+      .replace(/^Boda\s*-\s*/i, '')
+      .trim()
+
+  // Weekly thresholds (risk-reduced = SOW − EOW)
+  const FLAT_AMT = 300_000
+  const FLAT_PP = 0.5
+  const HUGE_AMT = 1_500_000
+  const HUGE_PP = 2.0
+  const HEALTHY_PCT = 8
+
+  const branches = Array.from(codes)
+    .map((code) => {
+      const sow = sowBy.get(code)
+      const eow = eowBy.get(code)
+      const prior = priorBy.get(code)
+      const name = shortName(eow?.name || sow?.name || prior?.name || code)
+
+      const sowOpen = Number(sow?.openLoans) || 0
+      const sowPar = Number(sow?.pastMissed) || 0
+      const eowOpen = Number(eow?.openLoans) || 0
+      const eowPar = Number(eow?.pastMissed) || 0
+      const priorOpen = Number(prior?.openLoans) || 0
+      const priorPar = Number(prior?.pastMissed) || 0
+
+      const sowPct = rate(sowOpen, sowPar)
+      const eowPct = rate(eowOpen, eowPar)
+      const priorPct = rate(priorOpen, priorPar)
+      const hasSow = !!sow && sowOpen > 0
+      const hasEow = !!eow && eowOpen > 0
+      const hasPrior = !!prior && priorOpen > 0
+
+      const shiftWeek =
+        hasSow && hasEow
+          ? {
+              parAmt: eowPar - sowPar,
+              parPctPp: Number((eowPct - sowPct).toFixed(2)),
+            }
+          : null
+
+      const riskReducedAmt = shiftWeek ? -(shiftWeek.parAmt || 0) : 0
+      const riskReducedPp = shiftWeek ? -(shiftWeek.parPctPp || 0) : 0
+      let classification = 'other'
+      if (hasEow && eowPct < HEALTHY_PCT) classification = 'healthy'
+      if (shiftWeek) {
+        if (riskReducedAmt <= -FLAT_AMT || riskReducedPp <= -FLAT_PP) classification = 'anomaly'
+        else if (Math.abs(riskReducedAmt) < FLAT_AMT && Math.abs(riskReducedPp) < FLAT_PP) {
+          classification = eowPct >= HEALTHY_PCT ? 'noAction' : 'healthy'
+        } else if (riskReducedAmt >= HUGE_AMT || riskReducedPp >= HUGE_PP) classification = 'huge'
+        else if (riskReducedAmt >= FLAT_AMT || riskReducedPp >= FLAT_PP) classification = 'reduced'
+      }
+
+      return {
+        code,
+        name,
+        hasSow,
+        hasEow,
+        hasPrior,
+        classification,
+        sow: { openLoans: sowOpen, par: sowPar, parPct: Number(sowPct.toFixed(2)) },
+        eow: { openLoans: eowOpen, par: eowPar, parPct: Number(eowPct.toFixed(2)) },
+        priorEow: { openLoans: priorOpen, par: priorPar, parPct: Number(priorPct.toFixed(2)) },
+        shiftWeek,
+        vsPriorWeek:
+          hasPrior && hasEow
+            ? {
+                parAmt: eowPar - priorPar,
+                parPctPp: Number((eowPct - priorPct).toFixed(2)),
+              }
+            : null,
+      }
+    })
+    .sort((a, b) => (Number(b.eow?.par) || 0) - (Number(a.eow?.par) || 0))
+
+  const sum = (rows, keyPath) =>
+    rows.reduce((acc, r) => {
+      const [a, b] = keyPath.split('.')
+      acc += Number(r[a]?.[b]) || 0
+      return acc
+    }, 0)
+
+  const overallSowPar = sum(branches, 'sow.par')
+  const overallSowOpen = sum(branches, 'sow.openLoans')
+  const overallEowPar = sum(branches, 'eow.par')
+  const overallEowOpen = sum(branches, 'eow.openLoans')
+  const overallPriorPar = sum(branches, 'priorEow.par')
+  const overallPriorOpen = sum(branches, 'priorEow.openLoans')
+
+  const overall = {
+    sow: {
+      openLoans: overallSowOpen,
+      par: overallSowPar,
+      parPct: Number(rate(overallSowOpen, overallSowPar).toFixed(2)),
+    },
+    eow: {
+      openLoans: overallEowOpen,
+      par: overallEowPar,
+      parPct: Number(rate(overallEowOpen, overallEowPar).toFixed(2)),
+    },
+    priorEow: {
+      openLoans: overallPriorOpen,
+      par: overallPriorPar,
+      parPct: Number(rate(overallPriorOpen, overallPriorPar).toFixed(2)),
+    },
+    shiftWeek: overallEowPar - overallSowPar,
+    netChangeVsPriorWeek: overallPriorPar - overallEowPar,
+  }
+
+  const fmtPct = (v) => `${(Number(v) || 0).toFixed(1)}%`
+  const fmtAmt = (v) => formatDailyParCompact(v)
+
+  const reduced = []
+  const noAction = []
+  const healthy = []
+  const anomaly = []
+  const largestEow = [...branches].filter((b) => b.hasEow).sort((a, b) => (b.eow?.par || 0) - (a.eow?.par || 0))[0]
+
+  for (const b of branches) {
+    if (!b.hasSow || !b.hasEow) continue
+    const riskAmt = -(b.shiftWeek?.parAmt || 0)
+    const riskPp = -(b.shiftWeek?.parPctPp || 0)
+    if (b.classification === 'huge' || b.classification === 'reduced') {
+      const size =
+        b.classification === 'huge' ? 'huge reduction' : riskAmt >= 750_000 ? 'solid reduction' : 'reduction'
+      reduced.push({
+        code: b.code,
+        name: b.name,
+        text: `${b.name}: ${size} this week — PAR down ${fmtAmt(riskAmt)} (${riskPp >= 0 ? '+' : ''}${riskPp.toFixed(1)}%), closing at ${fmtPct(b.eow.parPct)} / ${fmtAmt(b.eow.par)}.`,
+      })
+    } else if (b.classification === 'noAction') {
+      noAction.push({
+        code: b.code,
+        name: b.name,
+        text: `${b.name}: no meaningful risk reduction this week — still ${fmtPct(b.eow.parPct)} / ${fmtAmt(b.eow.par)}. Flat weeks at ≥8% are a collections miss.`,
+      })
+    } else if (b.classification === 'anomaly') {
+      anomaly.push({
+        code: b.code,
+        name: b.name,
+        text: `${b.name}: PAR rose ${fmtAmt(Math.abs(riskAmt))} (${Math.abs(riskPp).toFixed(1)}%) from Sunday open to Saturday close — investigate (should not grow from new dues mid-week).`,
+      })
+    } else if (b.classification === 'healthy') {
+      healthy.push({
+        code: b.code,
+        name: b.name,
+        text: `${b.name}: ends the week healthy at ${fmtPct(b.eow.parPct)} / ${fmtAmt(b.eow.par)} (under 8%).`,
+      })
+    }
+  }
+
+  reduced.sort((a, b) => {
+    const ba = branches.find((x) => x.code === a.code)
+    const bb = branches.find((x) => x.code === b.code)
+    return -(bb?.shiftWeek?.parAmt || 0) - -(ba?.shiftWeek?.parAmt || 0)
+  })
+
+  const riskWeek = -(overall.shiftWeek || 0)
+  const riskWeekPp =
+    Number.isFinite(overall.sow?.parPct) && Number.isFinite(overall.eow?.parPct)
+      ? overall.sow.parPct - overall.eow.parPct
+      : 0
+  let bottomLine = ''
+  if (riskWeek >= 1_500_000) {
+    bottomLine = `Excellent week — ${fmtAmt(riskWeek)} risk reduced (${riskWeekPp >= 0 ? '+' : ''}${riskWeekPp.toFixed(1)}% vs Sunday open).`
+  } else if (riskWeek >= 300_000) {
+    bottomLine = `PAR improved by ${fmtAmt(riskWeek)} over the week (${fmtPct(overall.sow.parPct)} → ${fmtPct(overall.eow.parPct)}).`
+  } else if (riskWeek <= -300_000) {
+    bottomLine = `PAR slipped by ${fmtAmt(Math.abs(riskWeek))} vs Sunday open (${fmtPct(overall.sow.parPct)} → ${fmtPct(overall.eow.parPct)}). Escalate no-action and anomaly branches.`
+  } else {
+    bottomLine = `Mixed/flat week overall (${fmtPct(overall.sow.parPct)} → ${fmtPct(overall.eow.parPct)}). Branches that stayed ≥8% without reducing risk need follow-up.`
+  }
+  if (largestEow && (largestEow.eow.parPct || 0) >= 10) {
+    bottomLine += ` ${largestEow.name} at ${fmtPct(largestEow.eow.parPct)} / ${fmtAmt(largestEow.eow.par)} remains priority number one.`
+  }
+  if (noAction[0]) bottomLine += ` ${noAction[0].name} leads the no-action list.`
+  if (anomaly[0]) bottomLine += ` ${anomaly[0].name} is the anomaly to investigate.`
+
+  const payloadBase = {
+    date: weekEndIso,
+    weekStart: weekStartIso,
+    weekEnd: weekEndIso,
+    weekLabel,
+    dateLabel: weekLabel,
+    country: countryParam || null,
+    slots: {
+      sow: {
+        targetHour: sowHour,
+        label: `Start of week (Sun ~${String(sowHour).padStart(2, '0')}:00 EAT)`,
+        time: sowTime,
+        asOfLabel: formatParNairobiStamp(sowTime),
+      },
+      eow: {
+        targetHour: eowHour,
+        label: `End of week (Sat ~${String(eowHour).padStart(2, '0')}:00 EAT)`,
+        time: eowTime,
+        asOfLabel: formatParNairobiStamp(eowTime),
+      },
+      priorEow: {
+        targetHour: eowHour,
+        label: `Prior week end (Sat ~${String(eowHour).padStart(2, '0')}:00 EAT)`,
+        time: priorEowTime,
+        asOfLabel: formatParNairobiStamp(priorEowTime),
+      },
+    },
+    overall,
+    branches,
+    narrative: {
+      reduced: reduced.slice(0, 4),
+      noAction: noAction.slice(0, 4),
+      anomaly: anomaly.slice(0, 4),
+      healthy: healthy.slice(0, 4),
+      // aliases for template / Claude compatibility
+      topPerformers: reduced.slice(0, 4),
+      holdingSteady: noAction.slice(0, 4),
+      watching: anomaly.slice(0, 4),
+      clean: healthy.slice(0, 4),
+      bottomLine,
+    },
+  }
+
+  let claudeAnalysis = null
+  let claudeError = null
+  try {
+    claudeAnalysis = await generateWeeklyParClaudeAnalysis(payloadBase)
+  } catch (e) {
+    claudeError = e.message || 'Claude analysis unavailable'
+    console.warn('[Weekly PAR] Claude analysis skipped:', claudeError)
+  }
+
+  if (claudeAnalysis) {
+    const toItems = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .map((t) => String(t || '').trim())
+        .filter(Boolean)
+        .slice(0, 6)
+        .map((text) => ({ text }))
+    if (toItems(claudeAnalysis.reduced).length) {
+      payloadBase.narrative.reduced = toItems(claudeAnalysis.reduced)
+      payloadBase.narrative.topPerformers = payloadBase.narrative.reduced
+    }
+    if (toItems(claudeAnalysis.noAction).length) {
+      payloadBase.narrative.noAction = toItems(claudeAnalysis.noAction)
+      payloadBase.narrative.holdingSteady = payloadBase.narrative.noAction
+    }
+    if (toItems(claudeAnalysis.anomaly).length) {
+      payloadBase.narrative.anomaly = toItems(claudeAnalysis.anomaly)
+      payloadBase.narrative.watching = payloadBase.narrative.anomaly
+    }
+    if (toItems(claudeAnalysis.healthy).length) {
+      payloadBase.narrative.healthy = toItems(claudeAnalysis.healthy)
+      payloadBase.narrative.clean = payloadBase.narrative.healthy
+    }
+    if (claudeAnalysis.bottomLine) {
+      payloadBase.narrative.bottomLine = String(claudeAnalysis.bottomLine).slice(0, 700)
+    }
+  }
+
+  return {
+    ...payloadBase,
+    claudeAnalysis,
+    claudeError,
+  }
+}
+
+function buildWeeklyParClaudePrompt(payload) {
+  const overall = payload?.overall || {}
+  const riskWeek = -(Number(overall.shiftWeek) || 0)
+  const riskLabel =
+    riskWeek >= 0
+      ? `${formatDailyParCompact(riskWeek)} risk reduced vs Sunday open`
+      : `${formatDailyParCompact(Math.abs(riskWeek))} increase vs Sunday open`
+  const branchSummary = (Array.isArray(payload?.branches) ? payload.branches : []).slice(0, 25).map((b) => ({
+    branch: b.name,
+    classification: b.classification,
+    sowPct: b.sow?.parPct,
+    sowAmt: b.sow?.par,
+    eowPct: b.eow?.parPct,
+    eowAmt: b.eow?.par,
+    riskReducedAmt: b.shiftWeek ? -(b.shiftWeek.parAmt || 0) : null,
+    riskReducedPp: b.shiftWeek ? -(b.shiftWeek.parPctPp || 0) : null,
+  }))
+
+  return `You are the credit-ops analyst writing Phoenix Capital's Weekly PAR report for Logbook ${payload.country || 'Kenya'} for week ${payload.weekLabel}.
+
+Week = Sunday 03:00 EAT (start) → Saturday 20:00 EAT (end). Reducing PAR is good. Flat ≥8% = no action (bad). Intraday/week rise is an anomaly.
+
+Return EXACTLY this JSON (no markdown):
+{
+  "reduced": ["Branch: …"],
+  "noAction": ["Branch: …"],
+  "anomaly": ["Branch: …"],
+  "healthy": ["Branch: …"],
+  "bottomLine": "2–4 sentences"
+}
+
+Hard rules:
+- Bullets start with "BranchName: ".
+- PAR < 8% = healthy. Flat ≥8% = noAction. Rising SOW→EOW = anomaly. Meaningful drop = reduced.
+- Use ONLY DATA. Amounts like 1.2M / 750K. Max 4 bullets per list.
+- Week result = ${riskLabel}.
+
+=== DATA ===
+${JSON.stringify(
+    {
+      weekLabel: payload.weekLabel,
+      country: payload.country,
+      overall,
+      branches: branchSummary,
+    },
+    null,
+    2,
+  )}`
+}
+
+async function generateWeeklyParClaudeAnalysis(payload) {
+  const apiKey = getAnthropicApiKey()
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY not configured')
+  }
+  const model = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001').trim()
+  const prompt = buildWeeklyParClaudePrompt(payload)
+  const response = await axios.post(
+    'https://api.anthropic.com/v1/messages',
+    {
+      model,
+      max_tokens: 1800,
+      messages: [{ role: 'user', content: prompt }],
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      timeout: 90000,
+    },
+  )
+  const raw = response.data?.content?.[0]?.text
+  if (!raw) throw new Error('Empty Claude response')
+  const parsed = parseAnthropicCommentaryJson(raw)
+  const clipBullet = (s, n = 420) => String(s).slice(0, n)
+  return {
+    reduced: Array.isArray(parsed.reduced) ? parsed.reduced.map((s) => clipBullet(s)).slice(0, 5) : [],
+    noAction: Array.isArray(parsed.noAction) ? parsed.noAction.map((s) => clipBullet(s)).slice(0, 5) : [],
+    anomaly: Array.isArray(parsed.anomaly) ? parsed.anomaly.map((s) => clipBullet(s)).slice(0, 5) : [],
+    healthy: Array.isArray(parsed.healthy) ? parsed.healthy.map((s) => clipBullet(s, 360)).slice(0, 6) : [],
+    bottomLine: String(parsed.bottomLine || '').slice(0, 700),
+  }
+}
+
+function isWeeklyParEmailEnabled() {
+  const flag = String(process.env.WEEKLY_PAR_EMAIL_ENABLED ?? process.env.DAILY_PAR_EMAIL_ENABLED ?? 'true').toLowerCase()
+  if (['0', 'false', 'no', 'off'].includes(flag)) return false
+  return true
+}
+
+function buildWeeklyParPlainEmailBody(payload, country = 'Kenya') {
+  const overall = payload?.overall || {}
+  const narrative = payload?.narrative || {}
+  const weekLabel = payload?.weekLabel || payload?.dateLabel || ''
+  const sowPct = Number(overall.sow?.parPct)
+  const eowPct = Number(overall.eow?.parPct)
+  const sowAmt = Number(overall.sow?.par) || 0
+  const eowAmt = Number(overall.eow?.par) || 0
+  const riskAmt = -(Number(overall.shiftWeek) || 0)
+  const riskPp =
+    Number.isFinite(sowPct) && Number.isFinite(eowPct) ? Number((sowPct - eowPct).toFixed(2)) : null
+
+  let overview = `Portfolio PAR closed the week at ${formatDailyParPct(eowPct)} (${formatDailyParCompact(eowAmt)})`
+  if (Number.isFinite(sowPct) && riskPp != null) {
+    const dir = riskPp > 0.05 ? 'down' : riskPp < -0.05 ? 'up' : 'flat'
+    if (dir === 'flat') {
+      overview += ` — essentially flat vs Sunday open ${formatDailyParPct(sowPct)} (${formatDailyParCompact(sowAmt)}).`
+    } else if (dir === 'down') {
+      overview += ` — down ${Math.abs(riskPp).toFixed(2)}% vs Sunday open ${formatDailyParPct(sowPct)} (${formatDailyParCompact(sowAmt)}), with ${formatDailyParCompact(riskAmt)} risk reduced.`
+    } else {
+      overview += ` — up ${Math.abs(riskPp).toFixed(2)}% vs Sunday open ${formatDailyParPct(sowPct)} (${formatDailyParCompact(sowAmt)}).`
+    }
+  } else {
+    overview += '.'
+  }
+
+  const priorityBranch = [...(payload?.branches || [])]
+    .filter((b) => b.hasEow)
+    .sort((a, b) => (b.eow?.par || 0) - (a.eow?.par || 0))[0]
+  let priority = ''
+  if (priorityBranch) {
+    priority = `${priorityBranch.name} remains the largest single exposure at ${formatDailyParPct(priorityBranch.eow.parPct)} / ${formatDailyParCompact(priorityBranch.eow.par)}.`
+  }
+
+  const watch = narrative.noAction?.[0]?.text || narrative.anomaly?.[0]?.text || ''
+
+  const lines = [
+    'Hi team,',
+    '',
+    `Please find this week's PAR report attached (${weekLabel}).`,
+    '',
+    `Overview: ${overview}`,
+  ]
+  if (priority) lines.push('', `Priority: ${priority}`)
+  if (watch) lines.push('', `Watch: ${watch}`)
+  lines.push(
+    '',
+    'The full branch breakdown and commentary are in the attached PDF.',
+    '',
+    'Regards,',
+    `Phoenix Capital — ${country} Operations`,
+  )
+  return lines.join('\n')
+}
+
+async function sendWeeklyParReportEmail({ dateStr = '', countryParam = '', force = false } = {}) {
+  if (!force && !isWeeklyParEmailEnabled()) {
+    return { ok: false, skipped: true, reason: 'WEEKLY_PAR_EMAIL_ENABLED is off' }
+  }
+
+  const { to, cc } = getDailyParEmailRecipients()
+  if (!to.length) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+    }
+  }
+
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const payload = await buildWeeklyParReportPayload({
+    dateStr,
+    countryParam: country,
+    effectiveBranches: [],
+    sowHour: 3,
+    eowHour: 20,
+  })
+
+  const html = renderWeeklyParReportHTML(payload)
+  let pdfBuffer
+  try {
+    const { renderHtmlToPdfBuffer } = await import('./src/reports/htmlToPdf.js')
+    pdfBuffer = await renderHtmlToPdfBuffer(html)
+  } catch (err) {
+    console.error('[Weekly PAR email] PDF generation failed:', err)
+    throw new Error(`Failed to generate Weekly PAR PDF: ${err.message || err}`)
+  }
+
+  const weekLabel = payload.weekLabel || payload.dateLabel || ''
+  const subject = `Weekly PAR — ${weekLabel} (${country})`
+  const text = buildWeeklyParPlainEmailBody(payload, country)
+  const emailHtml = dailyParEmailBodyToHtml(text)
+  const filename = `Weekly-PAR-${payload.weekEnd || payload.date || 'report'}.pdf`
+
+  const result = await sendEmail({
+    to: to.join(', '),
+    cc: cc.length ? cc.join(', ') : undefined,
+    subject,
+    text,
+    html: emailHtml,
+    attachments: [
+      {
+        filename,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      },
+    ],
+  })
+
+  return {
+    ok: !!result.ok,
+    skipped: !!result.skipped,
+    to,
+    cc,
+    subject,
+    weekStart: payload.weekStart,
+    weekEnd: payload.weekEnd,
+    weekLabel,
+    country,
+    claudeError: payload.claudeError || null,
+  }
+}
+
+app.get('/api/reports/weekly-par', requireAuth, async (req, res) => {
+  try {
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : 'Kenya'
+    const dateStr =
+      (req.query && req.query.date != null ? String(req.query.date).trim() : '') ||
+      (req.query && req.query.weekEnd != null ? String(req.query.weekEnd).trim() : '')
+    const payload = await buildWeeklyParReportPayload({
+      dateStr,
+      countryParam,
+      effectiveBranches,
+      sowHour: 3,
+      eowHour: 20,
+    })
+    res.json(payload)
+  } catch (e) {
+    console.error('[Weekly PAR] failed:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/reports/weekly-par/send', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin or superuser only' })
+    }
+    const dateStr =
+      (req.body && req.body.date != null ? String(req.body.date).trim() : '') ||
+      (req.query && req.query.date != null ? String(req.query.date).trim() : '')
+    const countryParam =
+      (req.body && req.body.country != null ? String(req.body.country).trim() : '') ||
+      (req.query && req.query.country != null ? String(req.query.country).trim() : '')
+
+    const result = await sendWeeklyParReportEmail({ dateStr, countryParam, force: true })
+    if (result.skipped && !result.ok) {
+      return res.status(400).json(result)
+    }
+    res.json(result)
+  } catch (e) {
+    console.error('[Weekly PAR email] send failed:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
 
 app.get('/api/par/borrower-access', async (req, res) => {
   try {
@@ -13290,6 +14043,24 @@ cron.schedule(
       console.log('[CRON] Daily PAR email result:', result)
     } catch (e) {
       console.error('[CRON] Daily PAR email failed:', e.message)
+    }
+  },
+  {
+    scheduled: true,
+    timezone: 'Africa/Nairobi',
+  },
+)
+
+// Weekly PAR email: Saturday 20:00 Africa/Nairobi (Sun 03:00 → Sat 20:00 week)
+cron.schedule(
+  '0 20 * * 6',
+  async () => {
+    console.log(`[CRON] Running Weekly PAR email job at ${new Date().toISOString()}`)
+    try {
+      const result = await sendWeeklyParReportEmail({})
+      console.log('[CRON] Weekly PAR email result:', result)
+    } catch (e) {
+      console.error('[CRON] Weekly PAR email failed:', e.message)
     }
   },
   {

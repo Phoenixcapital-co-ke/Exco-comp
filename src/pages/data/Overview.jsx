@@ -7,6 +7,7 @@ import { formatKES } from '../../utils/format.js'
 import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookWeeklyReportTemplate.js'
 import { renderDirectorReportHTML } from '../../reports/directorReportTemplate.js'
 import { renderDailyParReportHTML } from '../../reports/dailyParReportTemplate.js'
+import { renderWeeklyParReportHTML } from '../../reports/weeklyParReportTemplate.js'
 import { DEFAULT_MAINTENANCE_MESSAGE } from '../../components/MaintenanceDownScreen.jsx'
 
 function DataOverview() {
@@ -73,6 +74,20 @@ function DataOverview() {
   const [showDailyParDownloadMenu, setShowDailyParDownloadMenu] = useState(false)
   const [dailyParEmailSending, setDailyParEmailSending] = useState(false)
   const [dailyParEmailStatus, setDailyParEmailStatus] = useState(null)
+
+  // Weekly PAR Report State
+  const [weeklyParDate, setWeeklyParDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [weeklyParCountry, setWeeklyParCountry] = useState('Kenya')
+  const [weeklyParReportHtml, setWeeklyParReportHtml] = useState('')
+  const [weeklyParLoading, setWeeklyParLoading] = useState(false)
+  const [weeklyParError, setWeeklyParError] = useState(null)
+  const [showWeeklyParReport, setShowWeeklyParReport] = useState(false)
+  const [showWeeklyParDownloadMenu, setShowWeeklyParDownloadMenu] = useState(false)
+  const [weeklyParEmailSending, setWeeklyParEmailSending] = useState(false)
+  const [weeklyParEmailStatus, setWeeklyParEmailStatus] = useState(null)
 
   // Boda Top Up Qualifiers Report State
   const [bodaTopupRows, setBodaTopupRows] = useState([])
@@ -1602,6 +1617,131 @@ function DataOverview() {
     }
   }
 
+  const generateWeeklyParReport = async () => {
+    try {
+      setWeeklyParLoading(true)
+      setWeeklyParError(null)
+      setWeeklyParReportHtml('')
+      setWeeklyParEmailStatus(null)
+      const params = new URLSearchParams()
+      if (weeklyParDate) params.set('date', weeklyParDate)
+      if (weeklyParCountry) params.set('country', weeklyParCountry)
+      const res = await fetch(`${API_URLS.reports.weeklyPar}?${params.toString()}`, {
+        credentials: 'include',
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `Failed (${res.status})`)
+      setWeeklyParReportHtml(renderWeeklyParReportHTML(data))
+    } catch (e) {
+      setWeeklyParError(e.message || 'Failed to generate weekly PAR report')
+    } finally {
+      setWeeklyParLoading(false)
+    }
+  }
+
+  const sendWeeklyParEmail = async () => {
+    try {
+      setWeeklyParEmailSending(true)
+      setWeeklyParEmailStatus(null)
+      const res = await fetch(API_URLS.reports.weeklyParSend, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: weeklyParDate, country: weeklyParCountry }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || data.reason || `Send failed (${res.status})`)
+      if (data.skipped) {
+        setWeeklyParEmailStatus({
+          ok: false,
+          message: data.reason || 'Email skipped (check SMTP / recipients)',
+        })
+      } else {
+        setWeeklyParEmailStatus({
+          ok: true,
+          message: `Sent to ${(data.to || []).join(', ') || 'recipients'}${
+            data.cc?.length ? ` (cc: ${data.cc.join(', ')})` : ''
+          }`,
+        })
+      }
+    } catch (e) {
+      setWeeklyParEmailStatus({ ok: false, message: e.message || 'Failed to send email' })
+    } finally {
+      setWeeklyParEmailSending(false)
+    }
+  }
+
+  const downloadWeeklyParHTML = () => {
+    const blob = new Blob([weeklyParReportHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `weekly-par-report-${weeklyParDate}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadWeeklyParPDF = async () => {
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const { jsPDF } = await import('jspdf')
+      const PAGE_W = 794
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'fixed'
+      iframe.style.left = '-10000px'
+      iframe.style.top = '0'
+      iframe.style.width = `${PAGE_W}px`
+      iframe.style.height = '1200px'
+      iframe.style.border = 'none'
+      iframe.style.opacity = '0'
+      document.body.appendChild(iframe)
+      iframe.contentDocument.open()
+      iframe.contentDocument.write(weeklyParReportHtml)
+      iframe.contentDocument.close()
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      const element = iframe.contentDocument.querySelector('.page') || iframe.contentDocument.body
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: PAGE_W,
+        width: PAGE_W,
+      })
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const pageW = pdf.internal.pageSize.getWidth()
+      const pageH = pdf.internal.pageSize.getHeight()
+      const marginX = 6
+      const marginTop = 4
+      const maxW = pageW - marginX * 2
+      const maxH = pageH - marginTop - 4
+      const pxToMm = 0.264583
+      const scale = Math.min(maxW / (canvas.width * pxToMm), maxH / (canvas.height * pxToMm))
+      const renderW = canvas.width * pxToMm * scale
+      const renderH = canvas.height * pxToMm * scale
+      pdf.addImage(
+        canvas.toDataURL('image/jpeg', 0.98),
+        'JPEG',
+        (pageW - renderW) / 2,
+        marginTop,
+        renderW,
+        renderH,
+      )
+      pdf.save(`weekly-par-report-${weeklyParDate}.pdf`)
+      document.body.removeChild(iframe)
+      return
+    } catch (err) {
+      console.error('Weekly PAR PDF failed, falling back to print:', err)
+    }
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.open()
+      printWindow.document.write(weeklyParReportHtml)
+      printWindow.document.close()
+      printWindow.onload = () => setTimeout(() => printWindow.print(), 400)
+    }
+  }
+
   const downloadDirectorHTML = () => {
     const safeName = 'board-report'
     const blob = new Blob([directorReportHtml], { type: 'text/html' })
@@ -2831,6 +2971,164 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Weekly PAR Report Modal */}
+      {showWeeklyParReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowWeeklyParReport(false)
+              setShowWeeklyParDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Weekly PAR Report (Sun → Sat)</h2>
+              <button
+                onClick={() => {
+                  setShowWeeklyParReport(false)
+                  setShowWeeklyParDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Any day in week</label>
+                  <input
+                    type="date"
+                    value={weeklyParDate}
+                    onChange={(e) => setWeeklyParDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+                  <select
+                    value={weeklyParCountry}
+                    onChange={(e) => setWeeklyParCountry(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                  >
+                    <option value="Kenya">Kenya</option>
+                    <option value="Uganda">Uganda</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={generateWeeklyParReport}
+                    disabled={weeklyParLoading}
+                    className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {weeklyParLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      'Generate Report'
+                    )}
+                  </button>
+
+                  {['admin', 'superuser'].includes(String(user?.role || '').toLowerCase()) && (
+                    <button
+                      onClick={sendWeeklyParEmail}
+                      disabled={weeklyParEmailSending || weeklyParLoading}
+                      className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      title="Email the weekly PDF now (same recipients as Daily PAR). Also auto-sends Sat 20:00 EAT."
+                    >
+                      {weeklyParEmailSending ? 'Sending…' : 'Send Email Now'}
+                    </button>
+                  )}
+
+                  {weeklyParReportHtml && !weeklyParLoading && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowWeeklyParDownloadMenu((v) => !v)}
+                        className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                      >
+                        Download
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showWeeklyParDownloadMenu && (
+                        <div className="absolute right-0 mt-2 w-44 rounded-lg border border-gray-200 bg-white shadow-lg z-10 overflow-hidden">
+                          <button
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50"
+                            onClick={() => {
+                              setShowWeeklyParDownloadMenu(false)
+                              downloadWeeklyParHTML()
+                            }}
+                          >
+                            Download HTML
+                          </button>
+                          <button
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50"
+                            onClick={() => {
+                              setShowWeeklyParDownloadMenu(false)
+                              downloadWeeklyParPDF()
+                            }}
+                          >
+                            Download PDF
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500 mb-4">
+                Week = <strong>Sunday 03:00 EAT</strong> → <strong>Saturday 20:00 EAT</strong>. Positive change = risk reduced.
+                Auto-emailed <strong>Saturday at 20:00 EAT</strong> to the same Daily PAR recipients.
+              </p>
+
+              {weeklyParEmailStatus && (
+                <div
+                  className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+                    weeklyParEmailStatus.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {weeklyParEmailStatus.message}
+                </div>
+              )}
+
+              {weeklyParLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
+                  <p className="mt-4 text-sm text-gray-500">Building weekly PAR table + commentary...</p>
+                </div>
+              ) : weeklyParError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {weeklyParError}
+                </div>
+              ) : !weeklyParReportHtml ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to build the weekly Sun → Sat PAR report.</p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <iframe
+                    title="Weekly PAR Report Preview"
+                    style={{ width: '100%', height: '75vh', border: 0 }}
+                    srcDoc={weeklyParReportHtml}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Director Report Modal */}
       {showDirectorReport && (
         <div
@@ -3468,6 +3766,22 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Daily PAR Report</h2>
                 <p className="text-sm text-gray-500">SOD (~3am) vs EOD (~8pm) by branch — shift, recovery vs yesterday, PDF download</p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Weekly PAR Report Card */}
+          <button
+            onClick={() => setShowWeeklyParReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Weekly PAR Report</h2>
+                <p className="text-sm text-gray-500">Sun 3am → Sat 8pm by branch — risk reduced, emailed Saturdays 8pm</p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
