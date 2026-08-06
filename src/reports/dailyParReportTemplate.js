@@ -36,29 +36,46 @@ function formatSignedPp(v) {
   return `${sign}${n.toFixed(1)}%`
 }
 
-/** Positive = risk reduced (PAR fell); green. Negative = risk rose; red. */
-function pillClassForParAmt(amt) {
-  const n = Number(amt) || 0
-  if (n > 1000) return 'up'
-  if (n < -1000) return 'down'
-  return 'flat'
+/**
+ * Material SOD→EOD move (risk-reduced signed: + = PAR fell).
+ * Green only if the drop clears noise AND is meaningful vs that branch's PAR book,
+ * or the PAR rate itself moves ≥0.3%.
+ */
+const MATERIAL_AMT = 100_000
+const MATERIAL_PP = 0.3
+const MATERIAL_SHARE = 0.02 // ≥2% of SOD PAR amount
+const HEALTHY_PAR_PCT = 8
+
+function isMaterialRiskMove(riskAmt, riskPp, sodPar) {
+  const amt = Number(riskAmt) || 0
+  const pp = Number(riskPp) || 0
+  const book = Math.max(0, Number(sodPar) || 0)
+  const absAmt = Math.abs(amt)
+  const absPp = Math.abs(pp)
+  if (absPp >= MATERIAL_PP) return true
+  if (absAmt < MATERIAL_AMT) return false
+  if (book <= 0) return absAmt >= MATERIAL_AMT
+  return absAmt / book >= MATERIAL_SHARE
 }
 
-/** Same semantics for % shifts (risk-reduction signed). */
-function pillClassForParPp(pp) {
-  const n = Number(pp) || 0
-  if (n > 0.05) return 'up'
-  if (n < -0.05) return 'down'
-  return 'flat'
+/** Change-cell tone: good | warn | bad | '' */
+function changeCellTone(riskAmt, riskPp, sodPar) {
+  if (riskAmt == null || riskPp == null) return ''
+  if (!isMaterialRiskMove(riskAmt, riskPp, sodPar)) return 'warn'
+  if (riskAmt > 0 || riskPp > 0) return 'good'
+  if (riskAmt < 0 || riskPp < 0) return 'bad'
+  return 'warn'
 }
 
-function rowTone(b) {
-  const shiftPp = b.shiftSodToEod?.parPctPp
-  const vsYPp = b.vsYesterdayEod?.parPctPp
-  if (shiftPp != null && shiftPp <= -0.4) return 'row-improved'
-  if (vsYPp != null && vsYPp >= 0.4) return 'row-watch'
-  if (shiftPp != null && shiftPp >= 0.4) return 'row-worsened'
-  return 'row-neutral'
+function eodParCellTone(parPct) {
+  const n = Number(parPct)
+  if (!Number.isFinite(n)) return ''
+  return n < HEALTHY_PAR_PCT ? 'good' : ''
+}
+
+function valuePill(tone, content) {
+  const t = tone || 'neutral'
+  return `<span class="val val-${t}">${content}</span>`
 }
 
 function narrItems(list) {
@@ -129,24 +146,26 @@ export function renderDailyParReportHTML(payload) {
       const shift = b.shiftSodToEod
       const riskReducedAmt = shift ? -(Number(shift.parAmt) || 0) : null
       const riskReducedPct = shift ? -(Number(shift.parPctPp) || 0) : null
-      const tone = rowTone(b)
-      return `<tr class="${tone}">
+      const sodPar = Number(b.sod?.par) || 0
+      const changeTone = changeCellTone(riskReducedAmt, riskReducedPct, sodPar)
+      const eodPctTone = eodParCellTone(b.eod?.parPct)
+      return `<tr>
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
         <td>${formatPct(b.eodYesterday?.parPct)}</td>
         <td class="amt">${formatCompact(b.eodYesterday?.par)}</td>
         <td>${b.hasSod === false ? '—' : formatPct(b.sod?.parPct)}</td>
         <td class="amt">${b.hasSod === false ? '—' : formatCompact(b.sod?.par)}</td>
-        <td><strong>${formatPct(b.eod?.parPct)}</strong></td>
+        <td>${valuePill(eodPctTone || 'neutral', `<strong>${formatPct(b.eod?.parPct)}</strong>`)}</td>
         <td class="amt">${formatCompact(b.eod?.par)}</td>
         <td>${
           riskReducedAmt != null
-            ? `<span class="pill ${pillClassForParAmt(riskReducedAmt)}">${formatSignedCompact(riskReducedAmt)}</span>`
-            : '<span class="pill flat">—</span>'
+            ? valuePill(changeTone, formatSignedCompact(riskReducedAmt))
+            : '—'
         }</td>
         <td>${
           riskReducedPct != null
-            ? `<span class="pill ${pillClassForParPp(riskReducedPct)}">${formatSignedPp(riskReducedPct)}</span>`
-            : '<span class="pill flat">—</span>'
+            ? valuePill(changeTone, formatSignedPp(riskReducedPct))
+            : '—'
         }</td>
       </tr>`
     })
@@ -431,12 +450,21 @@ export function renderDailyParReportHTML(payload) {
   }
   .pill.up   { background: var(--green-light); color: var(--green); }
   .pill.down { background: var(--red-light); color: var(--red); }
-  .pill.flat { background: #edf2f7; color: var(--muted); }
+  .pill.flat { background: var(--amber-light); color: var(--amber); }
 
-  .row-improved { background: #f0fff4; }
-  .row-worsened { background: #fff5f5; }
-  .row-watch    { background: #fffbeb; }
-  .row-neutral  { background: var(--white); }
+  .val {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .val-neutral { background: transparent; color: inherit; font-weight: inherit; padding: 0; }
+  .val-good { background: var(--green-light); color: var(--green); }
+  .val-warn { background: var(--amber-light); color: var(--amber); }
+  .val-bad  { background: var(--red-light); color: var(--red); }
 
   .legend {
     display: flex;
@@ -657,20 +685,19 @@ export function renderDailyParReportHTML(payload) {
           <td class="amt">${formatCompact(overall.eodYesterday?.par)}</td>
           <td>${formatPct(overall.sod?.parPct)}</td>
           <td class="amt">${formatCompact(overall.sod?.par)}</td>
-          <td>${formatPct(overall.eod?.parPct)}</td>
+          <td>${valuePill(eodParCellTone(overall.eod?.parPct) || 'neutral', formatPct(overall.eod?.parPct))}</td>
           <td class="amt">${formatCompact(overall.eod?.par)}</td>
-          <td>${formatSignedCompact(totalShift)}</td>
-          <td>${formatSignedPp(totalShiftPp)}</td>
+          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.sod?.par), formatSignedCompact(totalShift))}</td>
+          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.sod?.par), formatSignedPp(totalShiftPp))}</td>
         </tr>
       </tfoot>
     </table>
   </div>
 
   <div class="legend">
-    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> Improved (SOD→EOD)</span>
-    <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Worsened (SOD→EOD)</span>
-    <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Watch (PAR rising)</span>
-    <span><span class="swatch" style="background:#f7fafc;border:1px solid #cbd5e0"></span> Stable</span>
+    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> EOD % &lt; 8% · or material reduction (≥100K and ≥2% of SOD PAR, or ≥0.3%)</span>
+    <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Noise / non-material change</span>
+    <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Material rise</span>
   </div>
 
   <div class="section-title">

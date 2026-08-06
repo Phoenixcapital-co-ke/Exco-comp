@@ -36,28 +36,46 @@ function formatSignedPp(v) {
   return `${sign}${n.toFixed(1)}%`
 }
 
-/** Positive = risk reduced (PAR fell); green. */
-function pillClassForRiskReduced(amt) {
-  const n = Number(amt) || 0
-  if (n > 1000) return 'up'
-  if (n < -1000) return 'down'
-  return 'flat'
+/**
+ * Material week move (risk-reduced signed: + = PAR fell).
+ * Calibrated from Kenya branch-weeks (Sun/Mon open → Fri/Sat close):
+ * reductions-only p25 ≈ 800K / 2.0%; median ≈ 1.6M / 3.3%.
+ * Green only for material moves; noise stays yellow.
+ */
+const MATERIAL_AMT = 750_000
+const MATERIAL_PP = 1.5
+const MATERIAL_SHARE = 0.03 // ≥3% of SOW PAR amount
+const HEALTHY_PAR_PCT = 8
+
+function isMaterialRiskMove(riskAmt, riskPp, sowPar) {
+  const amt = Number(riskAmt) || 0
+  const pp = Number(riskPp) || 0
+  const book = Math.max(0, Number(sowPar) || 0)
+  const absAmt = Math.abs(amt)
+  const absPp = Math.abs(pp)
+  if (absPp >= MATERIAL_PP) return true
+  if (absAmt < MATERIAL_AMT) return false
+  if (book <= 0) return absAmt >= MATERIAL_AMT
+  return absAmt / book >= MATERIAL_SHARE
 }
 
-function pillClassForRiskReducedPp(pp) {
-  const n = Number(pp) || 0
-  if (n > 0.05) return 'up'
-  if (n < -0.05) return 'down'
-  return 'flat'
+function changeCellTone(riskAmt, riskPp, sowPar) {
+  if (riskAmt == null || riskPp == null) return ''
+  if (!isMaterialRiskMove(riskAmt, riskPp, sowPar)) return 'warn'
+  if (riskAmt > 0 || riskPp > 0) return 'good'
+  if (riskAmt < 0 || riskPp < 0) return 'bad'
+  return 'warn'
 }
 
-function rowTone(b) {
-  const reducedPp = b.shiftWeek?.parPctPp != null ? -(Number(b.shiftWeek.parPctPp) || 0) : null
-  const eodPct = Number(b.eow?.parPct) || 0
-  if (reducedPp != null && reducedPp >= 0.5) return 'row-improved'
-  if (reducedPp != null && reducedPp <= -0.5) return 'row-worsened'
-  if (eodPct >= 8 && reducedPp != null && Math.abs(reducedPp) < 0.5) return 'row-watch'
-  return 'row-neutral'
+function eowParCellTone(parPct) {
+  const n = Number(parPct)
+  if (!Number.isFinite(n)) return ''
+  return n < HEALTHY_PAR_PCT ? 'good' : ''
+}
+
+function valuePill(tone, content) {
+  const t = tone || 'neutral'
+  return `<span class="val val-${t}">${content}</span>`
 }
 
 function narrItems(list) {
@@ -123,23 +141,21 @@ export function renderWeeklyParReportHTML(payload) {
       const shift = b.shiftWeek
       const riskAmt = shift ? -(Number(shift.parAmt) || 0) : null
       const riskPp = shift ? -(Number(shift.parPctPp) || 0) : null
-      const tone = rowTone(b)
-      return `<tr class="${tone}">
+      const sowPar = Number(b.sow?.par) || 0
+      const changeTone = changeCellTone(riskAmt, riskPp, sowPar)
+      const eowPctTone = eowParCellTone(b.eow?.parPct)
+      return `<tr>
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
         <td>${b.hasSow === false ? '—' : formatPct(b.sow?.parPct)}</td>
         <td class="amt">${b.hasSow === false ? '—' : formatCompact(b.sow?.par)}</td>
-        <td><strong>${b.hasEow === false ? '—' : formatPct(b.eow?.parPct)}</strong></td>
+        <td>${
+          b.hasEow === false
+            ? '—'
+            : valuePill(eowPctTone || 'neutral', `<strong>${formatPct(b.eow?.parPct)}</strong>`)
+        }</td>
         <td class="amt">${b.hasEow === false ? '—' : formatCompact(b.eow?.par)}</td>
-        <td>${
-          riskAmt != null
-            ? `<span class="pill ${pillClassForRiskReduced(riskAmt)}">${formatSignedCompact(riskAmt)}</span>`
-            : '<span class="pill flat">—</span>'
-        }</td>
-        <td>${
-          riskPp != null
-            ? `<span class="pill ${pillClassForRiskReducedPp(riskPp)}">${formatSignedPp(riskPp)}</span>`
-            : '<span class="pill flat">—</span>'
-        }</td>
+        <td>${riskAmt != null ? valuePill(changeTone, formatSignedCompact(riskAmt)) : '—'}</td>
+        <td>${riskPp != null ? valuePill(changeTone, formatSignedPp(riskPp)) : '—'}</td>
       </tr>`
     })
     .join('')
@@ -255,10 +271,18 @@ export function renderWeeklyParReportHTML(payload) {
   }
   .pill.up { background: var(--green-light); color: var(--green); }
   .pill.down { background: var(--red-light); color: var(--red); }
-  .pill.flat { background: #edf2f7; color: var(--muted); }
-  .row-improved { background: #f0fff4; }
-  .row-worsened { background: #fff5f5; }
-  .row-watch { background: #fffbeb; }
+  .pill.flat { background: var(--amber-light); color: var(--amber); }
+  .val {
+    display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px;
+    font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .val-neutral { background: transparent; color: inherit; font-weight: inherit; padding: 0; }
+  .val-good { background: var(--green-light); color: var(--green); }
+  .val-warn { background: var(--amber-light); color: var(--amber); }
+  .val-bad  { background: var(--red-light); color: var(--red); }
+  .row-improved { background: transparent; }
+  .row-worsened { background: transparent; }
+  .row-watch { background: transparent; }
   .row-neutral { background: #fff; }
   .legend {
     display: flex; flex-wrap: wrap; gap: 12px; font-size: 10px; color: var(--muted);
@@ -385,20 +409,19 @@ export function renderWeeklyParReportHTML(payload) {
           <td>OVERALL</td>
           <td>${formatPct(overall.sow?.parPct)}</td>
           <td class="amt">${formatCompact(overall.sow?.par)}</td>
-          <td>${formatPct(overall.eow?.parPct)}</td>
+          <td>${valuePill(eowParCellTone(overall.eow?.parPct) || 'neutral', formatPct(overall.eow?.parPct))}</td>
           <td class="amt">${formatCompact(overall.eow?.par)}</td>
-          <td>${formatSignedCompact(riskReducedAmt)}</td>
-          <td>${formatSignedPp(riskReducedPp)}</td>
+          <td>${valuePill(changeCellTone(riskReducedAmt, riskReducedPp, overall.sow?.par), formatSignedCompact(riskReducedAmt))}</td>
+          <td>${valuePill(changeCellTone(riskReducedAmt, riskReducedPp, overall.sow?.par), formatSignedPp(riskReducedPp))}</td>
         </tr>
       </tfoot>
     </table>
   </div>
 
   <div class="legend">
-    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> Reduced (good)</span>
-    <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> No action (≥8% flat)</span>
-    <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Rose (anomaly)</span>
-    <span><span class="swatch" style="background:#f7fafc;border:1px solid #cbd5e0"></span> Other / healthy</span>
+    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> EOW % &lt; 8% · or material reduction (≥750K and ≥3% of SOW PAR, or ≥1.5%)</span>
+    <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Noise / non-material change</span>
+    <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Material rise</span>
   </div>
 
   <div class="section-title">

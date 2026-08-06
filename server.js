@@ -11366,12 +11366,24 @@ async function buildWeeklyParReportPayload({
       .replace(/^Boda\s*-\s*/i, '')
       .trim()
 
-  // Weekly thresholds (risk-reduced = SOW − EOW)
-  const FLAT_AMT = 300_000
-  const FLAT_PP = 0.5
-  const HUGE_AMT = 1_500_000
-  const HUGE_PP = 2.0
+  // Weekly thresholds (risk-reduced = SOW − EOW), calibrated from history:
+  // reductions-only p25 ≈ 800K / 2.0%; median ≈ 1.6M / 3.3%.
+  const MATERIAL_AMT = 750_000
+  const MATERIAL_PP = 1.5
+  const MATERIAL_SHARE = 0.03
+  const HUGE_AMT = 2_500_000
+  const HUGE_PP = 4.0
   const HEALTHY_PCT = 8
+
+  const isMaterial = (riskAmt, riskPp, sowPar) => {
+    const absAmt = Math.abs(Number(riskAmt) || 0)
+    const absPp = Math.abs(Number(riskPp) || 0)
+    const book = Math.max(0, Number(sowPar) || 0)
+    if (absPp >= MATERIAL_PP) return true
+    if (absAmt < MATERIAL_AMT) return false
+    if (book <= 0) return absAmt >= MATERIAL_AMT
+    return absAmt / book >= MATERIAL_SHARE
+  }
 
   const branches = Array.from(codes)
     .map((code) => {
@@ -11407,11 +11419,16 @@ async function buildWeeklyParReportPayload({
       let classification = 'other'
       if (hasEow && eowPct < HEALTHY_PCT) classification = 'healthy'
       if (shiftWeek) {
-        if (riskReducedAmt <= -FLAT_AMT || riskReducedPp <= -FLAT_PP) classification = 'anomaly'
-        else if (Math.abs(riskReducedAmt) < FLAT_AMT && Math.abs(riskReducedPp) < FLAT_PP) {
+        const material = isMaterial(riskReducedAmt, riskReducedPp, sowPar)
+        if (!material) {
           classification = eowPct >= HEALTHY_PCT ? 'noAction' : 'healthy'
-        } else if (riskReducedAmt >= HUGE_AMT || riskReducedPp >= HUGE_PP) classification = 'huge'
-        else if (riskReducedAmt >= FLAT_AMT || riskReducedPp >= FLAT_PP) classification = 'reduced'
+        } else if (riskReducedAmt < 0 || riskReducedPp < 0) {
+          classification = 'anomaly'
+        } else if (riskReducedAmt >= HUGE_AMT || riskReducedPp >= HUGE_PP) {
+          classification = 'huge'
+        } else {
+          classification = 'reduced'
+        }
       }
 
       return {
