@@ -3,8 +3,6 @@ import { BarChart3, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
 import { 
   LineChart, 
   Line, 
-  AreaChart, 
-  Area, 
   PieChart, 
   Pie, 
   Cell, 
@@ -538,14 +536,28 @@ function LogbookDashboard({ country }) {
     });
   }
 
+  const yearlyDisbursementTargets = Array(13).fill(0)
   const yearlyCollectionTargets = Array(13).fill(0)
   for (const target of targets) {
     if (Number(target.active) === 0 || Number(target.year) !== effectiveYear) continue
     const month = Number(target.month)
     if (month >= 1 && month <= 12) {
+      yearlyDisbursementTargets[month] += Number(target.disbursementTarget) || 0
       yearlyCollectionTargets[month] += Number(target.collectionTarget) || 0
     }
   }
+
+  const salesVsTargetOverYear = yearlyTrend.map((row, index) => {
+    const month = index + 1
+    const target = yearlyDisbursementTargets[month]
+    return {
+      month: row.month,
+      sales: row.disbursed,
+      target,
+      pctOfTarget: target > 0 ? (row.disbursed / target) * 100 : null,
+    }
+  })
+
   const collectionsOverYear = yearlyTrend.map((row, index) => {
     const month = index + 1
     const target = yearlyCollectionTargets[month]
@@ -722,23 +734,35 @@ function LogbookDashboard({ country }) {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Disbursement vs Collection (Yearly Trend – {effectiveYear})
+            Sales vs Target (Month on Month – {effectiveYear})
           </h3>
           <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={yearlyTrend}>
+            <BarChart data={salesVsTargetOverYear}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
               <YAxis />
               <Tooltip
-                formatter={(value, _rawName, entry) => {
-                  const seriesName = entry && entry.name ? entry.name : _rawName
-                  return [formatMoney(value), seriesName]
+                formatter={(value, name, entry) => {
+                  if (name === 'Target') return [formatMoney(value), 'Target']
+                  const pct = entry?.payload?.pctOfTarget
+                  return [
+                    pct == null ? formatMoney(value) : `${formatMoney(value)} (${pct.toFixed(1)}% of target)`,
+                    'Sales',
+                  ]
                 }}
               />
               <Legend />
-              <Area type="monotone" dataKey="disbursed" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Disbursed" />
-              <Area type="monotone" dataKey="collected" stroke="#10b981" fill="#10b981" fillOpacity={0.25} name="Collected" />
-            </AreaChart>
+              <Bar dataKey="sales" fill="#3b82f6" name="Sales">
+                <LabelList
+                  dataKey="pctOfTarget"
+                  position="top"
+                  formatter={(value) => (value == null ? '' : `${Number(value).toFixed(1)}%`)}
+                  fill="#1e40af"
+                  fontSize={11}
+                />
+              </Bar>
+              <Bar dataKey="target" fill="#f59e0b" name="Target" />
+            </BarChart>
           </ResponsiveContainer>
         </div>
 
