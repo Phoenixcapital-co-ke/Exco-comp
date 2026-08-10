@@ -52,6 +52,7 @@ export const API_URLS = {
     branches: `${API_BASE}/api/zidisha/branches`,
     branchesAll: `${API_BASE}/api/zidisha/branches/all`,
     productivityMtdByBranchOfficers: `${API_BASE}/api/zidisha/productivity/mtd-by-branch-officers`,
+    productivityWeeklyTopPerformer: `${API_BASE}/api/zidisha/productivity/weekly-top-performer`,
   },
   boda: {
     repayments: `${API_BASE}/api/boda/repayments`,

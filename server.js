@@ -2710,6 +2710,167 @@ app.get('/api/zidisha/productivity/mtd-by-branch-officers', requireAuth, (req, r
   }
 })
 
+/** Calendar parts in Africa/Nairobi (Mon–Sun week for LO ranking lock). */
+function getNairobiDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const get = (type) => parts.find((p) => p.type === type)?.value
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+    weekday: String(get('weekday') || ''),
+    hour: Number(get('hour')),
+    minute: Number(get('minute')),
+  }
+}
+
+function ymdFromParts({ year, month, day }) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function addDaysToYmdString(ymd, deltaDays) {
+  const [y, m, d] = String(ymd).split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays))
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`
+}
+
+/**
+ * Most recent Mon–Fri productivity week, locked Fridays 20:00 Africa/Nairobi.
+ * Before Fri 20:00 → prior Mon–Fri; from Fri 20:00 onward → current Mon–Fri.
+ */
+function getCompletedZidishaProductivityWeek(now = new Date()) {
+  const p = getNairobiDateParts(now)
+  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 }
+  const dow = weekdayMap[p.weekday]
+  if (dow == null) {
+    throw new Error(`Unable to resolve Nairobi weekday: ${p.weekday}`)
+  }
+  const daysSinceMonday = dow === 0 ? 6 : dow - 1
+  const todayYmd = ymdFromParts(p)
+  const mondayYmd = addDaysToYmdString(todayYmd, -daysSinceMonday)
+  const fridayYmd = addDaysToYmdString(mondayYmd, 4)
+  const weekLocked = (dow === 5 && p.hour >= 20) || dow === 6 || dow === 0
+  if (weekLocked) {
+    return { monday: mondayYmd, friday: fridayYmd, lockedAt: `${fridayYmd}T20:00:00+03:00` }
+  }
+  return {
+    monday: addDaysToYmdString(mondayYmd, -7),
+    friday: addDaysToYmdString(fridayYmd, -7),
+    lockedAt: `${addDaysToYmdString(fridayYmd, -7)}T20:00:00+03:00`,
+  }
+}
+
+function flattenRankedOfficersFromBranches(branchRows, { targetRate = 0.95 } = {}) {
+  const officers = []
+  for (const branch of branchRows || []) {
+    for (const o of branch.officers || []) {
+      const expected = Number(o.expected || 0)
+      const collected = Number(o.collected || 0)
+      const ratePercent = Number(o.ratePercent || 0)
+      officers.push({
+        officer: o.officer,
+        branch: branch.branch,
+        expected,
+        collected,
+        ratePercent,
+        targetGap: expected > 0 ? Math.max(0, targetRate * expected - collected) : 0,
+      })
+    }
+  }
+  return officers.sort((a, b) => {
+    if (b.ratePercent === a.ratePercent) return b.collected - a.collected
+    return b.ratePercent - a.ratePercent
+  })
+}
+
+// Zidisha productivity: top LO for the most recent completed Mon–Fri week (lock Fri 20:00 EAT)
+app.get('/api/zidisha/productivity/weekly-top-performer', requireAuth, (req, res) => {
+  try {
+    const branch = req.query.branch != null ? String(req.query.branch).trim() : ''
+    const week = getCompletedZidishaProductivityWeek()
+    const maturity = zidishaExpectedMaturityExpr('z')
+
+    const allowed = getAllowedZidishaBranches(req)
+    const authRole = String(req.authUser?.role || '').toLowerCase()
+    if (authRole === 'custom' && allowed.length === 0) {
+      return res.status(403).json({ error: 'No Zidisha branch access configured for this user' })
+    }
+
+    const where = [
+      `z."Product Name" COLLATE NOCASE IN (${ZIDISHA_CORE_PRODUCTS.map(() => '?').join(', ')})`,
+      `z."Branch Name" COLLATE NOCASE != ?`,
+      `${maturity} >= date(?)`,
+      `${maturity} <= date(?)`,
+    ]
+    const params = [...ZIDISHA_CORE_PRODUCTS, 'Advans Branch', week.monday, week.friday]
+
+    if (allowed.length > 0) {
+      if (branch && branch.toLowerCase() !== 'all') {
+        const allowedNorm = new Set(allowed.map((b) => String(b || '').trim().toLowerCase()))
+        if (!allowedNorm.has(branch.toLowerCase())) {
+          return res.status(403).json({ error: 'Branch not allowed for this user' })
+        }
+        where.push('z."Branch Name" COLLATE NOCASE = ?')
+        params.push(branch.trim())
+      } else {
+        where.push(`z."Branch Name" COLLATE NOCASE IN (${allowed.map(() => '?').join(', ')})`)
+        params.push(...allowed.map((b) => String(b || '').trim()))
+      }
+    } else if (branch && branch.toLowerCase() !== 'all') {
+      where.push('z."Branch Name" COLLATE NOCASE = ?')
+      params.push(branch.trim())
+    }
+
+    const rows = db
+      .prepare(
+        `SELECT
+           TRIM(z."Branch Name") AS branch,
+           TRIM(COALESCE(z."Loan Officer Name", 'Unknown')) AS officer,
+           COALESCE(CAST(z."Total Expected Repayment Derived" AS REAL), 0) AS expected,
+           COALESCE(CAST(z."Total Repayment Derived" AS REAL), 0) AS collected
+         FROM zidisha_data z
+         WHERE ${where.join(' AND ')}`,
+      )
+      .all(...params)
+
+    const branchRows = aggregateMtdBranchOfficerRows(rows, { targetRate: 0.95 })
+    const officers = flattenRankedOfficersFromBranches(branchRows, { targetRate: 0.95 })
+    const top = officers[0] || null
+
+    res.json({
+      week: {
+        monday: week.monday,
+        friday: week.friday,
+        lockedAt: week.lockedAt,
+        label: `${week.monday} → ${week.friday}`,
+      },
+      topPerformer: top
+        ? {
+            officer: top.officer,
+            branch: top.branch,
+            expected: top.expected,
+            collected: top.collected,
+            ratePercent: top.ratePercent,
+            targetGap: top.targetGap,
+          }
+        : null,
+      officers,
+    })
+  } catch (e) {
+    console.error('[Zidisha Weekly Top Performer API] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Report generation endpoint - processes data and returns aggregated monthly report
 app.post('/api/reports/generate', requireAuth, async (req, res) => {
   try {
