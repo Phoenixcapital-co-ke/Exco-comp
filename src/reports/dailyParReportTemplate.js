@@ -37,19 +37,19 @@ function formatSignedPp(v) {
 }
 
 /**
- * Material SOD→EOD move (risk-reduced signed: + = PAR fell).
- * Green only if the drop clears noise AND is meaningful vs that branch's PAR book,
+ * Material day-over-day move (risk-reduced signed: + = PAR fell vs yesterday EOD).
+ * Green only if the drop clears noise AND is meaningful vs that branch's yesterday PAR book,
  * or the PAR rate itself moves ≥0.3%.
  */
 const MATERIAL_AMT = 100_000
 const MATERIAL_PP = 0.3
-const MATERIAL_SHARE = 0.02 // ≥2% of SOD PAR amount
+const MATERIAL_SHARE = 0.02 // ≥2% of yesterday EOD PAR amount
 const HEALTHY_PAR_PCT = 8
 
-function isMaterialRiskMove(riskAmt, riskPp, sodPar) {
+function isMaterialRiskMove(riskAmt, riskPp, basePar) {
   const amt = Number(riskAmt) || 0
   const pp = Number(riskPp) || 0
-  const book = Math.max(0, Number(sodPar) || 0)
+  const book = Math.max(0, Number(basePar) || 0)
   const absAmt = Math.abs(amt)
   const absPp = Math.abs(pp)
   if (absPp >= MATERIAL_PP) return true
@@ -59,9 +59,9 @@ function isMaterialRiskMove(riskAmt, riskPp, sodPar) {
 }
 
 /** Change-cell tone: good | warn | bad | '' */
-function changeCellTone(riskAmt, riskPp, sodPar) {
+function changeCellTone(riskAmt, riskPp, basePar) {
   if (riskAmt == null || riskPp == null) return ''
-  if (!isMaterialRiskMove(riskAmt, riskPp, sodPar)) return 'warn'
+  if (!isMaterialRiskMove(riskAmt, riskPp, basePar)) return 'warn'
   if (riskAmt > 0 || riskPp > 0) return 'good'
   if (riskAmt < 0 || riskPp < 0) return 'bad'
   return 'warn'
@@ -115,19 +115,15 @@ export function renderDailyParReportHTML(payload) {
   const claude = payload?.claudeAnalysis || null
   const claudeError = payload?.claudeError || null
 
-  const sodVsYestPp =
-    Number.isFinite(Number(overall.sod?.parPct)) && Number.isFinite(Number(overall.eodYesterday?.parPct))
-      ? Number(overall.sod.parPct) - Number(overall.eodYesterday.parPct)
+  const eodVsYestPp =
+    Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.eodYesterday?.parPct))
+      ? Number(overall.eod.parPct) - Number(overall.eodYesterday.parPct)
       : null
-  const eodVsSodPp =
-    Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
-      ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
-      : null
-  // Display as risk reduced: SOD − EOD (positive when PAR fell). Underlying data is still EOD − SOD.
-  const totalShift = -(Number(overall.shiftSodToEod) || 0)
+  // Display as risk reduced: Yesterday EOD − Today EOD (positive when PAR fell).
+  const totalShift = Number(overall.netChangeVsYesterday) || 0
   const totalShiftPp =
-    Number.isFinite(Number(overall.eod?.parPct)) && Number.isFinite(Number(overall.sod?.parPct))
-      ? Number(overall.sod.parPct) - Number(overall.eod.parPct)
+    Number.isFinite(Number(overall.eodYesterday?.parPct)) && Number.isFinite(Number(overall.eod?.parPct))
+      ? Number(overall.eodYesterday.parPct) - Number(overall.eod.parPct)
       : 0
 
   const bottomLineRaw = narrative.bottomLine || claude?.bottomLine || '—'
@@ -143,18 +139,16 @@ export function renderDailyParReportHTML(payload) {
 
   const rowsHtml = branches
     .map((b) => {
-      const shift = b.shiftSodToEod
-      const riskReducedAmt = shift ? -(Number(shift.parAmt) || 0) : null
-      const riskReducedPct = shift ? -(Number(shift.parPctPp) || 0) : null
-      const sodPar = Number(b.sod?.par) || 0
-      const changeTone = changeCellTone(riskReducedAmt, riskReducedPct, sodPar)
+      const vs = b.vsYesterdayEod
+      const riskReducedAmt = vs ? -(Number(vs.parAmt) || 0) : null
+      const riskReducedPct = vs ? -(Number(vs.parPctPp) || 0) : null
+      const yestPar = Number(b.eodYesterday?.par) || 0
+      const changeTone = changeCellTone(riskReducedAmt, riskReducedPct, yestPar)
       const eodPctTone = eodParCellTone(b.eod?.parPct)
       return `<tr>
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
-        <td>${formatPct(b.eodYesterday?.parPct)}</td>
-        <td class="amt">${formatCompact(b.eodYesterday?.par)}</td>
-        <td>${b.hasSod === false ? '—' : formatPct(b.sod?.parPct)}</td>
-        <td class="amt">${b.hasSod === false ? '—' : formatCompact(b.sod?.par)}</td>
+        <td>${b.hasYest === false ? '—' : formatPct(b.eodYesterday?.parPct)}</td>
+        <td class="amt">${b.hasYest === false ? '—' : formatCompact(b.eodYesterday?.par)}</td>
         <td>${valuePill(eodPctTone || 'neutral', `<strong>${formatPct(b.eod?.parPct)}</strong>`)}</td>
         <td class="amt">${formatCompact(b.eod?.par)}</td>
         <td>${
@@ -171,10 +165,14 @@ export function renderDailyParReportHTML(payload) {
     })
     .join('')
 
-  const sodHour = String(slots.sod?.targetHour ?? 3).padStart(2, '0')
   const eodHour = String(slots.eod?.targetHour ?? 20).padStart(2, '0')
 
-  const eodKpiClass = eodVsSodPp != null && eodVsSodPp < 0 ? 'positive' : eodVsSodPp != null && eodVsSodPp > 0 ? 'negative' : 'neutral-mid'
+  const eodKpiClass =
+    eodVsYestPp != null && eodVsYestPp < 0
+      ? 'positive'
+      : eodVsYestPp != null && eodVsYestPp > 0
+        ? 'negative'
+        : 'neutral-mid'
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -605,13 +603,12 @@ export function renderDailyParReportHTML(payload) {
       <div>
         <div class="report-label">EOD PAR Report</div>
         <div class="report-title">Daily PAR — ${dateLabel}</div>
-        <div class="report-subtitle">${country} · SOD = ${escapeHtml(sodHour)}:00 EAT · EOD ≈ ${escapeHtml(eodHour)}:00 EAT</div>
+        <div class="report-subtitle">${country} · Yesterday EOD → Today EOD (~${escapeHtml(eodHour)}:00 EAT)</div>
       </div>
     </div>
     <div class="header-right">
-      <div><strong>SOD snapshot:</strong> ${escapeHtml(slots.sod?.asOfLabel || '—')} EAT</div>
-      <div><strong>EOD snapshot:</strong> ${escapeHtml(slots.eod?.asOfLabel || '—')} EAT</div>
       <div><strong>Yesterday EOD:</strong> ${escapeHtml(slots.eodYesterday?.asOfLabel || '—')} EAT</div>
+      <div><strong>Today EOD:</strong> ${escapeHtml(slots.eod?.asOfLabel || '—')} EAT</div>
     </div>
   </div>
 
@@ -621,25 +618,20 @@ export function renderDailyParReportHTML(payload) {
       <div class="kpi-value">${formatPct(overall.eodYesterday?.parPct)}</div>
       <div class="kpi-sub"><strong>${formatCompact(overall.eodYesterday?.par)}</strong> at risk</div>
     </div>
-    <div class="kpi-card neutral-mid">
-      <div class="kpi-label">SOD Today</div>
-      <div class="kpi-value">${formatPct(overall.sod?.parPct)}</div>
-      <div class="kpi-sub"><strong>${formatCompact(overall.sod?.par)}</strong> at risk</div>
-      ${
-        sodVsYestPp != null
-          ? `<div class="kpi-delta ${sodVsYestPp >= 0 ? 'up' : 'down'}">${sodVsYestPp >= 0 ? '▲' : '▼'} ${formatSignedPp(sodVsYestPp)} vs yesterday</div>`
-          : ''
-      }
-    </div>
     <div class="kpi-card ${eodKpiClass}">
       <div class="kpi-label">EOD Today</div>
       <div class="kpi-value">${formatPct(overall.eod?.parPct)}</div>
       <div class="kpi-sub"><strong>${formatCompact(overall.eod?.par)}</strong> at risk</div>
       ${
-        eodVsSodPp != null
-          ? `<div class="kpi-delta ${eodVsSodPp <= 0 ? 'up' : 'down'}">${eodVsSodPp <= 0 ? '▲' : '▼'} ${formatSignedPp(-(eodVsSodPp))} vs SOD</div>`
+        eodVsYestPp != null
+          ? `<div class="kpi-delta ${eodVsYestPp <= 0 ? 'up' : 'down'}">${eodVsYestPp <= 0 ? '▲' : '▼'} ${formatSignedPp(-eodVsYestPp)} vs yesterday</div>`
           : ''
       }
+    </div>
+    <div class="kpi-card ${totalShift > 0 ? 'positive' : totalShift < 0 ? 'negative' : 'neutral-mid'}">
+      <div class="kpi-label">Risk Reduced</div>
+      <div class="kpi-value">${formatSignedCompact(totalShift)}</div>
+      <div class="kpi-sub">${formatSignedPp(totalShiftPp)} vs yesterday EOD</div>
     </div>
   </div>
 
@@ -654,16 +646,13 @@ export function renderDailyParReportHTML(payload) {
     <table>
       <thead>
         <tr>
-          <th class="col-group-header first" style="width:16%">Branch</th>
+          <th class="col-group-header first" style="width:22%">Branch</th>
           <th class="col-group-header" colspan="2">EOD Yesterday</th>
-          <th class="col-group-header" colspan="2">SOD Today</th>
           <th class="col-group-header" colspan="2">EOD Today</th>
-          <th class="col-group-header" colspan="2">EOD − SOD</th>
+          <th class="col-group-header" colspan="2">vs Yesterday</th>
         </tr>
         <tr>
           <th style="text-align:left">Branch</th>
-          <th>%</th>
-          <th>Amount</th>
           <th>%</th>
           <th>Amount</th>
           <th>%</th>
@@ -675,7 +664,7 @@ export function renderDailyParReportHTML(payload) {
       <tbody>
         ${
           rowsHtml ||
-          '<tr><td colspan="9" style="text-align:center;color:#a0aec0;padding:20px">No branch PAR snapshots found for this date.</td></tr>'
+          '<tr><td colspan="7" style="text-align:center;color:#a0aec0;padding:20px">No branch PAR snapshots found for this date.</td></tr>'
         }
       </tbody>
       <tfoot>
@@ -683,19 +672,17 @@ export function renderDailyParReportHTML(payload) {
           <td>OVERALL</td>
           <td>${formatPct(overall.eodYesterday?.parPct)}</td>
           <td class="amt">${formatCompact(overall.eodYesterday?.par)}</td>
-          <td>${formatPct(overall.sod?.parPct)}</td>
-          <td class="amt">${formatCompact(overall.sod?.par)}</td>
           <td>${valuePill(eodParCellTone(overall.eod?.parPct) || 'neutral', formatPct(overall.eod?.parPct))}</td>
           <td class="amt">${formatCompact(overall.eod?.par)}</td>
-          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.sod?.par), formatSignedCompact(totalShift))}</td>
-          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.sod?.par), formatSignedPp(totalShiftPp))}</td>
+          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.eodYesterday?.par), formatSignedCompact(totalShift))}</td>
+          <td>${valuePill(changeCellTone(totalShift, totalShiftPp, overall.eodYesterday?.par), formatSignedPp(totalShiftPp))}</td>
         </tr>
       </tfoot>
     </table>
   </div>
 
   <div class="legend">
-    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> EOD % &lt; 8% · or material reduction (≥100K and ≥2% of SOD PAR, or ≥0.3%)</span>
+    <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> EOD % &lt; 8% · or material reduction (≥100K and ≥2% of yesterday PAR, or ≥0.3%)</span>
     <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Noise / non-material change</span>
     <span><span class="swatch" style="background:#fff5f5;border:1px solid var(--red-mid)"></span> Material rise</span>
   </div>
@@ -748,7 +735,7 @@ export function renderDailyParReportHTML(payload) {
   </div>
 
   <div class="footer">
-    Closest PAR snapshots to ${escapeHtml(sodHour)}:00 and ${escapeHtml(eodHour)}:00 Africa/Nairobi · Single-page A4 portrait
+    Closest PAR snapshots to ~${escapeHtml(eodHour)}:00 Africa/Nairobi (yesterday vs today) · Single-page A4 portrait
   </div>
 
 </div>

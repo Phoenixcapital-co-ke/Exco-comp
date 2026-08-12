@@ -2968,7 +2968,7 @@ function DataOverview() {
         >
           <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
             <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-              <h2 className="text-2xl font-semibold text-gray-900">Daily PAR Report (SOD → EOD)</h2>
+              <h2 className="text-2xl font-semibold text-gray-900">Daily PAR Report (Yesterday EOD → Today EOD)</h2>
               <button
                 onClick={() => {
                   setShowDailyParReport(false)
@@ -3071,7 +3071,7 @@ function DataOverview() {
 
               <p className="text-xs text-gray-500 mb-4">
                 Uses closest PAR snapshots to <strong>03:00 EAT</strong> (start of day) and <strong>20:00 EAT</strong> (end of day),
-                plus yesterday&apos;s EOD for net recovery. Auto-emailed <strong>Mon–Sat at 20:00 EAT</strong> when SMTP + recipients are configured.
+                plus day-over-day change. Auto-emailed <strong>Mon–Sat at 20:00 EAT</strong> when SMTP + recipients are configured.
               </p>
 
               {dailyParEmailStatus && (
@@ -3097,7 +3097,7 @@ function DataOverview() {
                 </div>
               ) : !dailyParReportHtml ? (
                 <div className="p-12 text-center">
-                  <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to build the daily SOD / EOD PAR report.</p>
+                  <p className="text-sm text-gray-500">Click &quot;Generate Report&quot; to build the daily yesterday-EOD vs today-EOD PAR report.</p>
                 </div>
               ) : (
                 <div className="border border-gray-200 rounded-lg overflow-hidden">
@@ -4062,7 +4062,7 @@ function DataOverview() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Daily PAR Report</h2>
-                <p className="text-sm text-gray-500">SOD (~3am) vs EOD (~8pm) by branch — shift, recovery vs yesterday, PDF download</p>
+                <p className="text-sm text-gray-500">Yesterday EOD vs today EOD by branch — risk reduced, PDF download</p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

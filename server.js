@@ -10658,30 +10658,31 @@ async function buildDailyParReportPayload({
     const fmtPct = (v) => `${(Number(v) || 0).toFixed(1)}%`
     const fmtAmt = (v) => formatDailyParCompact(v)
 
-    // Heuristic narrative buckets (fallback if Claude unavailable) — interpretive, not bare scoreboard
+    // Heuristic narrative buckets (fallback if Claude unavailable) — day-over-day (yesterday EOD → today EOD)
     const used = new Set()
     const largestEod = [...branches]
       .filter((b) => b.hasEod)
       .sort((a, b) => (b.eod?.par || 0) - (a.eod?.par || 0))[0]
 
     const topPerformers = branches
-      .filter((b) => b.hasSod && b.hasEod && (b.shiftSodToEod?.parPctPp || 0) <= -0.4)
-      .sort((a, b) => (a.shiftSodToEod.parPctPp || 0) - (b.shiftSodToEod.parPctPp || 0))
+      .filter(
+        (b) =>
+          b.hasYest &&
+          b.hasEod &&
+          ((b.vsYesterdayEod?.parPctPp || 0) <= -0.4 ||
+            ((b.vsYesterdayEod?.parAmt || 0) < -100_000 && (b.vsYesterdayEod?.parPctPp || 0) < -0.2)),
+      )
+      .sort((a, b) => (a.vsYesterdayEod.parPctPp || 0) - (b.vsYesterdayEod.parPctPp || 0))
       .slice(0, 4)
       .map((b, idx) => {
         used.add(b.code)
-        const pp = Math.abs(b.shiftSodToEod?.parPctPp || 0).toFixed(1)
-        const recoveredAmt = -(b.shiftSodToEod?.parAmt || 0)
-        const vsY = b.vsYesterdayEod?.parPctPp
-        let text = `${b.name}: dropped ${pp}% from SOD to EOD`
-        if (vsY != null && vsY < -0.3) {
-          text += ` and also improved on yesterday's close`
-        }
+        const pp = Math.abs(b.vsYesterdayEod?.parPctPp || 0).toFixed(1)
+        const recoveredAmt = -(b.vsYesterdayEod?.parAmt || 0)
+        let text = `${b.name}: improved ${pp}% vs yesterday's close`
+        if (recoveredAmt > 100_000) text += ` (${fmtAmt(recoveredAmt)} risk reduced)`
         text += ` —`
         if (idx === 0) text += ` the clearest positive signal of the day`
-        else if (vsY != null && Math.abs(vsY) <= 0.3) text += ` elevated SOD largely unwound by close, ending near yesterday`
-        else text += ` encouraging intraday trajectory`
-        if (recoveredAmt > 100_000) text += `, PAR down ${fmtAmt(recoveredAmt)} from SOD to EOD`
+        else text += ` encouraging day-over-day trajectory`
         text += `. Still closes at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)}`
         if (largestEod && largestEod.code === b.code) {
           text += ` — remains the single largest PAR exposure in the portfolio`
@@ -10690,78 +10691,42 @@ async function buildDailyParReportPayload({
         return { code: b.code, name: b.name, text }
       })
 
-    if (topPerformers.length < 4) {
-      const extras = branches
-        .filter(
-          (b) =>
-            !used.has(b.code) &&
-            b.hasYest &&
-            b.hasEod &&
-            (b.vsYesterdayEod?.parPctPp || 0) <= -0.8 &&
-            (b.vsYesterdayEod?.parAmt || 0) < -100_000,
-        )
-        .sort((a, b) => (a.vsYesterdayEod.parPctPp || 0) - (b.vsYesterdayEod.parPctPp || 0))
-        .slice(0, 4 - topPerformers.length)
-      for (const b of extras) {
-        used.add(b.code)
-        const recoveredAmt = -(b.vsYesterdayEod?.parAmt || 0)
-        topPerformers.push({
-          code: b.code,
-          name: b.name,
-          text: `${b.name}: improved ${Math.abs(b.vsYesterdayEod.parPctPp || 0).toFixed(1)}% vs yesterday's close (${fmtAmt(recoveredAmt)} net change) — solid day-over-day progress even if the intraday SOD→EOD move was quieter.`,
-        })
-      }
-    }
-
     const holdingSteady = branches
       .filter((b) => {
         if (used.has(b.code) || !b.hasEod || (b.eod.parPct || 0) < 0.05) return false
-        const vsY = b.vsYesterdayEod ? Math.abs(b.vsYesterdayEod.parPctPp || 0) : null
-        const shift = b.shiftSodToEod ? Math.abs(b.shiftSodToEod.parPctPp || 0) : null
-        if (vsY == null) return false
-        if (vsY > 0.5) return false
-        if (shift != null && shift > 1.0) return false
-        return true
+        if (!b.hasYest || !b.vsYesterdayEod) return false
+        const vsY = Math.abs(b.vsYesterdayEod.parPctPp || 0)
+        const vsAmt = Math.abs(b.vsYesterdayEod.parAmt || 0)
+        return vsY <= 0.5 && vsAmt < 250_000
       })
       .slice(0, 4)
       .map((b) => {
         used.add(b.code)
         let text = `${b.name}: `
         if ((b.eod.parPct || 0) >= 80) {
-          text += `at ${fmtPct(b.eod.parPct)} PAR this is a standing concern. Daily stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.`
+          text += `at ${fmtPct(b.eod.parPct)} PAR this is a standing concern. Day-over-day stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.`
         } else if ((b.eod.parPct || 0) >= 20) {
-          text += `flat with little movement — at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} this is a structurally elevated rate that has shown no meaningful trend in either direction.`
+          text += `flat vs yesterday — at ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} this is a structurally elevated rate that has shown no meaningful trend in either direction.`
         } else {
-          text += `holding near yesterday (${fmtPct(b.eod.parPct)}) with no material intraday swing — quiet, not a problem, but not a recovery story either.`
+          text += `holding near yesterday (${fmtPct(b.eod.parPct)}) with no material day-over-day move — quiet, not a problem, but not a recovery story either.`
         }
         return { code: b.code, name: b.name, text }
       })
 
     const watching = branches
       .filter((b) => {
-        if (used.has(b.code) || !b.hasEod) return false
-        const worseVsY = b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) >= 0.4
-        const worseIntraday = b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4
-        return worseVsY || worseIntraday
+        if (used.has(b.code) || !b.hasEod || !b.hasYest) return false
+        return (b.vsYesterdayEod?.parPctPp || 0) >= 0.4 || (b.vsYesterdayEod?.parAmt || 0) > 100_000
       })
-      .sort((a, b) => {
-        const aScore = Math.max(a.vsYesterdayEod?.parPctPp || 0, a.shiftSodToEod?.parPctPp || 0)
-        const bScore = Math.max(b.vsYesterdayEod?.parPctPp || 0, b.shiftSodToEod?.parPctPp || 0)
-        return bScore - aScore
-      })
+      .sort((a, b) => (b.vsYesterdayEod?.parPctPp || 0) - (a.vsYesterdayEod?.parPctPp || 0))
       .slice(0, 4)
       .map((b) => {
         used.add(b.code)
-        const intradayUp = b.shiftSodToEod && (b.shiftSodToEod.parPctPp || 0) >= 0.4
-        const vsYUp = b.vsYesterdayEod && (b.vsYesterdayEod.parPctPp || 0) >= 0.4
-        let text = `${b.name}: `
-        if (intradayUp) {
-          text += `PAR grew through the day (+${(b.shiftSodToEod.parPctPp || 0).toFixed(1)}% SOD→EOD`
-          if (vsYUp) text += `, ${(b.vsYesterdayEod.parAmt || 0) > 0 ? '+' : ''}${fmtAmt(b.vsYesterdayEod.parAmt)} vs yesterday`
-          text += `). Unlike branches that spiked at SOD and recovered, this expanded into the close — a second consecutive uptick tomorrow would warrant escalation.`
-        } else {
-          text += `up ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)}% vs yesterday's close to ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} — keep on the watchlist until the trend reverses.`
+        let text = `${b.name}: up ${(b.vsYesterdayEod.parPctPp || 0).toFixed(1)}% vs yesterday's close`
+        if ((b.vsYesterdayEod.parAmt || 0) > 0) {
+          text += ` (+${fmtAmt(b.vsYesterdayEod.parAmt)})`
         }
+        text += ` to ${fmtPct(b.eod.parPct)} / ${fmtAmt(b.eod.par)} — keep on the watchlist until the trend reverses.`
         return { code: b.code, name: b.name, text }
       })
 
@@ -10786,9 +10751,9 @@ async function buildDailyParReportPayload({
     const netChangeVsYest = overall.netChangeVsYesterday
     const eodPctOverall = overall.eod.parPct
     const yestPctOverall = overall.eodYesterday.parPct
-    const shiftOverallPp =
-      overall.eod?.parPct != null && overall.sod?.parPct != null
-        ? Number(overall.eod.parPct) - Number(overall.sod.parPct)
+    const vsYestPpOverall =
+      Number.isFinite(Number(eodPctOverall)) && Number.isFinite(Number(yestPctOverall))
+        ? Number(eodPctOverall) - Number(yestPctOverall)
         : null
     const topDriver = topPerformers[0]
     const watchDriver = watching[0]
@@ -10800,12 +10765,12 @@ async function buildDailyParReportPayload({
     } else if (netChangeVsYest < -500_000) {
       bottomLine = `PAR slipped by ${fmtAmt(Math.abs(netChangeVsYest))} vs yesterday (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Tighten collections on the watching list.`
     } else {
-      bottomLine = `Mixed/flat day overall (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Dig into branches still elevating after SOD.`
+      bottomLine = `Mixed/flat day overall (${fmtPct(yestPctOverall)} → ${fmtPct(eodPctOverall)}). Dig into branches still elevating vs yesterday.`
     }
-    if (shiftOverallPp != null && shiftOverallPp <= -0.4) {
-      bottomLine += ` Portfolio-wide PAR fell ${Math.abs(shiftOverallPp).toFixed(1)}% intra-day — a positive signal.`
-    } else if (shiftOverallPp != null && shiftOverallPp >= 0.4) {
-      bottomLine += ` Portfolio-wide PAR rose ${shiftOverallPp.toFixed(1)}% from SOD to EOD — not a recovery day.`
+    if (vsYestPpOverall != null && vsYestPpOverall <= -0.4) {
+      bottomLine += ` Portfolio-wide PAR fell ${Math.abs(vsYestPpOverall).toFixed(1)}% vs yesterday — a positive signal.`
+    } else if (vsYestPpOverall != null && vsYestPpOverall >= 0.4) {
+      bottomLine += ` Portfolio-wide PAR rose ${vsYestPpOverall.toFixed(1)}% vs yesterday — not a recovery day.`
     }
     if (largestEod && (largestEod.eod.parPct || 0) >= 10) {
       bottomLine += ` However, ${largestEod.name} at ${fmtPct(largestEod.eod.parPct)} / ${fmtAmt(largestEod.eod.par)} remains priority number one.`
@@ -10917,8 +10882,7 @@ async function buildDailyParReportPayload({
 }
 
 /**
- * Daily PAR report: SOD (~03:00 EAT) vs EOD (~20:00 EAT) by branch,
- * plus yesterday's EOD for net change + Claude analysis.
+ * Daily PAR report: Yesterday EOD (~20:00 EAT) vs Today EOD (~20:00 EAT) by branch + Claude analysis.
  * GET /api/reports/daily-par?date=YYYY-MM-DD&country=Kenya
  */
 app.get('/api/reports/daily-par', requireAuth, async (req, res) => {
@@ -11449,14 +11413,9 @@ function buildDailyParPlainEmailBody(payload, country = 'Kenya') {
   const eodAmt = Number(overall.eod?.par) || 0
   const yestPct = Number(overall.eodYesterday?.parPct)
   const yestAmt = Number(overall.eodYesterday?.par) || 0
-  const sodPct = Number(overall.sod?.parPct)
-  const sodAmt = Number(overall.sod?.par) || 0
 
   const vsYestPp =
     Number.isFinite(eodPct) && Number.isFinite(yestPct) ? eodPct - yestPct : null
-  const sodToEodPp =
-    Number.isFinite(eodPct) && Number.isFinite(sodPct) ? eodPct - sodPct : null
-  const sodToEodAmt = eodAmt - sodAmt
 
   let overview = `Portfolio PAR closed at ${formatDailyParPct(eodPct)} (${formatDailyParCompact(eodAmt)})`
   if (vsYestPp != null && Number.isFinite(yestPct)) {
@@ -11470,23 +11429,7 @@ function buildDailyParPlainEmailBody(payload, country = 'Kenya') {
     overview += '.'
   }
 
-  if (sodToEodPp != null) {
-    const flatIntraday = Math.abs(sodToEodPp) < 0.15 && Math.abs(sodToEodAmt) < 200_000
-    if (flatIntraday) {
-      overview +=
-        vsYestPp != null && vsYestPp > 0.05
-          ? ' SOD-to-EOD movement was flat, meaning the increase was driven overnight.'
-          : vsYestPp != null && vsYestPp < -0.05
-            ? ' SOD-to-EOD movement was flat, so the improvement vs yesterday came overnight.'
-            : ' SOD-to-EOD movement was flat.'
-    } else if (sodToEodPp < -0.15) {
-      overview += ` Intraday, PAR fell ${Math.abs(sodToEodPp).toFixed(2)}% from SOD to EOD.`
-    } else {
-      overview += ` Intraday, PAR rose ${sodToEodPp.toFixed(2)}% from SOD to EOD.`
-    }
-  }
-
-  // Overnight / day-over-day drivers (PAR amount up vs yesterday)
+  // Day-over-day drivers (PAR amount up vs yesterday)
   const overnightDrivers = branches
     .filter((b) => b.hasEod && b.hasYest && (b.vsYesterdayEod?.parAmt || 0) > 100_000)
     .sort((a, b) => (b.vsYesterdayEod?.parAmt || 0) - (a.vsYesterdayEod?.parAmt || 0))
@@ -11584,21 +11527,17 @@ function buildDailyParClaudePrompt(payload) {
     netChangeVsYest >= 0
       ? `${formatDailyParCompact(netChangeVsYest)} improvement vs yesterday`
       : `${formatDailyParCompact(Math.abs(netChangeVsYest))} increase vs yesterday`
-  const shiftPp =
-    overall.eod?.parPct != null && overall.sod?.parPct != null
-      ? Number((Number(overall.eod.parPct) - Number(overall.sod.parPct)).toFixed(1))
+  const vsYestPp =
+    overall.eod?.parPct != null && overall.eodYesterday?.parPct != null
+      ? Number((Number(overall.eod.parPct) - Number(overall.eodYesterday.parPct)).toFixed(1))
       : null
 
   const branchSummary = (Array.isArray(payload?.branches) ? payload.branches : []).slice(0, 25).map((b) => ({
     branch: b.name,
     eodYesterdayPct: b.eodYesterday?.parPct,
     eodYesterdayAmt: b.eodYesterday?.par,
-    sodPct: b.sod?.parPct,
-    sodAmt: b.sod?.par,
     eodPct: b.eod?.parPct,
     eodAmt: b.eod?.par,
-    shiftSodToEodPp: b.shiftSodToEod?.parPctPp,
-    shiftSodToEodAmt: b.shiftSodToEod?.parAmt,
     vsYesterdayPp: b.vsYesterdayEod?.parPctPp,
     vsYesterdayAmt: b.vsYesterdayEod?.parAmt,
   }))
@@ -11607,25 +11546,27 @@ function buildDailyParClaudePrompt(payload) {
 
 Your job is INTERPRETATION, not a scoreboard. The branch table already shows the numbers — your cards must explain what the moves mean, why they matter, and what to do next.
 
+Compare YESTERDAY EOD → TODAY EOD only (day-over-day). Do NOT discuss morning/SOD/intraday open.
+
 Match this commentary style EXACTLY (tone, length, judgment):
 
 TOP PERFORMERS TODAY:
-- TOWN: dropped 2.5% from SOD to EOD and also improved on yesterday's close — encouraging trajectory, though at 23.6% / 13.0M it remains the single largest PAR exposure in the portfolio.
-- Utawala: posted the biggest intra-day improvement at −3.0%, with 751K net PAR reduction vs yesterday. The clearest positive signal of the day.
-- Kitengela & Kilimani: both had elevated SOD readings that unwound by close, ending near or below yesterday's levels — likely morning timing effects rather than new stress.
+- TOWN: improved 2.5% vs yesterday's close — encouraging trajectory, though at 23.6% / 13.0M it remains the single largest PAR exposure in the portfolio.
+- Utawala: posted the biggest day-over-day improvement at −3.0%, with 751K net PAR reduction vs yesterday. The clearest positive signal of the day.
+- Kitengela & Kilimani: both ended below yesterday's levels — solid recovery vs prior close.
 
 HOLDING STEADY:
 - Thika: is flat with no movement in amount — at 30.0% this is a structurally elevated rate that has shown no meaningful trend in either direction.
-- Mombasa Road: at 100.0% PAR is a standing concern. Daily stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.
+- Mombasa Road: at 100.0% PAR is a standing concern. Day-over-day stability here is not reassuring — this book needs a dedicated resolution plan, not monitoring.
 
 WATCHING:
-- Kiambu: is the only branch where PAR grew through the day — unlike others that spiked at SOD and recovered, Kiambu expanded from open to close (+1.4%, −499.9K vs yesterday). A second consecutive uptick tomorrow would warrant escalation.
+- Kiambu: PAR rose vs yesterday's close (+1.4%, +499.9K). A second consecutive uptick tomorrow would warrant escalation.
 
 CLEAN:
 - No zero-PAR branches at EOD. All branches carry residual at-risk balances — focus on reducing high-PAR outliers rather than celebrating clean branches. (If some branches are ~0%, name them and note they stayed clean.)
 
 BOTTOM LINE:
-Good day overall — 1.2M PAR improvement vs yesterday's close, driven largely by TOWN and Utawala. The portfolio-wide PAR rate fell 1.1% intra-day, which is a positive signal. However, TOWN at 23.6% / 13.0M remains priority number one, and Kiambu's rising trend is the one to watch tomorrow.
+Good day overall — 1.2M PAR improvement vs yesterday's close, driven largely by TOWN and Utawala. The portfolio-wide PAR rate fell 1.1% vs yesterday, which is a positive signal. However, TOWN at 23.6% / 13.0M remains priority number one, and Kiambu's rising trend is the one to watch tomorrow.
 
 Return EXACTLY this JSON (no markdown):
 {
@@ -11633,7 +11574,6 @@ Return EXACTLY this JSON (no markdown):
   "headline": "EOD PAR REPORT — ${payload.dateLabel}",
   "overallLines": [
     "EOD Yesterday: X.X% | XM",
-    "SOD Today: X.X% | XM",
     "EOD Today: X.X% | XM",
     "Net change vs yesterday: …"
   ],
@@ -11646,14 +11586,13 @@ Return EXACTLY this JSON (no markdown):
 }
 
 Hard rules:
-- Every bullet MUST start with "BranchName: " then genuine commentary. Never stop at "X% → Y% (SOD to EOD)".
+- Every bullet MUST start with "BranchName: " then genuine commentary. Never stop at "X% → Y%".
 - Weave in 1–2 key figures only where they support the judgment (% moves, net change vs yesterday, closing % / amount).
-- Prefer SOD→EOD for Top Performers; flag rising PAR for Watching; treat flat high-PAR as Holding Steady (not good news).
-- Call out morning timing effects when SOD spikes unwind by EOD.
+- Rank Top Performers by improvement vs yesterday EOD; flag rising PAR vs yesterday for Watching; treat flat high-PAR as Holding Steady (not good news).
 - Name the largest residual exposure and any structural problems (e.g. ~100% PAR books).
 - Max 4 bullets per list (3 is fine). Skip empty sections with [].
 - Use ONLY figures from DATA. Format amounts as 49M / 2.9M / 751K.
-- Do not invent branches. Net change today = ${netChangeLabel}${shiftPp != null ? `; overall SOD→EOD = ${shiftPp >= 0 ? '+' : ''}${shiftPp}%` : ''}.
+- Do not invent branches. Net change today = ${netChangeLabel}${vsYestPp != null ? `; overall vs yesterday = ${vsYestPp >= 0 ? '+' : ''}${vsYestPp}%` : ''}.
 - Return ONLY JSON.
 
 === DATA ===
@@ -11661,21 +11600,21 @@ ${JSON.stringify(
     {
       dateLabel: payload.dateLabel,
       country: payload.country,
-      slots: payload.slots,
+      slots: {
+        eod: payload.slots?.eod,
+        eodYesterday: payload.slots?.eodYesterday,
+      },
       overall: {
         eodYesterday: overall.eodYesterday,
-        sod: overall.sod,
         eod: overall.eod,
         netChangeVsYesterday: overall.netChangeVsYesterday,
-        shiftSodToEod: overall.shiftSodToEod,
-        netChangeLabel,
-        overallShiftSodToEodPp: shiftPp,
       },
       branches: branchSummary,
     },
     null,
     2,
-  )}`
+  )}
+`
 }
 
 async function generateDailyParClaudeAnalysis(payload) {
