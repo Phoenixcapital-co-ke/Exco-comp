@@ -78,6 +78,8 @@ export const API_URLS = {
     directorDocx: `${API_BASE}/api/reports/director/docx`,
     dailyPar: `${API_BASE}/api/reports/daily-par`,
     dailyParSend: `${API_BASE}/api/reports/daily-par/send`,
+    dailyDisbursements: `${API_BASE}/api/reports/daily-disbursements`,
+    dailyDisbursementsSend: `${API_BASE}/api/reports/daily-disbursements/send`,
     weeklyPar: `${API_BASE}/api/reports/weekly-par`,
     weeklyParSend: `${API_BASE}/api/reports/weekly-par/send`,
   },

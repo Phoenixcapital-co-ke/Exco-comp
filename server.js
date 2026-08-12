@@ -27,6 +27,7 @@ import { initUserActivityTable } from './lib/userActivity.mjs'
 import { startTelegramBot } from './lib/telegramBot.mjs'
 import { renderDailyParReportHTML } from './src/reports/dailyParReportTemplate.js'
 import { renderWeeklyParReportHTML } from './src/reports/weeklyParReportTemplate.js'
+import { renderDailyDisbursementReportHTML } from './src/reports/dailyDisbursementReportTemplate.js'
 
 const LOANDISK_LOAN_SELECT_SQL = LOANDISK_LOAN_ROW_SELECT.join(', ')
 
@@ -11098,6 +11099,323 @@ app.post('/api/reports/daily-par/send', requireAuth, async (req, res) => {
   }
 })
 
+// ─── Daily Logbook Disbursements (Mon–Sat 20:00 EAT) ─────────────────────────
+
+function isDailyDisbursementEmailEnabled() {
+  const flag = String(
+    process.env.DAILY_DISB_EMAIL_ENABLED ?? process.env.DAILY_PAR_EMAIL_ENABLED ?? 'true',
+  ).toLowerCase()
+  if (['0', 'false', 'no', 'off'].includes(flag)) return false
+  return true
+}
+
+function buildDailyDisbursementReportPayload({
+  dateStr = '',
+  countryParam = 'Kenya',
+  effectiveBranches = [],
+} = {}) {
+  const dateMatch = String(dateStr || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  let year
+  let month
+  let day
+  if (dateMatch) {
+    year = Number(dateMatch[1])
+    month = Number(dateMatch[2])
+    day = Number(dateMatch[3])
+  } else {
+    const parts = nairobiDateParts(new Date())
+    year = parts.year
+    month = parts.month
+    day = parts.day
+  }
+
+  const country = String(countryParam || 'Kenya').trim() || 'Kenya'
+  const currency = country === 'Uganda' ? 'UGX' : 'KES'
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ]
+  const dateLabel = `${day} ${monthNames[month - 1]} ${year}`
+  const dateIso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+
+  const yestDt = new Date(year, month - 1, day)
+  yestDt.setDate(yestDt.getDate() - 1)
+  const yY = yestDt.getFullYear()
+  const yM = yestDt.getMonth() + 1
+  const yD = yestDt.getDate()
+
+  let countryBranches = listActiveLogbookBranchesForCountry(country)
+  if (Array.isArray(effectiveBranches) && effectiveBranches.length > 0) {
+    const allowed = new Set(effectiveBranches.map((b) => String(b || '').trim().toLowerCase()))
+    countryBranches = countryBranches.filter((b) => {
+      const code = String(b.code || '').trim().toLowerCase()
+      const name = String(b.name || '').trim().toLowerCase()
+      return allowed.has(code) || allowed.has(name)
+    })
+  }
+
+  const resolver = buildLogbookBranchResolver(countryBranches)
+  const byCode = new Map()
+  for (const b of countryBranches) {
+    const code = String(b.code || '').trim()
+    if (!code) continue
+    byCode.set(code, {
+      code,
+      name: String(b.name || code).replace(/\s+Branch$/i, '').trim() || code,
+      today: 0,
+      todayCount: 0,
+      yesterday: 0,
+      mtd: 0,
+      target: 0,
+    })
+  }
+
+  const sameDay = (d, y, m, dd) =>
+    d && d.getFullYear() === y && d.getMonth() + 1 === m && d.getDate() === dd
+
+  const monthStart = new Date(year, month - 1, 1)
+  const reportEnd = new Date(year, month - 1, day, 23, 59, 59, 999)
+
+  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  for (const r of disbRows) {
+    const code = resolver.resolve(r.branch)
+    if (!byCode.has(code)) continue
+    const d = parseLogbookDirectorDMY(r.disbursed_date)
+    if (!d) continue
+    const amt = Number(r.disbursed) || 0
+    const row = byCode.get(code)
+    if (sameDay(d, year, month, day)) {
+      row.today += amt
+      row.todayCount += 1
+    }
+    if (sameDay(d, yY, yM, yD)) {
+      row.yesterday += amt
+    }
+    if (d >= monthStart && d <= reportEnd) {
+      row.mtd += amt
+    }
+  }
+
+  const countryIdSet = new Set()
+  for (const b of countryBranches) {
+    if (b.code) countryIdSet.add(String(b.code).trim().toLowerCase())
+    if (b.name) countryIdSet.add(String(b.name).trim().toLowerCase())
+  }
+
+  const targetRows = db
+    .prepare(
+      'SELECT branch, disbursement_target FROM Logbook_Targets WHERE month = ? AND year = ? AND active = 1',
+    )
+    .all(month, year)
+  for (const t of targetRows) {
+    const raw = String(t.branch || '').trim()
+    const code = resolver.resolve(raw)
+    if (!byCode.has(code) && !countryIdSet.has(raw.toLowerCase())) continue
+    const row = byCode.get(code) || byCode.get(resolver.resolve(raw))
+    if (!row) continue
+    row.target += Number(t.disbursement_target) || 0
+  }
+
+  const branches = Array.from(byCode.values())
+    .map((b) => {
+      const achPct = b.target > 0 ? Number(((b.mtd / b.target) * 100).toFixed(1)) : null
+      return {
+        ...b,
+        today: Math.round(b.today),
+        yesterday: Math.round(b.yesterday),
+        mtd: Math.round(b.mtd),
+        target: Math.round(b.target),
+        vsYesterday: Math.round(b.today - b.yesterday),
+        achPct,
+      }
+    })
+    .filter((b) => b.today > 0 || b.yesterday > 0 || b.mtd > 0 || b.target > 0)
+    .sort((a, b) => b.today - a.today || b.mtd - a.mtd)
+
+  const overall = branches.reduce(
+    (acc, b) => {
+      acc.today += b.today
+      acc.todayCount += b.todayCount
+      acc.yesterday += b.yesterday
+      acc.mtd += b.mtd
+      acc.target += b.target
+      return acc
+    },
+    { today: 0, todayCount: 0, yesterday: 0, mtd: 0, target: 0 },
+  )
+  overall.achPct = overall.target > 0 ? Number(((overall.mtd / overall.target) * 100).toFixed(1)) : null
+  overall.vsYesterday = overall.today - overall.yesterday
+
+  return {
+    date: dateIso,
+    dateLabel,
+    country,
+    currency,
+    year,
+    month,
+    day,
+    overall,
+    branches,
+  }
+}
+
+function buildDailyDisbursementPlainEmailBody(payload, country = 'Kenya') {
+  const overall = payload?.overall || {}
+  const dateLabel = payload?.dateLabel || payload?.date || ''
+  const today = Number(overall.today) || 0
+  const count = Number(overall.todayCount) || 0
+  const mtd = Number(overall.mtd) || 0
+  const target = Number(overall.target) || 0
+  const ach = Number(overall.achPct)
+  const vsYest = Number(overall.vsYesterday) || 0
+
+  let overview = `Today disbursed ${formatDailyParCompact(today)} across ${count} loan${count === 1 ? '' : 's'}`
+  if (vsYest > 0) overview += ` — up ${formatDailyParCompact(vsYest)} vs yesterday.`
+  else if (vsYest < 0) overview += ` — down ${formatDailyParCompact(Math.abs(vsYest))} vs yesterday.`
+  else overview += ' — flat vs yesterday.'
+
+  let targetLine = ''
+  if (target > 0 && Number.isFinite(ach)) {
+    targetLine = `MTD ${formatDailyParCompact(mtd)} is ${ach.toFixed(1)}% of the ${formatDailyParCompact(target)} monthly target.`
+  } else {
+    targetLine = `MTD disbursed: ${formatDailyParCompact(mtd)}.`
+  }
+
+  const top = [...(payload?.branches || [])].filter((b) => (b.today || 0) > 0).slice(0, 3)
+  let leaders = ''
+  if (top.length) {
+    leaders = top
+      .map((b) => `${b.name} ${formatDailyParCompact(b.today)}`)
+      .join('; ')
+  }
+
+  const lines = [
+    'Hi team,',
+    '',
+    `Please find today's Logbook disbursement report attached (${dateLabel}).`,
+    '',
+    `Overview: ${overview}`,
+    '',
+    targetLine,
+  ]
+  if (leaders) {
+    lines.push('', `Top branches today: ${leaders}.`)
+  }
+  lines.push(
+    '',
+    'Full branch breakdown (today, yesterday, MTD vs target) is in the attached PDF.',
+    '',
+    'Regards,',
+    `Phoenix Capital — ${country} Operations`,
+  )
+  return lines.join('\n')
+}
+
+async function sendDailyDisbursementReportEmail({ dateStr = '', countryParam = '', force = false } = {}) {
+  if (!force && !isDailyDisbursementEmailEnabled()) {
+    return { ok: false, skipped: true, reason: 'DAILY_DISB_EMAIL_ENABLED is off' }
+  }
+
+  const { to, cc } = getDailyParEmailRecipients()
+  if (!to.length) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+    }
+  }
+
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const payload = buildDailyDisbursementReportPayload({
+    dateStr,
+    countryParam: country,
+    effectiveBranches: [],
+  })
+
+  const html = renderDailyDisbursementReportHTML(payload)
+  let pdfBuffer
+  try {
+    const { renderHtmlToPdfBuffer } = await import('./src/reports/htmlToPdf.js')
+    pdfBuffer = await renderHtmlToPdfBuffer(html)
+  } catch (err) {
+    console.error('[Daily Disbursement email] PDF generation failed:', err)
+    throw new Error(`Failed to generate Daily Disbursement PDF: ${err.message || err}`)
+  }
+
+  const dateLabel = payload.dateLabel || payload.date || ''
+  const subject = `Daily Disbursements — ${dateLabel} (${country})`
+  const text = buildDailyDisbursementPlainEmailBody(payload, country)
+  const emailHtml = dailyParEmailBodyToHtml(text)
+  const filename = `Daily-Disbursements-${payload.date || 'report'}.pdf`
+
+  const result = await sendEmail({
+    to: to.join(', '),
+    cc: cc.length ? cc.join(', ') : undefined,
+    subject,
+    text,
+    html: emailHtml,
+    attachments: [
+      {
+        filename,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      },
+    ],
+  })
+
+  return {
+    ok: !!result.ok,
+    skipped: !!result.skipped,
+    to,
+    cc,
+    subject,
+    date: payload.date,
+    dateLabel,
+    country,
+  }
+}
+
+app.get('/api/reports/daily-disbursements', requireAuth, async (req, res) => {
+  try {
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null ? String(req.query.country).trim() : 'Kenya'
+    const dateStr = req.query && req.query.date != null ? String(req.query.date).trim() : ''
+    const payload = buildDailyDisbursementReportPayload({
+      dateStr,
+      countryParam,
+      effectiveBranches,
+    })
+    res.json(payload)
+  } catch (e) {
+    console.error('[Daily Disbursement report] Error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/reports/daily-disbursements/send', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin or superuser only' })
+    }
+    const dateStr =
+      (req.body && req.body.date != null ? String(req.body.date).trim() : '') ||
+      (req.query && req.query.date != null ? String(req.query.date).trim() : '')
+    const countryParam =
+      (req.body && req.body.country != null ? String(req.body.country).trim() : '') ||
+      (req.query && req.query.country != null ? String(req.query.country).trim() : '')
+
+    const result = await sendDailyDisbursementReportEmail({ dateStr, countryParam, force: true })
+    if (result.skipped && !result.ok) {
+      return res.status(400).json(result)
+    }
+    res.json(result)
+  } catch (e) {
+    console.error('[Daily Disbursement email] send failed:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 function formatDailyParCompact(v) {
   const n = Number(v) || 0
   const abs = Math.abs(n)
@@ -14221,6 +14539,24 @@ cron.schedule(
       console.log('[CRON] Daily PAR email result:', result)
     } catch (e) {
       console.error('[CRON] Daily PAR email failed:', e.message)
+    }
+  },
+  {
+    scheduled: true,
+    timezone: 'Africa/Nairobi',
+  },
+)
+
+// Daily Disbursements email: Monday–Saturday 20:05 Africa/Nairobi (after Daily PAR)
+cron.schedule(
+  '5 20 * * 1-6',
+  async () => {
+    console.log(`[CRON] Running Daily Disbursement email job at ${new Date().toISOString()}`)
+    try {
+      const result = await sendDailyDisbursementReportEmail({})
+      console.log('[CRON] Daily Disbursement email result:', result)
+    } catch (e) {
+      console.error('[CRON] Daily Disbursement email failed:', e.message)
     }
   },
   {

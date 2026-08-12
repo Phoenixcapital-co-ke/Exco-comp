@@ -8,6 +8,7 @@ import { renderLogbookWeeklyPerformanceReportHTML } from '../../reports/logbookW
 import { renderDirectorReportHTML } from '../../reports/directorReportTemplate.js'
 import { renderDailyParReportHTML } from '../../reports/dailyParReportTemplate.js'
 import { renderWeeklyParReportHTML } from '../../reports/weeklyParReportTemplate.js'
+import { renderDailyDisbursementReportHTML } from '../../reports/dailyDisbursementReportTemplate.js'
 import { DEFAULT_MAINTENANCE_MESSAGE } from '../../components/MaintenanceDownScreen.jsx'
 
 function DataOverview() {
@@ -74,6 +75,20 @@ function DataOverview() {
   const [showDailyParDownloadMenu, setShowDailyParDownloadMenu] = useState(false)
   const [dailyParEmailSending, setDailyParEmailSending] = useState(false)
   const [dailyParEmailStatus, setDailyParEmailStatus] = useState(null)
+
+  // Daily Disbursements Report State
+  const [dailyDisbDate, setDailyDisbDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [dailyDisbCountry, setDailyDisbCountry] = useState('Kenya')
+  const [dailyDisbReportHtml, setDailyDisbReportHtml] = useState('')
+  const [dailyDisbLoading, setDailyDisbLoading] = useState(false)
+  const [dailyDisbError, setDailyDisbError] = useState(null)
+  const [showDailyDisbReport, setShowDailyDisbReport] = useState(false)
+  const [showDailyDisbDownloadMenu, setShowDailyDisbDownloadMenu] = useState(false)
+  const [dailyDisbEmailSending, setDailyDisbEmailSending] = useState(false)
+  const [dailyDisbEmailStatus, setDailyDisbEmailStatus] = useState(null)
 
   // Weekly PAR Report State
   const [weeklyParDate, setWeeklyParDate] = useState(() => {
@@ -1536,6 +1551,133 @@ function DataOverview() {
     }
   }
 
+  const generateDailyDisbReport = async () => {
+    try {
+      setDailyDisbLoading(true)
+      setDailyDisbError(null)
+      setDailyDisbReportHtml('')
+      setDailyDisbEmailStatus(null)
+      const params = new URLSearchParams()
+      if (dailyDisbDate) params.set('date', dailyDisbDate)
+      if (dailyDisbCountry) params.set('country', dailyDisbCountry)
+      const url = `${API_URLS.reports.dailyDisbursements}?${params.toString()}`
+      const res = await fetch(url, { credentials: 'include' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `Failed to load daily disbursements (${res.status})`)
+      }
+      const data = await res.json()
+      setDailyDisbReportHtml(renderDailyDisbursementReportHTML(data))
+    } catch (e) {
+      console.error('Daily Disbursement report error:', e)
+      setDailyDisbError(e.message || 'Failed to generate daily disbursement report')
+    } finally {
+      setDailyDisbLoading(false)
+    }
+  }
+
+  const sendDailyDisbEmail = async () => {
+    try {
+      setDailyDisbEmailSending(true)
+      setDailyDisbEmailStatus(null)
+      const res = await fetch(API_URLS.reports.dailyDisbursementsSend, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: dailyDisbDate, country: dailyDisbCountry }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || data.reason || `Send failed (${res.status})`)
+      }
+      if (data.skipped) {
+        setDailyDisbEmailStatus({
+          ok: false,
+          message: data.reason || 'Email skipped (check SMTP / recipients)',
+        })
+      } else {
+        setDailyDisbEmailStatus({
+          ok: true,
+          message: `Sent to ${(data.to || []).join(', ') || 'recipients'}${data.cc?.length ? ` (cc: ${data.cc.join(', ')})` : ''}`,
+        })
+      }
+    } catch (e) {
+      setDailyDisbEmailStatus({ ok: false, message: e.message || 'Failed to send email' })
+    } finally {
+      setDailyDisbEmailSending(false)
+    }
+  }
+
+  const downloadDailyDisbHTML = () => {
+    const safeName = 'daily-disbursements-report'
+    const blob = new Blob([dailyDisbReportHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeName}-${dailyDisbDate}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadDailyDisbPDF = async () => {
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const { jsPDF } = await import('jspdf')
+      const safeName = 'daily-disbursements-report'
+      const PAGE_W = 794
+
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'fixed'
+      iframe.style.left = '-10000px'
+      iframe.style.top = '0'
+      iframe.style.width = `${PAGE_W}px`
+      iframe.style.height = '1200px'
+      iframe.style.border = 'none'
+      iframe.style.opacity = '0'
+      iframe.style.pointerEvents = 'none'
+      document.body.appendChild(iframe)
+
+      iframe.contentDocument.open()
+      iframe.contentDocument.write(dailyDisbReportHtml)
+      iframe.contentDocument.close()
+      await new Promise((resolve) => setTimeout(resolve, 800))
+
+      const element = iframe.contentDocument.querySelector('.page') || iframe.contentDocument.body
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: PAGE_W,
+      })
+      document.body.removeChild(iframe)
+
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const imgWidth = pageWidth
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      const scale = Math.min(1, pageHeight / imgHeight)
+      pdf.addImage(
+        canvas.toDataURL('image/png'),
+        'PNG',
+        0,
+        0,
+        imgWidth * scale,
+        imgHeight * scale,
+      )
+      pdf.save(`${safeName}-${dailyDisbDate}.pdf`)
+    } catch (err) {
+      console.error('Daily Disbursement PDF failed, falling back to print:', err)
+      const printWindow = window.open('', '_blank')
+      if (!printWindow) return
+      printWindow.document.write(dailyDisbReportHtml)
+      printWindow.document.close()
+      printWindow.focus()
+      printWindow.print()
+    }
+  }
+
   const downloadDailyParHTML = () => {
     const safeName = 'daily-par-report'
     const blob = new Blob([dailyParReportHtml], { type: 'text/html' })
@@ -2971,6 +3113,161 @@ function DataOverview() {
         </div>
       )}
 
+      {/* Daily Disbursements Report Modal */}
+      {showDailyDisbReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowDailyDisbReport(false)
+              setShowDailyDisbDownloadMenu(false)
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-semibold text-gray-900">Daily Disbursements Report</h2>
+              <button
+                onClick={() => {
+                  setShowDailyDisbReport(false)
+                  setShowDailyDisbDownloadMenu(false)
+                }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Report date</label>
+                  <input
+                    type="date"
+                    value={dailyDisbDate}
+                    onChange={(e) => setDailyDisbDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+                  <select
+                    value={dailyDisbCountry}
+                    onChange={(e) => setDailyDisbCountry(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                  >
+                    <option value="Kenya">Kenya</option>
+                    <option value="Uganda">Uganda</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={generateDailyDisbReport}
+                    disabled={dailyDisbLoading}
+                    className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {dailyDisbLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/60 border-t-white rounded-full animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      'Generate Report'
+                    )}
+                  </button>
+
+                  {['admin', 'superuser'].includes(String(user?.role || '').toLowerCase()) && (
+                    <button
+                      onClick={sendDailyDisbEmail}
+                      disabled={dailyDisbEmailSending || dailyDisbLoading}
+                      className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      title="Email the PDF now (same recipients as Daily PAR). Also auto-sends Mon–Sat 20:05 EAT."
+                    >
+                      {dailyDisbEmailSending ? 'Sending…' : 'Send Email Now'}
+                    </button>
+                  )}
+
+                  {dailyDisbReportHtml && !dailyDisbLoading && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowDailyDisbDownloadMenu((v) => !v)}
+                        className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold hover:bg-gray-900 transition flex items-center gap-2"
+                      >
+                        Download
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showDailyDisbDownloadMenu && (
+                        <div className="absolute mt-2 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10">
+                          <button
+                            onClick={() => {
+                              setShowDailyDisbDownloadMenu(false)
+                              downloadDailyDisbHTML()
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download HTML
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowDailyDisbDownloadMenu(false)
+                              downloadDailyDisbPDF()
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            Download PDF
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {dailyDisbEmailStatus && (
+                <div
+                  className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+                    dailyDisbEmailStatus.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-red-200 bg-red-50 text-red-700'
+                  }`}
+                >
+                  {dailyDisbEmailStatus.message}
+                </div>
+              )}
+
+              {dailyDisbLoading ? (
+                <div className="p-12 text-center">
+                  <div className="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
+                  <p className="mt-4 text-sm text-gray-500">Building daily disbursement table...</p>
+                </div>
+              ) : dailyDisbError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Error generating report: {dailyDisbError}
+                </div>
+              ) : !dailyDisbReportHtml ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-gray-500">
+                    Click &quot;Generate Report&quot; to build today vs yesterday and MTD vs target by branch.
+                  </p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <iframe
+                    title="Daily Disbursements Report Preview"
+                    style={{ width: '100%', height: '75vh', border: 0 }}
+                    srcDoc={dailyDisbReportHtml}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Weekly PAR Report Modal */}
       {showWeeklyParReport && (
         <div
@@ -3766,6 +4063,22 @@ function DataOverview() {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 mb-1">Daily PAR Report</h2>
                 <p className="text-sm text-gray-500">SOD (~3am) vs EOD (~8pm) by branch — shift, recovery vs yesterday, PDF download</p>
+              </div>
+              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Daily Disbursements Report Card */}
+          <button
+            onClick={() => setShowDailyDisbReport(true)}
+            className="bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition p-6 text-left"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Daily Disbursements</h2>
+                <p className="text-sm text-gray-500">Today vs yesterday · MTD vs target by branch — emailed Mon–Sat 20:05 EAT</p>
               </div>
               <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
