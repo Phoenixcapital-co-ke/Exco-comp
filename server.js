@@ -10919,16 +10919,29 @@ function parseEmailList(raw) {
 }
 
 /**
- * Recipients for the scheduled Daily PAR email.
- * Env:
+ * Recipients for Daily PAR / Disbursement emails by country.
+ * Kenya:
  *   DAILY_PAR_EMAIL_TO=a@x.com,b@y.com
  *   DAILY_PAR_EMAIL_CC=c@x.com
- *   DAILY_PAR_EMAIL_ROLES=admin,superuser   (optional — pulls active Users by role)
+ *   DAILY_PAR_EMAIL_ROLES=admin,superuser   (optional)
+ * Uganda:
+ *   DAILY_PAR_EMAIL_TO_UGANDA=a@x.com,b@y.com
+ *   DAILY_PAR_EMAIL_CC_UGANDA=c@x.com
+ *   DAILY_PAR_EMAIL_ROLES_UGANDA=...       (optional)
  */
-function getDailyParEmailRecipients() {
-  const fromEnv = parseEmailList(process.env.DAILY_PAR_EMAIL_TO)
-  const cc = parseEmailList(process.env.DAILY_PAR_EMAIL_CC)
-  const roles = String(process.env.DAILY_PAR_EMAIL_ROLES || '')
+function getDailyParEmailRecipients(countryParam = 'Kenya') {
+  const country = String(countryParam || 'Kenya').trim() || 'Kenya'
+  const isUganda = country.toLowerCase() === 'uganda'
+
+  const fromEnv = parseEmailList(
+    isUganda ? process.env.DAILY_PAR_EMAIL_TO_UGANDA : process.env.DAILY_PAR_EMAIL_TO,
+  )
+  const cc = parseEmailList(
+    isUganda ? process.env.DAILY_PAR_EMAIL_CC_UGANDA : process.env.DAILY_PAR_EMAIL_CC,
+  )
+  const roles = String(
+    (isUganda ? process.env.DAILY_PAR_EMAIL_ROLES_UGANDA : process.env.DAILY_PAR_EMAIL_ROLES) || '',
+  )
     .split(/[,;]+/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
@@ -10950,13 +10963,53 @@ function getDailyParEmailRecipients() {
         if (e.includes('@')) fromDb.push(e)
       }
     } catch (e) {
-      console.warn('[Daily PAR email] role lookup failed:', e.message)
+      console.warn(`[Daily PAR email] role lookup failed (${country}):`, e.message)
     }
   }
 
   const to = [...new Set([...fromEnv, ...fromDb])]
   const ccFiltered = cc.filter((e) => !to.includes(e))
-  return { to, cc: ccFiltered }
+  return { to, cc: ccFiltered, country }
+}
+
+/** Countries to auto-email on the daily cron (Kenya always; Uganda when recipients configured or forced). */
+function getDailyReportEmailCountries({ requireRecipients = true } = {}) {
+  const countries = ['Kenya']
+  const ugRecipients = getDailyParEmailRecipients('Uganda')
+  if (!requireRecipients || ugRecipients.to.length > 0) {
+    countries.push('Uganda')
+  }
+  return countries
+}
+
+async function sendDailyParReportEmailsForSchedule({ dateStr = '', force = false } = {}) {
+  const countries = getDailyReportEmailCountries({ requireRecipients: !force })
+  const results = []
+  for (const country of countries) {
+    try {
+      const result = await sendDailyParReportEmail({ dateStr, countryParam: country, force })
+      results.push(result)
+    } catch (e) {
+      results.push({ ok: false, country, error: e.message || String(e) })
+      console.error(`[Daily PAR email] ${country} failed:`, e.message)
+    }
+  }
+  return { ok: results.some((r) => r.ok), results }
+}
+
+async function sendDailyDisbursementReportEmailsForSchedule({ dateStr = '', force = false } = {}) {
+  const countries = getDailyReportEmailCountries({ requireRecipients: !force })
+  const results = []
+  for (const country of countries) {
+    try {
+      const result = await sendDailyDisbursementReportEmail({ dateStr, countryParam: country, force })
+      results.push(result)
+    } catch (e) {
+      results.push({ ok: false, country, error: e.message || String(e) })
+      console.error(`[Daily Disbursement email] ${country} failed:`, e.message)
+    }
+  }
+  return { ok: results.some((r) => r.ok), results }
 }
 
 function isDailyParEmailEnabled() {
@@ -10973,16 +11026,21 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
     return { ok: false, skipped: true, reason: 'DAILY_PAR_EMAIL_ENABLED is off' }
   }
 
-  const { to, cc } = getDailyParEmailRecipients()
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const { to, cc } = getDailyParEmailRecipients(country)
   if (!to.length) {
+    const hint =
+      country.toLowerCase() === 'uganda'
+        ? 'No recipients — set DAILY_PAR_EMAIL_TO_UGANDA (and optional DAILY_PAR_EMAIL_CC_UGANDA)'
+        : 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES'
     return {
       ok: false,
       skipped: true,
-      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+      reason: hint,
+      country,
     }
   }
 
-  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
   const payload = await buildDailyParReportPayload({
     dateStr,
     countryParam: country,
@@ -11006,7 +11064,7 @@ async function sendDailyParReportEmail({ dateStr = '', countryParam = '', force 
   const text = buildDailyParPlainEmailBody(payload, country)
   const emailHtml = dailyParEmailBodyToHtml(text)
 
-  const filename = `Daily-PAR-${payload.date || 'report'}.pdf`
+  const filename = `Daily-PAR-${country}-${payload.date || 'report'}.pdf`
   const result = await sendEmail({
     to: to.join(', '),
     cc: cc.length ? cc.join(', ') : undefined,
@@ -11280,16 +11338,21 @@ async function sendDailyDisbursementReportEmail({ dateStr = '', countryParam = '
     return { ok: false, skipped: true, reason: 'DAILY_DISB_EMAIL_ENABLED is off' }
   }
 
-  const { to, cc } = getDailyParEmailRecipients()
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const { to, cc } = getDailyParEmailRecipients(country)
   if (!to.length) {
+    const hint =
+      country.toLowerCase() === 'uganda'
+        ? 'No recipients — set DAILY_PAR_EMAIL_TO_UGANDA (and optional DAILY_PAR_EMAIL_CC_UGANDA)'
+        : 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES'
     return {
       ok: false,
       skipped: true,
-      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+      reason: hint,
+      country,
     }
   }
 
-  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
   const payload = buildDailyDisbursementReportPayload({
     dateStr,
     countryParam: country,
@@ -11310,7 +11373,7 @@ async function sendDailyDisbursementReportEmail({ dateStr = '', countryParam = '
   const subject = `Daily Disbursements — ${dateLabel} (${country})`
   const text = buildDailyDisbursementPlainEmailBody(payload, country)
   const emailHtml = dailyParEmailBodyToHtml(text)
-  const filename = `Daily-Disbursements-${payload.date || 'report'}.pdf`
+  const filename = `Daily-Disbursements-${country}-${payload.date || 'report'}.pdf`
 
   const result = await sendEmail({
     to: to.join(', '),
@@ -12213,16 +12276,21 @@ async function sendWeeklyParReportEmail({ dateStr = '', countryParam = '', force
     return { ok: false, skipped: true, reason: 'WEEKLY_PAR_EMAIL_ENABLED is off' }
   }
 
-  const { to, cc } = getDailyParEmailRecipients()
+  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
+  const { to, cc } = getDailyParEmailRecipients(country)
   if (!to.length) {
+    const hint =
+      country.toLowerCase() === 'uganda'
+        ? 'No recipients — set DAILY_PAR_EMAIL_TO_UGANDA (and optional DAILY_PAR_EMAIL_CC_UGANDA)'
+        : 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES'
     return {
       ok: false,
       skipped: true,
-      reason: 'No recipients — set DAILY_PAR_EMAIL_TO and/or DAILY_PAR_EMAIL_ROLES',
+      reason: hint,
+      country,
     }
   }
 
-  const country = String(countryParam || process.env.DAILY_PAR_EMAIL_COUNTRY || 'Kenya').trim() || 'Kenya'
   const payload = await buildWeeklyParReportPayload({
     dateStr,
     countryParam: country,
@@ -12245,7 +12313,7 @@ async function sendWeeklyParReportEmail({ dateStr = '', countryParam = '', force
   const subject = `Weekly PAR — ${weekLabel} (${country})`
   const text = buildWeeklyParPlainEmailBody(payload, country)
   const emailHtml = dailyParEmailBodyToHtml(text)
-  const filename = `Weekly-PAR-${payload.weekEnd || payload.date || 'report'}.pdf`
+  const filename = `Weekly-PAR-${country}-${payload.weekEnd || payload.date || 'report'}.pdf`
 
   const result = await sendEmail({
     to: to.join(', '),
@@ -12274,6 +12342,21 @@ async function sendWeeklyParReportEmail({ dateStr = '', countryParam = '', force
     country,
     claudeError: payload.claudeError || null,
   }
+}
+
+async function sendWeeklyParReportEmailsForSchedule({ dateStr = '', force = false } = {}) {
+  const countries = getDailyReportEmailCountries({ requireRecipients: !force })
+  const results = []
+  for (const country of countries) {
+    try {
+      const result = await sendWeeklyParReportEmail({ dateStr, countryParam: country, force })
+      results.push(result)
+    } catch (e) {
+      results.push({ ok: false, country, error: e.message || String(e) })
+      console.error(`[Weekly PAR email] ${country} failed:`, e.message)
+    }
+  }
+  return { ok: results.some((r) => r.ok), results }
 }
 
 app.get('/api/reports/weekly-par', requireAuth, async (req, res) => {
@@ -14468,13 +14551,13 @@ cron.schedule('*/30 * * * *', async () => {
   timezone: 'Africa/Nairobi'
 })
 
-// Daily PAR email: Monday–Saturday 20:00 Africa/Nairobi
+// Daily PAR email: Monday–Saturday 20:00 Africa/Nairobi (Kenya + Uganda when recipients set)
 cron.schedule(
   '0 20 * * 1-6',
   async () => {
     console.log(`[CRON] Running Daily PAR email job at ${new Date().toISOString()}`)
     try {
-      const result = await sendDailyParReportEmail({})
+      const result = await sendDailyParReportEmailsForSchedule({})
       console.log('[CRON] Daily PAR email result:', result)
     } catch (e) {
       console.error('[CRON] Daily PAR email failed:', e.message)
@@ -14486,13 +14569,13 @@ cron.schedule(
   },
 )
 
-// Daily Disbursements email: Monday–Saturday 20:05 Africa/Nairobi (after Daily PAR)
+// Daily Disbursements email: Monday–Saturday 20:05 Africa/Nairobi (Kenya + Uganda when recipients set)
 cron.schedule(
   '5 20 * * 1-6',
   async () => {
     console.log(`[CRON] Running Daily Disbursement email job at ${new Date().toISOString()}`)
     try {
-      const result = await sendDailyDisbursementReportEmail({})
+      const result = await sendDailyDisbursementReportEmailsForSchedule({})
       console.log('[CRON] Daily Disbursement email result:', result)
     } catch (e) {
       console.error('[CRON] Daily Disbursement email failed:', e.message)
@@ -14504,13 +14587,13 @@ cron.schedule(
   },
 )
 
-// Weekly PAR email: Saturday 20:00 Africa/Nairobi (Sun 03:00 → Sat 20:00 week)
+// Weekly PAR email: Saturday 20:00 Africa/Nairobi (Kenya + Uganda when recipients set)
 cron.schedule(
   '0 20 * * 6',
   async () => {
     console.log(`[CRON] Running Weekly PAR email job at ${new Date().toISOString()}`)
     try {
-      const result = await sendWeeklyParReportEmail({})
+      const result = await sendWeeklyParReportEmailsForSchedule({})
       console.log('[CRON] Weekly PAR email result:', result)
     } catch (e) {
       console.error('[CRON] Weekly PAR email failed:', e.message)

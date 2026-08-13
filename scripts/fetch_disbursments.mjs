@@ -77,7 +77,7 @@ const basePayload = {
   start_date: '01/01/2019',
   end_date: getTodayDMY(),
   do_not_include_restructured_loans: 1,
-  do_not_include_not_released_loans: 1,
+  do_not_include_not_released_loans: 0,
   branches_select: '',
 }
 

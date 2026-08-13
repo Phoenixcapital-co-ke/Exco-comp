@@ -3025,7 +3025,7 @@ function DataOverview() {
                       onClick={sendDailyParEmail}
                       disabled={dailyParEmailSending || dailyParLoading}
                       className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                      title="Email the report now (uses DAILY_PAR_EMAIL_TO / roles). Also auto-sends Mon–Sat 20:00 EAT."
+                      title="Email the selected country now (Kenya: DAILY_PAR_EMAIL_TO · Uganda: DAILY_PAR_EMAIL_TO_UGANDA). Cron auto-sends both Mon–Sat 20:00 EAT."
                     >
                       {dailyParEmailSending ? 'Sending…' : 'Send Email Now'}
                     </button>
@@ -3183,7 +3183,7 @@ function DataOverview() {
                       onClick={sendDailyDisbEmail}
                       disabled={dailyDisbEmailSending || dailyDisbLoading}
                       className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                      title="Email the PDF now (same recipients as Daily PAR). Also auto-sends Mon–Sat 20:05 EAT."
+                      title="Email the selected country now (same lists as Daily PAR). Cron auto-sends Kenya + Uganda Mon–Sat 20:05 EAT."
                     >
                       {dailyDisbEmailSending ? 'Sending…' : 'Send Email Now'}
                     </button>
@@ -3338,7 +3338,7 @@ function DataOverview() {
                       onClick={sendWeeklyParEmail}
                       disabled={weeklyParEmailSending || weeklyParLoading}
                       className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                      title="Email the weekly PDF now (same recipients as Daily PAR). Also auto-sends Sat 20:00 EAT."
+                      title="Email the selected country now (Kenya: DAILY_PAR_EMAIL_TO · Uganda: DAILY_PAR_EMAIL_TO_UGANDA). Cron auto-sends both Sat 20:00 EAT."
                     >
                       {weeklyParEmailSending ? 'Sending…' : 'Send Email Now'}
                     </button>
