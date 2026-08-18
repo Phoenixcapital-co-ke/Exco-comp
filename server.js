@@ -687,17 +687,60 @@ function normalizeKenyanPhoneStrict(phone) {
 }
 
 /** Product scope for collection arrears SMS (comma-separated; use * or all for every product). */
-function getCollectionArrearsProductFilter() {
+function getCollectionArrearsProductFilter(alias = '') {
   const raw = String(process.env.COLLECTION_ARREARS_SMS_PRODUCTS || 'Zidisha Boda').trim()
+  const col = alias
+    ? `LOWER(COALESCE(TRIM(${alias}."Product Name"), ''))`
+    : `LOWER(COALESCE(TRIM("Product Name"), ''))`
   if (!raw || raw === '*' || raw.toLowerCase() === 'all') {
     return { clause: '', params: [] }
   }
   const products = raw.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean)
   if (!products.length) return { clause: '', params: [] }
   return {
-    clause: ` AND LOWER(COALESCE(TRIM("Product Name"), '')) IN (${products.map(() => '?').join(', ')}) `,
+    clause: ` AND ${col} IN (${products.map(() => '?').join(', ')}) `,
     params: products,
   }
+}
+
+const COLLECTION_ARREARS_MIN_DAYS_PRODUCTS = ['advans emergency loan', 'salary advans', 'unsecured loans']
+
+/**
+ * Clients eligible for collection arrears SMS.
+ * Amount = sum(Principal Overdue Derived) from zidisha_data (live Musoni loan snapshot),
+ * not SUM(Total Outstanding) on overdue schedule rows (stale export + interest/penalties inflate arrears).
+ */
+function queryCollectionArrearsSmsClients(todayKey, { orderByAmount = false, limit = null } = {}) {
+  const productFilter = getCollectionArrearsProductFilter('z')
+  const minPh = COLLECTION_ARREARS_MIN_DAYS_PRODUCTS.map(() => '?').join(', ')
+  let sql = `
+    SELECT
+      TRIM(z."Client Id") AS clientId,
+      TRIM(z."Client Name") AS clientName,
+      TRIM(z."Phone Number") AS phone,
+      SUM(CAST(z."Principal Overdue Derived" AS REAL)) AS totalOutstanding
+    FROM zidisha_data z
+    WHERE CAST(z."Principal Overdue Derived" AS REAL) > 0
+      AND CAST(z."Total Outstanding Derived" AS REAL) > 1
+      AND TRIM(COALESCE(z."Loan Status Id", '')) NOT IN ('600', '700')
+      ${productFilter.clause}
+      AND (
+        LOWER(COALESCE(TRIM(z."Product Name"), '')) NOT IN (${minPh})
+        OR EXISTS (
+          SELECT 1 FROM boda_Schedule s
+          WHERE TRIM(s."Loan Id") = TRIM(z."Loan ID")
+            AND date(s."Due Date") < date(?, '-15 day')
+            AND COALESCE(CAST(REPLACE(s."Total Outstanding", ',', '') AS REAL), 0) > 0
+        )
+      )
+    GROUP BY TRIM(z."Client Id"), TRIM(z."Client Name"), TRIM(z."Phone Number")
+    HAVING totalOutstanding > 0`
+  if (orderByAmount) sql += ' ORDER BY totalOutstanding DESC'
+  if (limit != null) sql += ' LIMIT ?'
+
+  const params = [...productFilter.params, ...COLLECTION_ARREARS_MIN_DAYS_PRODUCTS, todayKey]
+  if (limit != null) params.push(limit)
+  return dbRW.prepare(sql).all(...params)
 }
 
 function maskEmail(email) {
@@ -980,29 +1023,10 @@ async function runBodaCollectionArrearsSmsJob(slot) {
 
   // Use Nairobi date key as "today" reference (midnight boundary for overdue)
   const todayKey = getNairobiDateKey()
-  const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
-  const productFilter = getCollectionArrearsProductFilter()
 
   let rows = []
   try {
-    rows = dbRW
-      .prepare(
-        `SELECT
-           TRIM("Client Id") AS clientId,
-           TRIM("Client Name") AS clientName,
-           TRIM("Phone Number") AS phone,
-           SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
-         FROM boda_Schedule
-         WHERE date("Due Date") < date(?)
-           AND (
-             LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
-             OR date("Due Date") < date(?, '-15 day')
-           )
-           ${productFilter.clause}
-         GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
-         HAVING totalOutstanding > 0`,
-      )
-      .all(todayKey, ...minDaysProducts, todayKey, ...productFilter.params)
+    rows = queryCollectionArrearsSmsClients(todayKey)
   } catch (e) {
     console.error('[CRON] Collection arrears query failed:', e.message)
     throw e
@@ -1093,34 +1117,13 @@ function buildBodaCollectionArrearsPreview({ asOfDate, slot, limit = 200, includ
   const sendDate = String(asOfDate || getNairobiDateKey()).slice(0, 10)
   const slotNorm = String(slot || '07:05').trim() || '07:05'
   const limitSafe = Math.min(Math.max(Number(limit) || 200, 1), 1000)
-  const minDaysProducts = ['advans emergency loan', 'salary advans', 'unsecured loans']
-  const productFilter = getCollectionArrearsProductFilter()
 
   const templateRaw = String(process.env.COLLECTION_ARREARS_SMS_TEMPLATE || '').trim()
   const template =
     templateRaw ||
     'Dear ${firstName}, you are in arrears of ${amount}. Please pay up your dues to stay active.'
 
-  const rows = dbRW
-    .prepare(
-      `SELECT
-         TRIM("Client Id") AS clientId,
-         TRIM("Client Name") AS clientName,
-         TRIM("Phone Number") AS phone,
-         SUM(COALESCE(CAST(REPLACE("Total Outstanding", ',', '') AS REAL), 0)) AS totalOutstanding
-       FROM boda_Schedule
-       WHERE date("Due Date") < date(?)
-         AND (
-           LOWER(COALESCE(TRIM("Product Name"), '')) NOT IN (${minDaysProducts.map(() => '?').join(', ')})
-           OR date("Due Date") < date(?, '-15 day')
-         )
-         ${productFilter.clause}
-       GROUP BY TRIM("Client Id"), TRIM("Client Name"), TRIM("Phone Number")
-       HAVING totalOutstanding > 0
-       ORDER BY totalOutstanding DESC
-       LIMIT ?`,
-    )
-    .all(sendDate, ...minDaysProducts, sendDate, ...productFilter.params, limitSafe)
+  const rows = queryCollectionArrearsSmsClients(sendDate, { orderByAmount: true, limit: limitSafe })
 
   const out = []
   for (const r of rows) {

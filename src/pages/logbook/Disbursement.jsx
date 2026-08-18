@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { DollarSign, Calendar, TrendingUp, Building2 } from 'lucide-react'
+import { DollarSign, Calendar, TrendingUp, Building2, Users } from 'lucide-react'
 import { 
   BarChart, 
   Bar, 
@@ -190,13 +190,12 @@ function LogbookDisbursement({ country }) {
     return proc.getDailyTrendForMonth(mk)
   })()
 
-  // Prepare product data for current month only
+  // Loans per product for the selected month
   const productData = (() => {
     const proc = data.processor
     if (!proc || !proc.disbursementsData) return []
-    const now = new Date()
-    const y = now.getFullYear()
-    const m = now.getMonth() + 1
+    const y = selectedYear
+    const m = selectedMonth
     const parseDMY = (s) => {
       if (!s) return null
       const parts = String(s).split(/[\/\-]/)
@@ -207,18 +206,62 @@ function LogbookDisbursement({ country }) {
     }
     const agg = {}
     for (const loan of proc.disbursementsData) {
-      const d = parseDMY(loan['Disbursed Date'])
+      const dateStr = loan.disbursed_date || loan['Disbursed Date'] || ''
+      const d = parseDMY(dateStr)
       if (!d) continue
       if (d.getFullYear() === y && (d.getMonth() + 1) === m) {
-        const product = (loan.Product || 'Unknown').replace('Logbook Loan', 'LL').replace('Product', '').trim()
+        const product = String(loan.product || loan.Product || 'Unknown')
+          .replace('Logbook Loan', 'LL')
+          .replace('Product', '')
+          .trim() || 'Unknown'
         if (!agg[product]) agg[product] = { amount: 0, count: 0 }
-        agg[product].amount += Number(loan.Disbursed || 0)
+        const amt = loan.disbursed != null ? Number(loan.disbursed) : Number(loan.Disbursed || 0)
+        agg[product].amount += amt || 0
         agg[product].count += 1
       }
     }
-    return Object.entries(agg)
+    const rows = Object.entries(agg)
       .map(([name, stats]) => ({ name, amount: stats.amount, count: stats.count }))
-      .sort((a, b) => b.amount - a.amount)
+      .sort((a, b) => b.count - a.count || b.amount - a.amount)
+    const totalLoans = rows.reduce((s, r) => s + r.count, 0)
+    return rows.map((r) => ({
+      ...r,
+      share: totalLoans > 0 ? (r.count / totalLoans) * 100 : 0,
+    }))
+  })()
+
+  // New clients = unique borrower_no whose first-ever disbursement falls in the selected month
+  const newClientsThisMonth = (() => {
+    const proc = data.processor
+    if (!proc || !proc.disbursementsData) return { current: 0, previous: 0 }
+    const parseDMY = (s) => {
+      if (!s) return null
+      const parts = String(s).split(/[\/\-]/)
+      if (parts.length < 3) return null
+      const [dd, mm, yyyy] = parts.map((p) => parseInt(p, 10))
+      if (!yyyy || !mm || !dd) return null
+      return new Date(yyyy, mm - 1, dd)
+    }
+    const earliestByBorrower = new Map()
+    for (const loan of proc.disbursementsData) {
+      const bn = String(loan.borrower_no || loan['Borrower#'] || '').trim()
+      if (!bn) continue
+      const d = parseDMY(loan.disbursed_date || loan['Disbursed Date'] || '')
+      if (!d) continue
+      const existing = earliestByBorrower.get(bn)
+      if (!existing || d < existing) earliestByBorrower.set(bn, d)
+    }
+    const prevMonth = selectedMonth === 1 ? 12 : selectedMonth - 1
+    const prevYear = selectedMonth === 1 ? selectedYear - 1 : selectedYear
+    let current = 0
+    let previous = 0
+    for (const d of earliestByBorrower.values()) {
+      const y = d.getFullYear()
+      const m = d.getMonth() + 1
+      if (y === selectedYear && m === selectedMonth) current += 1
+      if (y === prevYear && m === prevMonth) previous += 1
+    }
+    return { current, previous }
   })()
 
   // Top Loan Officers (current month only) aggregated from dataset
@@ -458,6 +501,7 @@ function LogbookDisbursement({ country }) {
   const totalDisbursedMonthChangePct = pctStr(totalDisbursedThisMonth, totalDisbursedPrevMonth)
   const numLoansMonthChangePct2 = pctStr(numLoansThisMonth, numLoansPrevMonth)
   const numOfficersMonthChangePct = pctStr(numOfficersThisMonth, numOfficersPrevMonth)
+  const newClientsMonthChangePct = pctStr(newClientsThisMonth.current, newClientsThisMonth.previous)
 
   // Utility to colorize change
   const changeColor = (s) => (s.startsWith('-') ? 'text-red-700' : 'text-green-700')
@@ -740,7 +784,7 @@ function LogbookDisbursement({ country }) {
 
       {/* Summary Cards */}
       {isPastMonth ? (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -777,6 +821,17 @@ function LogbookDisbursement({ country }) {
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <div className="flex items-center justify-between">
               <div>
+                <p className="text-sm font-medium text-gray-600">New Clients Onboarded</p>
+                <p className="text-2xl font-bold text-gray-900">{newClientsThisMonth.current}</p>
+              </div>
+              <div className="p-3 rounded-lg bg-teal-50 text-teal-600">
+                <Users size={24} />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between">
+              <div>
                 <p className="text-sm font-medium text-gray-600">Number of Branches</p>
                 <p className="text-2xl font-bold text-gray-900">{selectedMonthAgg.branches}</p>
               </div>
@@ -787,7 +842,7 @@ function LogbookDisbursement({ country }) {
           </div>
         </div>
       ) : (
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
@@ -850,6 +905,19 @@ function LogbookDisbursement({ country }) {
             </div>
             <div className="p-3 rounded-lg bg-green-50 text-green-600">
               <DollarSign size={24} />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">New Clients Onboarded</p>
+              <p className="text-2xl font-bold text-gray-900">{newClientsThisMonth.current}</p>
+              <p className={`text-sm mt-1 ${changeColor(newClientsMonthChangePct)}`}>{newClientsMonthChangePct}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-teal-50 text-teal-600">
+              <Users size={24} />
             </div>
           </div>
         </div>
@@ -978,6 +1046,66 @@ function LogbookDisbursement({ country }) {
             </PieChart>
           </ResponsiveContainer>
         </div>
+      </div>
+
+      {/* Loans by Product (Selected Month) */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Loans by Product ({monthLabelDaily})</h3>
+        {productData.length === 0 ? (
+          <div className="text-sm text-gray-600">No loans for the selected month.</div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Loans</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Share</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {productData.map((row) => (
+                    <tr key={row.name} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.name}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{row.count}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{formatMoney(row.amount)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600 text-right">{row.share.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-50 font-semibold">
+                    <td className="px-4 py-3 text-sm text-gray-900">Total</td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                      {productData.reduce((s, r) => s + r.count, 0)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                      {formatMoney(productData.reduce((s, r) => s + r.amount, 0))}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">100%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(240, productData.length * 44)}>
+              <BarChart data={productData} layout="vertical" margin={{ left: 16, right: 24 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" allowDecimals={false} />
+                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
+                <Tooltip
+                  formatter={(v, n) => {
+                    if (n === 'count') return [v, 'Loans']
+                    if (n === 'amount') return [formatMoney(v), 'Amount']
+                    return [v, n]
+                  }}
+                />
+                <Bar dataKey="count" name="Loans" fill="#3b82f6">
+                  <LabelList dataKey="count" position="right" fill="#111827" fontSize={11} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
 
       {/* Loan Officer Performance */}
