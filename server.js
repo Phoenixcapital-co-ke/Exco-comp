@@ -2016,6 +2016,87 @@ try {
   // Column already exists, ignore error
 }
 
+// Monthly sales-person disbursement targets (Logbook)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Logbook_Sales_Person_Targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_person TEXT NOT NULL,
+    country TEXT NOT NULL DEFAULT 'Kenya',
+    month INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    disbursement_target REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sales_person, country, month, year)
+  );
+`)
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Logbook_Sales_Persons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    country TEXT NOT NULL DEFAULT 'Kenya',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, country)
+  );
+`)
+
+// Seed Kenya sales-person roster (official Loandisk dropdown list = active; all others inactive)
+try {
+  const seedKenyaSales = [
+    'VICTOR KEDOGO',
+    'linet Nyanya',
+    'TECKLA OWINO',
+    'EDWARD MAGERO',
+    'LAVYNE ANYANGO',
+    'MAGDALINE AMOLO',
+    'Susan Kasoo',
+    'JARED OMAE',
+    'QUINTER ATIENO',
+    'Samson Namale',
+    'NORAH ANGOTE',
+    'anne nekesa',
+    'SILAS WANJALA',
+    'Allan Kimutai',
+    'Mary Muthoni',
+    'Richard Litunya',
+    'AMINA MUMBUA',
+    'Linet Kibuga',
+    'LUCY AKINYI',
+    'MARTIN KURUI',
+    'VIOLET MORAA',
+    'LEONIDA GESARE',
+    'KELLY ONYANGO',
+    'Vincent Odede',
+    'Judy Wangu',
+    'Paul Wanjala',
+    'Eric Antony Munene',
+    'Daniel Omondi',
+    'BRENDA KAWIRA',
+    'Vivian Kirui',
+    'Stephen Muthui',
+    'MOUREEN NYONGESA',
+  ]
+  const upsertActive = dbRW.prepare(`
+    INSERT INTO Logbook_Sales_Persons (name, country, active)
+    VALUES (?, 'Kenya', 1)
+    ON CONFLICT(name, country) DO UPDATE SET
+      active = 1,
+      updated_at = CURRENT_TIMESTAMP
+  `)
+  const seedTx = dbRW.transaction((names) => {
+    // Only the official dropdown list stays active
+    dbRW.prepare(`UPDATE Logbook_Sales_Persons SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE country = 'Kenya'`).run()
+    for (const n of names) upsertActive.run(n)
+  })
+  seedTx(seedKenyaSales)
+} catch (e) {
+  console.warn('[Sales Persons] Seed skipped:', e.message)
+}
+
 // Collectors table
 // Note: collector_id is unique globally (not per branch) - each collector appears only once
 dbRW.exec(`
@@ -9320,6 +9401,541 @@ app.delete('/api/targets/logbook/:id', (req, res) => {
     if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
     res.json({ ok: true })
   } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+function mapSalesPersonTargetRow(row) {
+  return {
+    id: row.id,
+    salesPerson: row.sales_person,
+    country: row.country || 'Kenya',
+    month: Number(row.month),
+    year: Number(row.year),
+    disbursementTarget: Number(row.disbursement_target) || 0,
+    active: !!row.active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+/** Active sales-person roster for a country (seeded + optional extras from disbursements). */
+app.get('/api/logbook/sales-persons', (req, res) => {
+  try {
+    const country = String(req.query.country || 'Kenya').trim() || 'Kenya'
+    const allRoster = dbRW
+      .prepare(
+        `SELECT id, name, country, active FROM Logbook_Sales_Persons
+         WHERE country = ?
+         ORDER BY active DESC, name COLLATE NOCASE`,
+      )
+      .all(country)
+
+    const roster = allRoster.filter((r) => !!r.active)
+    const inactiveRoster = allRoster.filter((r) => !r.active)
+
+    // Sales persons seen on loans but not on the official (active) dropdown list
+    let fromLoans = []
+    try {
+      fromLoans = db
+        .prepare(
+          `SELECT DISTINCT TRIM(sales_person) AS name
+           FROM Logbook_Disbursement
+           WHERE TRIM(country) = ?
+             AND sales_person IS NOT NULL AND TRIM(sales_person) <> ''`,
+        )
+        .all(country)
+    } catch {
+      fromLoans = []
+    }
+
+    const seen = new Set(allRoster.map((r) => String(r.name).trim().toLowerCase()).filter(Boolean))
+    const extras = []
+    for (const r of fromLoans) {
+      const name = String(r.name || '').trim()
+      if (!name) continue
+      const key = name.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      // Not on official dropdown → inactive by default
+      extras.push({ id: null, name, country, active: false, fromLoans: true })
+    }
+    extras.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+
+    res.json({
+      country,
+      roster: roster.map((r) => ({ id: r.id, name: r.name, country: r.country, active: true, fromLoans: false })),
+      inactive: [
+        ...inactiveRoster.map((r) => ({
+          id: r.id,
+          name: r.name,
+          country: r.country,
+          active: false,
+          fromLoans: false,
+        })),
+        ...extras,
+      ],
+      extras, // kept for older clients; same as loan-only inactive names
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/logbook/sales-persons', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const name = String(req.body?.name || '').trim()
+    const country = String(req.body?.country || 'Kenya').trim() || 'Kenya'
+    if (!name) return res.status(400).json({ error: 'name is required' })
+    dbRW
+      .prepare(
+        `INSERT INTO Logbook_Sales_Persons (name, country, active) VALUES (?, ?, 1)
+         ON CONFLICT(name, country) DO UPDATE SET active = 1, updated_at = CURRENT_TIMESTAMP`,
+      )
+      .run(name, country)
+    res.json({ ok: true, name, country })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/targets/logbook-sales-person', (req, res) => {
+  try {
+    const country = req.query.country != null ? String(req.query.country).trim() : ''
+    const month = req.query.month != null ? Number(req.query.month) : null
+    const year = req.query.year != null ? Number(req.query.year) : null
+
+    let sql = 'SELECT * FROM Logbook_Sales_Person_Targets WHERE 1=1'
+    const params = []
+    if (country) {
+      sql += ' AND country = ?'
+      params.push(country)
+    }
+    if (Number.isInteger(month) && month >= 1 && month <= 12) {
+      sql += ' AND month = ?'
+      params.push(month)
+    }
+    if (Number.isInteger(year) && year > 2000) {
+      sql += ' AND year = ?'
+      params.push(year)
+    }
+    sql += ' ORDER BY year DESC, month DESC, sales_person COLLATE NOCASE'
+
+    const rows = dbRW.prepare(sql).all(...params).map(mapSalesPersonTargetRow)
+    res.json(rows)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** Bulk upsert monthly targets for many sales people (one month/year). */
+app.post('/api/targets/logbook-sales-person/bulk', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const monthVal = Number(req.body?.month)
+    const yearVal = Number(req.body?.year)
+    const country = String(req.body?.country || 'Kenya').trim() || 'Kenya'
+    const items = Array.isArray(req.body?.items) ? req.body.items : []
+    if (!Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    if (!items.length) return res.status(400).json({ error: 'items array is required' })
+
+    const upsert = dbRW.prepare(`
+      INSERT INTO Logbook_Sales_Person_Targets
+        (sales_person, country, month, year, disbursement_target, active, updated_at)
+      VALUES
+        (@sales_person, @country, @month, @year, @disbursement_target, @active, CURRENT_TIMESTAMP)
+      ON CONFLICT(sales_person, country, month, year) DO UPDATE SET
+        disbursement_target = excluded.disbursement_target,
+        active = excluded.active,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+
+    const ensurePerson = dbRW.prepare(`
+      INSERT INTO Logbook_Sales_Persons (name, country, active) VALUES (?, ?, ?)
+      ON CONFLICT(name, country) DO UPDATE SET
+        active = excluded.active,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+
+    const tx = dbRW.transaction((list) => {
+      let saved = 0
+      for (const it of list) {
+        const name = String(it.salesPerson || it.sales_person || it.name || '').trim()
+        if (!name) continue
+        const isActive = !(it.active === false || it.active === 0)
+        // Only keep official/active people on the active roster; inactive stay inactive
+        ensurePerson.run(name, country, isActive ? 1 : 0)
+        upsert.run({
+          sales_person: name,
+          country,
+          month: monthVal,
+          year: yearVal,
+          disbursement_target: Number(it.disbursementTarget ?? it.disbursement_target) || 0,
+          active: isActive ? 1 : 0,
+        })
+        saved += 1
+      }
+      return saved
+    })
+
+    const saved = tx(items)
+    res.json({ ok: true, saved, month: monthVal, year: yearVal, country })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/targets/logbook-sales-person', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const salesPerson = String(req.body?.salesPerson || req.body?.sales_person || '').trim()
+    const country = String(req.body?.country || 'Kenya').trim() || 'Kenya'
+    const monthVal = Number(req.body?.month)
+    const yearVal = Number(req.body?.year)
+    const disbursementTarget = Number(req.body?.disbursementTarget ?? req.body?.disbursement_target) || 0
+    const active = req.body?.active === false || req.body?.active === 0 ? 0 : 1
+    if (!salesPerson || !Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'salesPerson, month (1-12), and year are required' })
+    }
+    dbRW
+      .prepare(
+        `INSERT INTO Logbook_Sales_Person_Targets
+          (sales_person, country, month, year, disbursement_target, active, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(sales_person, country, month, year) DO UPDATE SET
+           disbursement_target = excluded.disbursement_target,
+           active = excluded.active,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .run(salesPerson, country, monthVal, yearVal, disbursementTarget, active)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/targets/logbook-sales-person/:id', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT * FROM Logbook_Sales_Person_Targets WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Target not found' })
+
+    const salesPerson =
+      req.body?.salesPerson != null
+        ? String(req.body.salesPerson).trim()
+        : existing.sales_person
+    const country =
+      req.body?.country != null ? String(req.body.country).trim() || 'Kenya' : existing.country
+    const monthVal =
+      req.body?.month != null ? Number(req.body.month) : Number(existing.month)
+    const yearVal = req.body?.year != null ? Number(req.body.year) : Number(existing.year)
+    const disbursementTarget =
+      req.body?.disbursementTarget != null
+        ? Number(req.body.disbursementTarget) || 0
+        : Number(existing.disbursement_target) || 0
+    const active =
+      req.body?.active != null
+        ? req.body.active === false || req.body.active === 0
+          ? 0
+          : 1
+        : existing.active
+
+    dbRW
+      .prepare(
+        `UPDATE Logbook_Sales_Person_Targets SET
+           sales_person = ?, country = ?, month = ?, year = ?,
+           disbursement_target = ?, active = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .run(salesPerson, country, monthVal, yearVal, disbursementTarget, active, id)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/targets/logbook-sales-person/:id', requireAuth, (req, res) => {
+  try {
+    const role = String(req.authUser?.role || '').toLowerCase()
+    if (role !== 'superuser' && role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const result = dbRW.prepare('DELETE FROM Logbook_Sales_Person_Targets WHERE id = ?').run(id)
+    if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Actual vs target for sales people in a month (uses Logbook_Disbursement.sales_person).
+ * Includes MTD target (pro‑rata by working days) and performance category.
+ * GET /api/targets/logbook-sales-person/performance?country=Kenya&month=8&year=2026
+ */
+app.get('/api/targets/logbook-sales-person/performance', (req, res) => {
+  try {
+    const country = String(req.query.country || 'Kenya').trim() || 'Kenya'
+    const monthVal = Number(req.query.month)
+    const yearVal = Number(req.query.year)
+    if (!Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12 || !Number.isInteger(yearVal)) {
+      return res.status(400).json({ error: 'month (1-12) and year are required' })
+    }
+    const monthPad = String(monthVal).padStart(2, '0')
+    const likeDmy = `%/${monthPad}/${yearVal}`
+    const likeIso = `${yearVal}-${monthPad}-%`
+
+    // Working days / holidays from branch targets (same calendar for the country month)
+    let holidays = []
+    let workingDaysTotal = 0
+    try {
+      const bt = dbRW
+        .prepare(
+          `SELECT working_days, holidays FROM Logbook_Targets
+           WHERE month = ? AND year = ? AND active = 1
+           ORDER BY id DESC LIMIT 1`,
+        )
+        .get(monthVal, yearVal)
+      if (bt) {
+        try {
+          holidays = bt.holidays ? JSON.parse(bt.holidays) : []
+        } catch {
+          holidays = []
+        }
+        workingDaysTotal = Number(bt.working_days) || 0
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!workingDaysTotal) {
+      workingDaysTotal = calculateWorkingDays(monthVal, yearVal, holidays)
+    }
+
+    const today = new Date()
+    const isFuture =
+      yearVal > today.getFullYear() ||
+      (yearVal === today.getFullYear() && monthVal > today.getMonth() + 1)
+    let workingDaysElapsed = 0
+    if (!isFuture) {
+      const lastDay =
+        yearVal === today.getFullYear() && monthVal === today.getMonth() + 1
+          ? today.getDate()
+          : new Date(yearVal, monthVal, 0).getDate()
+      const holidaySet = new Set(
+        (Array.isArray(holidays) ? holidays : []).map((d) => new Date(d).toDateString()),
+      )
+      for (let day = 1; day <= lastDay; day++) {
+        const date = new Date(yearVal, monthVal - 1, day)
+        if (date.getDay() === 0) continue
+        if (holidaySet.has(date.toDateString())) continue
+        workingDaysElapsed += 1
+      }
+      if (workingDaysTotal > 0) workingDaysElapsed = Math.min(workingDaysElapsed, workingDaysTotal)
+    }
+    const mtdFraction =
+      workingDaysTotal > 0 ? workingDaysElapsed / workingDaysTotal : 0
+
+    // Official active roster + monthly targets
+    const roster = dbRW
+      .prepare(
+        `SELECT name FROM Logbook_Sales_Persons WHERE country = ? AND active = 1`,
+      )
+      .all(country)
+    const targets = dbRW
+      .prepare(
+        `SELECT sales_person, disbursement_target, active
+         FROM Logbook_Sales_Person_Targets
+         WHERE country = ? AND month = ? AND year = ?`,
+      )
+      .all(country, monthVal, yearVal)
+
+    // Actuals + primary branch (highest amount) for the month
+    const actuals = db
+      .prepare(
+        `SELECT
+           COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown') AS sales_person,
+           TRIM(branch) AS branch,
+           COUNT(*) AS loans,
+           SUM(COALESCE(CAST(disbursed AS REAL), 0)) AS total_disbursed
+         FROM Logbook_Disbursement
+         WHERE TRIM(country) = ?
+           AND (disbursed_date LIKE ? OR disbursed_date LIKE ?)
+         GROUP BY COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown'), TRIM(branch)`,
+      )
+      .all(country, likeDmy, likeIso)
+
+    // Fallback branch from any historical loan if no MTD activity
+    const histBranches = db
+      .prepare(
+        `SELECT
+           COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown') AS sales_person,
+           TRIM(branch) AS branch,
+           COUNT(*) AS n
+         FROM Logbook_Disbursement
+         WHERE TRIM(country) = ?
+           AND sales_person IS NOT NULL AND TRIM(sales_person) <> ''
+         GROUP BY COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown'), TRIM(branch)`,
+      )
+      .all(country)
+
+    const branchNameByCode = new Map()
+    try {
+      for (const b of dbRW.prepare(`SELECT code, name FROM Logbook_Branches`).all()) {
+        branchNameByCode.set(String(b.code || '').trim(), String(b.name || '').trim())
+      }
+    } catch {
+      /* ignore */
+    }
+    const resolveBranch = (code) => {
+      const c = String(code || '').trim()
+      if (!c) return '—'
+      const n = branchNameByCode.get(c)
+      return n ? n.replace(/\s*branch$/i, '').trim().toUpperCase() : c
+    }
+
+    const byName = new Map()
+    const ensure = (name, opts = {}) => {
+      const key = name.toLowerCase()
+      if (!byName.has(key)) {
+        byName.set(key, {
+          salesPerson: name,
+          monthlyTarget: 0,
+          active: true,
+          loans: 0,
+          actual: 0,
+          branchCode: null,
+          branchAmount: -1,
+        })
+      }
+      const row = byName.get(key)
+      if (opts.monthlyTarget != null) row.monthlyTarget = opts.monthlyTarget
+      if (opts.active != null) row.active = opts.active
+      return row
+    }
+
+    for (const r of roster) {
+      const name = String(r.name || '').trim()
+      if (name) ensure(name, { active: true })
+    }
+    for (const t of targets) {
+      const name = String(t.sales_person || '').trim()
+      if (!name) continue
+      ensure(name, {
+        monthlyTarget: Number(t.disbursement_target) || 0,
+        active: t.active !== 0,
+      })
+    }
+
+    for (const a of actuals) {
+      const name = String(a.sales_person || '').trim()
+      if (!name) continue
+      const row = ensure(name)
+      const amt = Number(a.total_disbursed) || 0
+      const loans = Number(a.loans) || 0
+      row.actual += amt
+      row.loans += loans
+      if (amt > row.branchAmount) {
+        row.branchAmount = amt
+        row.branchCode = a.branch
+      }
+    }
+
+    for (const h of histBranches) {
+      const name = String(h.sales_person || '').trim()
+      if (!name) continue
+      const row = byName.get(name.toLowerCase())
+      if (!row || row.branchCode) continue
+      const n = Number(h.n) || 0
+      if (n > (row._histN || 0)) {
+        row._histN = n
+        row.branchCode = h.branch
+      }
+    }
+
+    const categorize = (pct, actual) => {
+      if (!actual || actual <= 0 || pct == null || pct <= 0) return 'NON PERFORMER'
+      if (pct >= 70) return 'PERFORMER'
+      if (pct >= 40) return 'AVERAGE PERFORMER'
+      return 'BELOW AVERAGE PERFORMER'
+    }
+
+    // Kenya page: only active roster (+ people with targets). Drop random loan-only names.
+    const rows = [...byName.values()]
+      .filter((r) => r.active || r.monthlyTarget > 0)
+      .map((r) => {
+        const mtdTarget = r.monthlyTarget * mtdFraction
+        const achievementPct = mtdTarget > 0 ? (r.actual / mtdTarget) * 100 : r.actual > 0 ? null : 0
+        const category = categorize(achievementPct, r.actual)
+        return {
+          salesPerson: r.salesPerson,
+          branch: resolveBranch(r.branchCode),
+          staff: 1,
+          monthlyTarget: r.monthlyTarget,
+          mtdTarget,
+          actual: r.actual,
+          loans: r.loans,
+          achievementPct,
+          category,
+          active: r.active,
+        }
+      })
+      .sort((a, b) => {
+        const order = {
+          PERFORMER: 0,
+          'AVERAGE PERFORMER': 1,
+          'BELOW AVERAGE PERFORMER': 2,
+          'NON PERFORMER': 3,
+        }
+        const ca = order[a.category] ?? 9
+        const cb = order[b.category] ?? 9
+        if (ca !== cb) return ca - cb
+        return (b.achievementPct || 0) - (a.achievementPct || 0)
+      })
+
+    const summary = rows.reduce(
+      (acc, r) => {
+        acc.staff += 1
+        acc.monthlyTarget += r.monthlyTarget
+        acc.mtdTarget += r.mtdTarget
+        acc.actual += r.actual
+        return acc
+      },
+      { staff: 0, monthlyTarget: 0, mtdTarget: 0, actual: 0 },
+    )
+    summary.achievementPct =
+      summary.mtdTarget > 0 ? (summary.actual / summary.mtdTarget) * 100 : null
+
+    res.json({
+      country,
+      month: monthVal,
+      year: yearVal,
+      workingDaysTotal,
+      workingDaysElapsed,
+      mtdFraction,
+      rows,
+      summary,
+    })
+  } catch (e) {
+    console.error('[Sales Person Performance]', e)
     res.status(500).json({ error: e.message })
   }
 })

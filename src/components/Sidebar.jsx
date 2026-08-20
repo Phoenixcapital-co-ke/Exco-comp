@@ -170,6 +170,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false, fullHeigh
             { path: '/data/logbook/branches', label: 'Branches', icon: Building2 },
             { path: '/data/logbook/loan-officers', label: 'Loan Officers', icon: Users },
             { path: '/data/logbook/targets', label: 'Branch Targets', icon: Target },
+            { path: '/data/logbook/sales-targets', label: 'Sales Person Targets', icon: Target },
             { path: '/data/logbook/ro-targets', label: 'RO Targets', icon: Target }
           ]
         },

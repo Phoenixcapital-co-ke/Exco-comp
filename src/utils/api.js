@@ -135,6 +135,14 @@ export const API_URLS = {
       update: (id) => `${API_BASE}/api/targets/logbook/${id}`,
       delete: (id) => `${API_BASE}/api/targets/logbook/${id}`,
     },
+    logbookSalesPerson: {
+      list: `${API_BASE}/api/targets/logbook-sales-person`,
+      create: `${API_BASE}/api/targets/logbook-sales-person`,
+      bulk: `${API_BASE}/api/targets/logbook-sales-person/bulk`,
+      update: (id) => `${API_BASE}/api/targets/logbook-sales-person/${id}`,
+      delete: (id) => `${API_BASE}/api/targets/logbook-sales-person/${id}`,
+      performance: `${API_BASE}/api/targets/logbook-sales-person/performance`,
+    },
     zidisha: {
       list: `${API_BASE}/api/targets/zidisha`,
       create: `${API_BASE}/api/targets/zidisha`,
@@ -148,6 +156,10 @@ export const API_URLS = {
       update: (id) => `${API_BASE}/api/targets/ro/${id}`,
       delete: (id) => `${API_BASE}/api/targets/ro/${id}`,
     }
+  },
+  logbookSalesPersons: {
+    list: `${API_BASE}/api/logbook/sales-persons`,
+    create: `${API_BASE}/api/logbook/sales-persons`,
   },
   data: {
     lastRefresh: `${API_BASE}/api/data/last-refresh`,

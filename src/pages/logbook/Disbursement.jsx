@@ -33,6 +33,8 @@ function LogbookDisbursement({ country }) {
   const [selectedYear, setSelectedYear] = useState(nowInit.getFullYear())
   const [selectedBranch, setSelectedBranch] = useState('All')
   const [targets, setTargets] = useState([])
+  const [salesPerf, setSalesPerf] = useState({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
+  const [salesPerfLoading, setSalesPerfLoading] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -71,6 +73,35 @@ function LogbookDisbursement({ country }) {
     }
     loadTargets()
   }, [country])
+
+  useEffect(() => {
+    if (String(country || '').toLowerCase() !== 'kenya') {
+      setSalesPerf({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
+      return
+    }
+    const loadSalesPerf = async () => {
+      try {
+        setSalesPerfLoading(true)
+        const url = `${API_URLS.targets.logbookSalesPerson.performance}?country=Kenya&month=${selectedMonth}&year=${selectedYear}`
+        const res = await fetch(url, { credentials: 'include' })
+        if (!res.ok) throw new Error(`Failed to load sales performance (${res.status})`)
+        const json = await res.json()
+        setSalesPerf({
+          rows: Array.isArray(json.rows) ? json.rows : [],
+          summary: json.summary || null,
+          mtdFraction: Number(json.mtdFraction) || 0,
+          workingDaysElapsed: Number(json.workingDaysElapsed) || 0,
+          workingDaysTotal: Number(json.workingDaysTotal) || 0,
+        })
+      } catch (e) {
+        console.error('Failed to load sales person performance', e)
+        setSalesPerf({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
+      } finally {
+        setSalesPerfLoading(false)
+      }
+    }
+    loadSalesPerf()
+  }, [country, selectedMonth, selectedYear])
 
   if (loading) {
     return (
@@ -264,8 +295,9 @@ function LogbookDisbursement({ country }) {
     return { current, previous }
   })()
 
-  // Top Loan Officers (current month only) aggregated from dataset
+  // Top Loan Officers (legacy; Kenya uses sales-person performance table instead)
   const officerData = (() => {
+    if (String(country || '').toLowerCase() === 'kenya') return []
     const proc = data.processor
     if (!proc || !proc.disbursementsData) return []
     const now = new Date()
@@ -296,6 +328,32 @@ function LogbookDisbursement({ country }) {
       .map(([officer, stats]) => ({ name: officer, amount: stats.amount, count: stats.count }))
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 10)
+  })()
+
+  const salesPerfByCategory = (() => {
+    const order = ['PERFORMER', 'AVERAGE PERFORMER', 'BELOW AVERAGE PERFORMER', 'NON PERFORMER']
+    const map = new Map(order.map((c) => [c, []]))
+    for (const r of salesPerf.rows || []) {
+      const cat = r.category || 'NON PERFORMER'
+      if (!map.has(cat)) map.set(cat, [])
+      map.get(cat).push(r)
+    }
+    return order.map((category) => {
+      const items = map.get(category) || []
+      const totals = items.reduce(
+        (a, r) => {
+          a.staff += 1
+          a.monthlyTarget += Number(r.monthlyTarget) || 0
+          a.mtdTarget += Number(r.mtdTarget) || 0
+          a.actual += Number(r.actual) || 0
+          return a
+        },
+        { staff: 0, monthlyTarget: 0, mtdTarget: 0, actual: 0 },
+      )
+      totals.achievementPct =
+        totals.mtdTarget > 0 ? (totals.actual / totals.mtdTarget) * 100 : null
+      return { category, items, totals }
+    }).filter((g) => g.items.length > 0)
   })()
 
   // Branch performance from full dataset (selected month/year) with targets
@@ -1108,19 +1166,122 @@ function LogbookDisbursement({ country }) {
         )}
       </div>
 
-      {/* Loan Officer Performance */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Loan Officers (This Month)</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={officerData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" />
-            <YAxis />
-            <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
-            <Bar dataKey="amount" fill="#10b981" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {/* Sales Person Performance (Kenya) / Top Loan Officers (other) */}
+      {String(country || '').toLowerCase() === 'kenya' ? (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Sales Person Performance ({monthLabelDaily} {selectedYear})
+              </h3>
+              <p className="text-sm text-gray-500 mt-1">
+                MTD target = monthly target × working days elapsed
+                {salesPerf.workingDaysTotal > 0
+                  ? ` (${salesPerf.workingDaysElapsed}/${salesPerf.workingDaysTotal} = ${(salesPerf.mtdFraction * 100).toFixed(1)}%)`
+                  : ''}
+                . Categories vs MTD target: Performer ≥70%, Average ≥40%, Below &lt;40%, Non = 0.
+              </p>
+            </div>
+          </div>
+          {salesPerfLoading ? (
+            <div className="text-sm text-gray-600 py-8 text-center">Loading sales performance…</div>
+          ) : salesPerf.rows.length === 0 ? (
+            <div className="text-sm text-gray-600 py-6">
+              No sales person targets for this month. Set them under Data → Sales Person Targets.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                    <th className="px-3 py-2 border border-gray-200">Performance Category</th>
+                    <th className="px-3 py-2 border border-gray-200">Branch</th>
+                    <th className="px-3 py-2 border border-gray-200">Name</th>
+                    <th className="px-3 py-2 border border-gray-200 text-right">Staff</th>
+                    <th className="px-3 py-2 border border-gray-200 text-right">Target Monthly</th>
+                    <th className="px-3 py-2 border border-gray-200 text-right">Target MTD</th>
+                    <th className="px-3 py-2 border border-gray-200 text-right">MTD Disbursement</th>
+                    <th className="px-3 py-2 border border-gray-200 text-right">MTD % Achieved</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesPerfByCategory.map((group) => {
+                    const catColor =
+                      group.category === 'PERFORMER'
+                        ? 'bg-green-50 text-green-900'
+                        : group.category === 'AVERAGE PERFORMER'
+                          ? 'bg-amber-50 text-amber-900'
+                          : group.category === 'BELOW AVERAGE PERFORMER'
+                            ? 'bg-orange-50 text-orange-900'
+                            : 'bg-red-50 text-red-900'
+                    return (
+                      <React.Fragment key={group.category}>
+                        {group.items.map((r, idx) => (
+                          <tr key={`${group.category}-${r.salesPerson}`} className="hover:bg-gray-50">
+                            <td className={`px-3 py-2 border border-gray-200 font-semibold ${catColor}`}>
+                              {idx === 0 ? group.category : ''}
+                            </td>
+                            <td className="px-3 py-2 border border-gray-200 text-gray-800">{r.branch}</td>
+                            <td className="px-3 py-2 border border-gray-200 font-medium text-gray-900">{r.salesPerson}</td>
+                            <td className="px-3 py-2 border border-gray-200 text-right">1</td>
+                            <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(r.monthlyTarget)}</td>
+                            <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(r.mtdTarget)}</td>
+                            <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(r.actual)}</td>
+                            <td className="px-3 py-2 border border-gray-200 text-right font-semibold">
+                              {r.achievementPct == null ? '—' : `${Number(r.achievementPct).toFixed(2)}%`}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="bg-gray-50 font-semibold">
+                          <td className="px-3 py-2 border border-gray-200" colSpan={3}>
+                            {group.category} TOTAL
+                          </td>
+                          <td className="px-3 py-2 border border-gray-200 text-right">{group.totals.staff}</td>
+                          <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(group.totals.monthlyTarget)}</td>
+                          <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(group.totals.mtdTarget)}</td>
+                          <td className="px-3 py-2 border border-gray-200 text-right">{formatMoney(group.totals.actual)}</td>
+                          <td className="px-3 py-2 border border-gray-200 text-right">
+                            {group.totals.achievementPct == null
+                              ? '—'
+                              : `${group.totals.achievementPct.toFixed(2)}%`}
+                          </td>
+                        </tr>
+                      </React.Fragment>
+                    )
+                  })}
+                  {salesPerf.summary && (
+                    <tr className="bg-gray-900 text-white font-bold">
+                      <td className="px-3 py-2 border border-gray-700" colSpan={3}>GRAND TOTAL</td>
+                      <td className="px-3 py-2 border border-gray-700 text-right">{salesPerf.summary.staff}</td>
+                      <td className="px-3 py-2 border border-gray-700 text-right">{formatMoney(salesPerf.summary.monthlyTarget)}</td>
+                      <td className="px-3 py-2 border border-gray-700 text-right">{formatMoney(salesPerf.summary.mtdTarget)}</td>
+                      <td className="px-3 py-2 border border-gray-700 text-right">{formatMoney(salesPerf.summary.actual)}</td>
+                      <td className="px-3 py-2 border border-gray-700 text-right">
+                        {salesPerf.summary.achievementPct == null
+                          ? '—'
+                          : `${Number(salesPerf.summary.achievementPct).toFixed(2)}%`}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Loan Officers (This Month)</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={officerData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis />
+              <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
+              <Bar dataKey="amount" fill="#10b981" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Recent Disbursements Table */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
