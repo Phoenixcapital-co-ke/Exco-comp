@@ -8,3 +8,18 @@ body {
   background-color: #f9fafb;
   color: #111827;
 }
+
+@keyframes branch-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.branch-marquee-track {
+  animation-name: branch-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}

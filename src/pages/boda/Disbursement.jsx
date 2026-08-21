@@ -723,19 +723,27 @@ function BodaDisbursement() {
         )}
       </div>
 
-      {/* Branch Disbursement Cards */}
+      {/* Branch Disbursement Cards — continuous marquee */}
       {!loading && branchMetrics.length > 0 && selectedYear && selectedMonth && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
             Branch Disbursements ({selectedMonth && selectedYear ? `${MONTH_NAMES[selectedMonth]} ${selectedYear}` : '—'})
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {branchMetrics.map(({ branch, total }) => (
-              <div key={branch} className="bg-gray-50 rounded-lg border border-gray-200 p-4">
-                <p className="text-sm font-medium text-gray-600 mb-1">{branch}</p>
-                <p className="text-xl font-bold text-gray-900">{formatKES(total)}</p>
-              </div>
-            ))}
+          <div className="overflow-hidden">
+            <div
+              className="branch-marquee-track flex w-max gap-4"
+              style={{ animationDuration: `${Math.max(24, branchMetrics.length * 5)}s` }}
+            >
+              {[...branchMetrics, ...branchMetrics].map(({ branch, total }, i) => (
+                <div
+                  key={`${branch}-${i}`}
+                  className="w-64 flex-shrink-0 rounded-lg border border-gray-200 p-4 bg-gradient-to-br from-white to-gray-50"
+                >
+                  <div className="text-sm text-gray-600">{branch}</div>
+                  <div className="text-xl font-semibold text-gray-900 mt-1">{formatKES(total)}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

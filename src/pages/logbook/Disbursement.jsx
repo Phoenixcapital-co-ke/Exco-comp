@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import { DollarSign, Calendar, TrendingUp, Building2, Users } from 'lucide-react'
 import { 
   BarChart, 
@@ -35,30 +35,6 @@ function LogbookDisbursement({ country }) {
   const [targets, setTargets] = useState([])
   const [salesPerf, setSalesPerf] = useState({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
   const [salesPerfLoading, setSalesPerfLoading] = useState(false)
-  const branchCarouselRef = useRef(null)
-
-  useEffect(() => {
-    const el = branchCarouselRef.current
-    if (!el) return
-
-    const stepPx = 280
-    const tickMs = 3200
-    const id = setInterval(() => {
-      const node = branchCarouselRef.current
-      if (!node) return
-      const maxScroll = node.scrollWidth - node.clientWidth
-      if (maxScroll <= 0) return
-      const next = node.scrollLeft + stepPx
-      if (next >= maxScroll - 4) {
-        node.scrollTo({ left: 0, behavior: 'smooth' })
-      } else {
-        node.scrollBy({ left: stepPx, behavior: 'smooth' })
-      }
-    }, tickMs)
-
-    return () => clearInterval(id)
-  }, [selectedMonth, selectedYear, country, data])
-
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -1005,7 +981,7 @@ function LogbookDisbursement({ country }) {
       </div>
       )}
 
-      {/* Branch Disbursements (Selected Month) — auto carousel */}
+      {/* Branch Disbursements (Selected Month) — continuous marquee */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Branch Disbursements ({monthLabelDaily})</h3>
@@ -1013,19 +989,21 @@ function LogbookDisbursement({ country }) {
         {branchMonthCards.length === 0 ? (
           <div className="text-sm text-gray-600">No disbursements for the selected month.</div>
         ) : (
-          <div
-            ref={branchCarouselRef}
-            className="flex gap-4 overflow-x-auto scroll-smooth snap-x snap-mandatory pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          >
-            {branchMonthCards.map((b) => (
-              <div
-                key={b.name}
-                className="w-64 flex-shrink-0 snap-start rounded-lg border border-gray-200 p-4 bg-gradient-to-br from-white to-gray-50"
-              >
-                <div className="text-sm text-gray-600">{b.name}</div>
-                <div className="text-xl font-semibold text-gray-900 mt-1">{formatMoney(b.total)}</div>
-              </div>
-            ))}
+          <div className="overflow-hidden">
+            <div
+              className="branch-marquee-track flex w-max gap-4"
+              style={{ animationDuration: `${Math.max(24, branchMonthCards.length * 5)}s` }}
+            >
+              {[...branchMonthCards, ...branchMonthCards].map((b, i) => (
+                <div
+                  key={`${b.name}-${i}`}
+                  className="w-64 flex-shrink-0 rounded-lg border border-gray-200 p-4 bg-gradient-to-br from-white to-gray-50"
+                >
+                  <div className="text-sm text-gray-600">{b.name}</div>
+                  <div className="text-xl font-semibold text-gray-900 mt-1">{formatMoney(b.total)}</div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
