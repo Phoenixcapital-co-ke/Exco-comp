@@ -6,9 +6,6 @@ import {
   LabelList,
   LineChart, 
   Line, 
-  PieChart, 
-  Pie, 
-  Cell, 
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -563,8 +560,6 @@ function LogbookDisbursement({ country }) {
   // Utility to colorize change
   const changeColor = (s) => (s.startsWith('-') ? 'text-red-700' : 'text-green-700')
 
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
-
   // Compute average loan for current and previous month
   const avgLoanThisMonth = numLoansThisMonth > 0 ? (totalDisbursedThisMonth / numLoansThisMonth) : 0
   const avgLoanPrevMonth = numLoansPrevMonth > 0 ? (totalDisbursedPrevMonth / numLoansPrevMonth) : 0
@@ -780,38 +775,6 @@ function LogbookDisbursement({ country }) {
     return res
   })()
 
-  // Prepare status data for current month only
-  const statusData = (() => {
-    const proc = data.processor
-    if (!proc || !proc.disbursementsData) return []
-    const now = new Date()
-    const y = now.getFullYear()
-    const m = now.getMonth() + 1
-    const parseDMY = (s) => {
-      if (!s) return null
-      const parts = String(s).split(/[\/\-]/)
-      if (parts.length < 3) return null
-      const [dd, mm, yyyy] = parts.map(p => parseInt(p, 10))
-      if (!yyyy || !mm || !dd) return null
-      return new Date(yyyy, mm - 1, dd)
-    }
-    const agg = {}
-    for (const loan of proc.disbursementsData) {
-      const d = parseDMY(loan.disbursed_date || loan['Disbursed Date'])
-      if (!d) continue
-      if (d.getFullYear() === y && (d.getMonth() + 1) === m) {
-        const status = (loan.status || loan.Status || 'Unknown').trim()
-        if (!agg[status]) agg[status] = { amount: 0, count: 0 }
-        const amt = loan.disbursed != null ? Number(loan.disbursed) : Number(loan.Disbursed || 0)
-        agg[status].amount += (amt || 0)
-        agg[status].count += 1
-      }
-    }
-    return Object.entries(agg)
-      .map(([name, stats]) => ({ name, amount: stats.amount, count: stats.count }))
-      .sort((a, b) => b.amount - a.amount)
-  })()
-
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -1008,42 +971,9 @@ function LogbookDisbursement({ country }) {
         )}
       </div>
 
-      {/* Daily Disbursement over the Month */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Daily Disbursement ({monthLabelDaily})</h3>
-          <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
-            {branchOptions.map(b => (
-              <option key={b} value={b}>{b}</option>
-            ))}
-          </select>
-        </div>
-        <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={dailyDisbursementData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="day" />
-            <YAxis />
-            <Tooltip
-              formatter={(v, n) => {
-                if (n === 'overall') return [formatMoney(v), 'Overall']
-                if (n === 'branch') return [formatMoney(v), selectedBranch]
-                if (n === 'target') return [formatMoney(v), 'Daily Target']
-                return [formatMoney(v), n]
-              }}
-            />
-            <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
-            {selectedBranch !== 'All' && (
-              <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
-            )}
-            <Area type="monotone" dataKey="target" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Daily Target" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Branch Performance (wider on large screens) */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+      {/* Branch Performance + Daily Disbursement */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Branch Performance</h3>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={branchChartData}>
@@ -1088,27 +1018,34 @@ function LogbookDisbursement({ country }) {
           </ResponsiveContainer>
         </div>
 
-        {/* Status Distribution (This Month) */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-1">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Disbursements by Status (This Month)</h3>
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Daily Disbursement ({monthLabelDaily})</h3>
+            <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}>
+              {branchOptions.map(b => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+          </div>
           <ResponsiveContainer width="100%" height={260}>
-            <PieChart>
-              <Pie
-                data={statusData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                outerRadius={80}
-                fill="#8884d8"
-                dataKey="amount"
-              >
-                {statusData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
-            </PieChart>
+            <AreaChart data={dailyDisbursementData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="day" />
+              <YAxis />
+              <Tooltip
+                formatter={(v, n) => {
+                  if (n === 'overall') return [formatMoney(v), 'Overall']
+                  if (n === 'branch') return [formatMoney(v), selectedBranch]
+                  if (n === 'target') return [formatMoney(v), 'Daily Target']
+                  return [formatMoney(v), n]
+                }}
+              />
+              <Area type="monotone" dataKey="overall" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} name="Overall" />
+              {selectedBranch !== 'All' && (
+                <Area type="monotone" dataKey="branch" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name={selectedBranch} />
+              )}
+              <Area type="monotone" dataKey="target" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Daily Target" />
+            </AreaChart>
           </ResponsiveContainer>
         </div>
       </div>
@@ -1121,13 +1058,6 @@ function LogbookDisbursement({ country }) {
               <h3 className="text-lg font-semibold text-gray-900">
                 Sales Person Performance ({monthLabelDaily} {selectedYear})
               </h3>
-              <p className="text-sm text-gray-500 mt-1">
-                MTD target = monthly target × working days elapsed
-                {salesPerf.workingDaysTotal > 0
-                  ? ` (${salesPerf.workingDaysElapsed}/${salesPerf.workingDaysTotal} = ${(salesPerf.mtdFraction * 100).toFixed(1)}%)`
-                  : ''}
-                . Categories vs MTD target: Performer ≥70%, Average ≥40%, Below &lt;40%, Non = 0.
-              </p>
             </div>
           </div>
           {salesPerfLoading ? (
