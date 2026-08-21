@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { DollarSign, Calendar, TrendingUp, Building2, Users } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { DollarSign, Calendar, TrendingUp, Building2, Users, ChevronLeft, ChevronRight } from 'lucide-react'
 import { 
   BarChart, 
   Bar, 
@@ -35,6 +35,7 @@ function LogbookDisbursement({ country }) {
   const [targets, setTargets] = useState([])
   const [salesPerf, setSalesPerf] = useState({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
   const [salesPerfLoading, setSalesPerfLoading] = useState(false)
+  const branchCarouselRef = useRef(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -982,21 +983,55 @@ function LogbookDisbursement({ country }) {
       </div>
       )}
 
-      {/* Branch Disbursements (Selected Month) */}
+      {/* Branch Disbursements (Selected Month) — carousel */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Branch Disbursements ({monthLabelDaily})</h3>
+        <div className="flex items-center justify-between mb-4 gap-3">
+          <h3 className="text-lg font-semibold text-gray-900">Branch Disbursements ({monthLabelDaily})</h3>
+          {branchMonthCards.length > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-label="Previous branches"
+                onClick={() => {
+                  const el = branchCarouselRef.current
+                  if (!el) return
+                  el.scrollBy({ left: -280, behavior: 'smooth' })
+                }}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label="Next branches"
+                onClick={() => {
+                  const el = branchCarouselRef.current
+                  if (!el) return
+                  el.scrollBy({ left: 280, behavior: 'smooth' })
+                }}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          )}
+        </div>
         {branchMonthCards.length === 0 ? (
           <div className="text-sm text-gray-600">No disbursements for the selected month.</div>
         ) : (
-          <div className="overflow-x-auto">
-            <div className="flex gap-4 min-w-max">
-              {branchMonthCards.map((b) => (
-                <div key={b.name} className="w-64 flex-shrink-0 rounded-lg border border-gray-200 p-4">
-                  <div className="text-sm text-gray-600">{b.name}</div>
-                  <div className="text-xl font-semibold text-gray-900 mt-1">{formatMoney(b.total)}</div>
-                </div>
-              ))}
-            </div>
+          <div
+            ref={branchCarouselRef}
+            className="flex gap-4 overflow-x-auto scroll-smooth snap-x snap-mandatory pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {branchMonthCards.map((b) => (
+              <div
+                key={b.name}
+                className="w-64 flex-shrink-0 snap-start rounded-lg border border-gray-200 p-4 bg-gradient-to-br from-white to-gray-50"
+              >
+                <div className="text-sm text-gray-600">{b.name}</div>
+                <div className="text-xl font-semibold text-gray-900 mt-1">{formatMoney(b.total)}</div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -1106,67 +1141,7 @@ function LogbookDisbursement({ country }) {
         </div>
       </div>
 
-      {/* Loans by Product (Selected Month) */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Loans by Product ({monthLabelDaily})</h3>
-        {productData.length === 0 ? (
-          <div className="text-sm text-gray-600">No loans for the selected month.</div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Loans</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Share</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {productData.map((row) => (
-                    <tr key={row.name} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.name}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{row.count}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{formatMoney(row.amount)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600 text-right">{row.share.toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                  <tr className="bg-gray-50 font-semibold">
-                    <td className="px-4 py-3 text-sm text-gray-900">Total</td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                      {productData.reduce((s, r) => s + r.count, 0)}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                      {formatMoney(productData.reduce((s, r) => s + r.amount, 0))}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">100%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <ResponsiveContainer width="100%" height={Math.max(240, productData.length * 44)}>
-              <BarChart data={productData} layout="vertical" margin={{ left: 16, right: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" allowDecimals={false} />
-                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
-                <Tooltip
-                  formatter={(v, n) => {
-                    if (n === 'count') return [v, 'Loans']
-                    if (n === 'amount') return [formatMoney(v), 'Amount']
-                    return [v, n]
-                  }}
-                />
-                <Bar dataKey="count" name="Loans" fill="#3b82f6">
-                  <LabelList dataKey="count" position="right" fill="#111827" fontSize={11} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-      {/* Sales Person Performance (Kenya) / Top Loan Officers (other) */}
+      {/* Sales Person Performance (Kenya) / Top Loan Officers (other) — before Loans by Product */}
       {String(country || '').toLowerCase() === 'kenya' ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-4">
@@ -1282,6 +1257,66 @@ function LogbookDisbursement({ country }) {
           </ResponsiveContainer>
         </div>
       )}
+
+      {/* Loans by Product (Selected Month) */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Loans by Product ({monthLabelDaily})</h3>
+        {productData.length === 0 ? (
+          <div className="text-sm text-gray-600">No loans for the selected month.</div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Loans</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Share</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {productData.map((row) => (
+                    <tr key={row.name} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{row.name}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{row.count}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{formatMoney(row.amount)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600 text-right">{row.share.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-50 font-semibold">
+                    <td className="px-4 py-3 text-sm text-gray-900">Total</td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                      {productData.reduce((s, r) => s + r.count, 0)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                      {formatMoney(productData.reduce((s, r) => s + r.amount, 0))}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">100%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(240, productData.length * 44)}>
+              <BarChart data={productData} layout="vertical" margin={{ left: 16, right: 24 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" allowDecimals={false} />
+                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
+                <Tooltip
+                  formatter={(v, n) => {
+                    if (n === 'count') return [v, 'Loans']
+                    if (n === 'amount') return [formatMoney(v), 'Amount']
+                    return [v, n]
+                  }}
+                />
+                <Bar dataKey="count" name="Loans" fill="#3b82f6">
+                  <LabelList dataKey="count" position="right" fill="#111827" fontSize={11} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
 
       {/* Recent Disbursements Table */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">

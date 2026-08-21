@@ -2079,6 +2079,9 @@ try {
     'Vivian Kirui',
     'Stephen Muthui',
     'MOUREEN NYONGESA',
+    'Dennis Ndegwa',
+    'Pius Muroki',
+    'Kenneth Ndiba',
   ]
   const upsertActive = dbRW.prepare(`
     INSERT INTO Logbook_Sales_Persons (name, country, active)
