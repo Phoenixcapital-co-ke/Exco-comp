@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { DollarSign, Calendar, TrendingUp, Building2, Users, ChevronLeft, ChevronRight } from 'lucide-react'
+import { DollarSign, Calendar, TrendingUp, Building2, Users } from 'lucide-react'
 import { 
   BarChart, 
   Bar, 
@@ -36,6 +36,28 @@ function LogbookDisbursement({ country }) {
   const [salesPerf, setSalesPerf] = useState({ rows: [], summary: null, mtdFraction: 0, workingDaysElapsed: 0, workingDaysTotal: 0 })
   const [salesPerfLoading, setSalesPerfLoading] = useState(false)
   const branchCarouselRef = useRef(null)
+
+  useEffect(() => {
+    const el = branchCarouselRef.current
+    if (!el) return
+
+    const stepPx = 280
+    const tickMs = 3200
+    const id = setInterval(() => {
+      const node = branchCarouselRef.current
+      if (!node) return
+      const maxScroll = node.scrollWidth - node.clientWidth
+      if (maxScroll <= 0) return
+      const next = node.scrollLeft + stepPx
+      if (next >= maxScroll - 4) {
+        node.scrollTo({ left: 0, behavior: 'smooth' })
+      } else {
+        node.scrollBy({ left: stepPx, behavior: 'smooth' })
+      }
+    }, tickMs)
+
+    return () => clearInterval(id)
+  }, [selectedMonth, selectedYear, country, data])
 
   useEffect(() => {
     const loadData = async () => {
@@ -983,38 +1005,10 @@ function LogbookDisbursement({ country }) {
       </div>
       )}
 
-      {/* Branch Disbursements (Selected Month) — carousel */}
+      {/* Branch Disbursements (Selected Month) — auto carousel */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-4 gap-3">
+        <div className="mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Branch Disbursements ({monthLabelDaily})</h3>
-          {branchMonthCards.length > 0 && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                aria-label="Previous branches"
-                onClick={() => {
-                  const el = branchCarouselRef.current
-                  if (!el) return
-                  el.scrollBy({ left: -280, behavior: 'smooth' })
-                }}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <button
-                type="button"
-                aria-label="Next branches"
-                onClick={() => {
-                  const el = branchCarouselRef.current
-                  if (!el) return
-                  el.scrollBy({ left: 280, behavior: 'smooth' })
-                }}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
-          )}
         </div>
         {branchMonthCards.length === 0 ? (
           <div className="text-sm text-gray-600">No disbursements for the selected month.</div>
