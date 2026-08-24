@@ -119,22 +119,11 @@ function report(db) {
   }
 }
 
-function timesToDelete(db) {
-  // PAR is tiny (one row per snapshot). Do not DISTINCT-scan Open_loans.
-  const rows = db.prepare(`SELECT time FROM PAR`).all()
+function timesToKeep(parsed) {
   const now = Date.now()
   const fullMs = KEEP_FULL_DAYS * 864e5
   const dailyCap = KEEP_DAILY_DAYS > 0
   const dailyMs = dailyCap ? KEEP_DAILY_DAYS * 864e5 : Infinity
-
-  const parsed = []
-  for (const r of rows) {
-    const time = String(r.time || '').trim()
-    const ms = new Date(time).getTime()
-    if (!time || !Number.isFinite(ms)) continue
-    parsed.push({ time, ms, age: now - ms, hour: nairobiHour(new Date(ms)), day: nairobiDateKey(new Date(ms)) })
-  }
-
   const keep = new Set()
   const byDay = new Map()
 
@@ -158,11 +147,54 @@ function timesToDelete(db) {
     if (best3) keep.add(best3.time)
     if (best20) keep.add(best20.time)
   }
+  return keep
+}
 
+function parseParTimes(db) {
+  const rows = db.prepare(`SELECT time FROM PAR`).all()
+  const now = Date.now()
+  const parsed = []
+  for (const r of rows) {
+    const time = String(r.time || '').trim()
+    const ms = new Date(time).getTime()
+    if (!time || !Number.isFinite(ms)) continue
+    parsed.push({ time, ms, age: now - ms, hour: nairobiHour(new Date(ms)), day: nairobiDateKey(new Date(ms)) })
+  }
+  return parsed
+}
+
+function timesToDelete(db) {
+  const parsed = parseParTimes(db)
+  const keep = timesToKeep(parsed)
   return parsed.filter((p) => !keep.has(p.time)).map((p) => p.time)
 }
 
+function rebuildTableKeepTimes(db, tableName, keepTimes) {
+  console.log(`  rebuilding ${tableName} (copy keep rows, drop the rest)...`)
+  db.exec(`DROP TABLE IF EXISTS "${tableName}__keep"`)
+  db.exec(`CREATE TEMP TABLE IF NOT EXISTS keep_par_times (time TEXT PRIMARY KEY)`)
+  db.exec(`DELETE FROM keep_par_times`)
+  const ins = db.prepare(`INSERT OR IGNORE INTO keep_par_times (time) VALUES (?)`)
+  const fill = db.transaction((list) => {
+    for (const t of list) ins.run(t)
+  })
+  fill([...keepTimes])
+
+  db.exec(
+    `CREATE TABLE "${tableName}__keep" AS
+     SELECT * FROM "${tableName}"
+     WHERE time IN (SELECT time FROM keep_par_times)`,
+  )
+  db.exec(`DROP TABLE "${tableName}"`)
+  db.exec(`ALTER TABLE "${tableName}__keep" RENAME TO "${tableName}"`)
+  db.exec(`CREATE INDEX IF NOT EXISTS "idx_${tableName}_time" ON "${tableName}"(time)`)
+  const left = db.prepare(`SELECT COUNT(*) AS c FROM "${tableName}"`).get().c
+  console.log(`  ${tableName}: ${Number(left).toLocaleString()} rows kept`)
+}
+
 function prune(db, times) {
+  const parsed = parseParTimes(db)
+  const keep = timesToKeep(parsed)
   console.log(
     `\nPrune plan: drop ${times.length} snapshot times from Open_loans + Past_Missed_repayment`,
   )
@@ -170,6 +202,7 @@ function prune(db, times) {
     `  keep all snapshots < ${KEEP_FULL_DAYS}d, then SOD/EOD only` +
       (KEEP_DAILY_DAYS > 0 ? ` through ${KEEP_DAILY_DAYS}d` : ' (no age cap)'),
   )
+  console.log(`  keep ${keep.size} snapshot times`)
   if (!times.length) {
     console.log('  nothing to delete')
     return
@@ -180,18 +213,11 @@ function prune(db, times) {
     return
   }
 
-  const delOpen = db.prepare(`DELETE FROM Open_loans WHERE time = ?`)
-  const delPast = db.prepare(`DELETE FROM Past_Missed_repayment WHERE time = ?`)
-  const tx = db.transaction((list) => {
-    let n = 0
-    for (const t of list) {
-      n += delOpen.run(t).changes
-      n += delPast.run(t).changes
-    }
-    return n
-  })
-  const deleted = tx(times)
-  console.log(`  deleted ${deleted.toLocaleString()} rows`)
+  console.log('  Stop the website first (pm2 stop exco) or this will 502 users.')
+  db.pragma('busy_timeout = 60000')
+  rebuildTableKeepTimes(db, 'Open_loans', keep)
+  rebuildTableKeepTimes(db, 'Past_Missed_repayment', keep)
+  console.log('  rebuild done')
 }
 
 if (!fs.existsSync(dbPath)) {
