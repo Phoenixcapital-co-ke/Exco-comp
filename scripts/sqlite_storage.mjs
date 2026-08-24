@@ -1,18 +1,4 @@
-/**
- * Inspect / reclaim SQLite space (PAR loan snapshots are the usual bulk).
- *
- *   node scripts/sqlite_storage.mjs
- *   node scripts/sqlite_storage.mjs --prune
- *   node scripts/sqlite_storage.mjs --prune --apply
- *   node scripts/sqlite_storage.mjs --vacuum
- *
- * Stop PM2 before --vacuum (needs exclusive lock). --apply deletes rows; VACUUM is separate.
- *
- * Keeps:
- *   - last KEEP_FULL_DAYS of every 30-min snapshot (default 7)
- *   - then through KEEP_DAILY_DAYS, only ~03:00 and ~20:00 EAT snapshots (default 90)
- *   - PAR aggregate rows are never deleted
- */
+
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
@@ -77,44 +63,47 @@ function report(db) {
     if (s || suffix === '') console.log(`  ${path.basename(p)}: ${fmtBytes(s)}`)
   }
 
-  try {
-    const rows = db
-      .prepare(
-        `SELECT name, SUM(pgsize) AS bytes, SUM(ncell) AS cells
-         FROM dbstat
-         GROUP BY name
-         ORDER BY bytes DESC
-         LIMIT 25`,
-      )
-      .all()
-    console.log('\nTop tables/indexes (dbstat):')
-    for (const r of rows) {
-      console.log(`  ${fmtBytes(r.bytes).padStart(10)}  ${r.name}  (~${Number(r.cells || 0).toLocaleString()} cells)`)
-    }
-  } catch {
-    console.log('\n(dbstat unavailable — using row counts)')
-  }
-
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
     .all()
     .map((r) => r.name)
 
-  console.log('\nRow counts:')
-  for (const name of tables) {
-    try {
-      const c = db.prepare(`SELECT COUNT(*) AS c FROM "${name.replaceAll('"', '""')}"`).get().c
-      if (c > 0) console.log(`  ${String(c).padStart(12)}  ${name}`)
-    } catch {
-      /* skip */
-    }
+  const par = tables.includes('PAR')
+    ? db.prepare(`SELECT COUNT(*) AS c, MIN(time) AS mn, MAX(time) AS mx FROM PAR`).get()
+    : null
+  if (par) {
+    console.log(`\nPAR snapshots (small totals table): ${par.c}  from ${par.mn}  to ${par.mx}`)
+    console.log(`  (~${par.c} half-hour captures. Loan rows live in Open_loans / Past_Missed_repayment.)`)
   }
 
-  const hasOpen = tables.includes('Open_loans')
-  if (hasOpen) {
-    const snaps = db.prepare(`SELECT COUNT(DISTINCT time) AS c FROM Open_loans`).get().c
-    const minMax = db.prepare(`SELECT MIN(time) AS mn, MAX(time) AS mx FROM Open_loans`).get()
-    console.log(`\nOpen_loans snapshots: ${snaps}  from ${minMax.mn}  to ${minMax.mx}`)
+  for (const name of ['Open_loans', 'Past_Missed_repayment']) {
+    if (!tables.includes(name)) continue
+    const row = db.prepare(`SELECT MAX(id) AS mx, MIN(id) AS mn FROM "${name}"`).get()
+    const approx = (Number(row.mx) || 0) - (Number(row.mn) || 0) + (row.mx ? 1 : 0)
+    console.log(`${name}: id ${row.mn} → ${row.mx}  (~${approx.toLocaleString()} rows if ids are dense)`)
+  }
+
+  if (args.has('--sizes')) {
+    console.log('\nScanning dbstat (slow on a huge file)...')
+    try {
+      const rows = db
+        .prepare(
+          `SELECT name, SUM(pgsize) AS bytes, SUM(ncell) AS cells
+           FROM dbstat
+           GROUP BY name
+           ORDER BY bytes DESC
+           LIMIT 15`,
+        )
+        .all()
+      console.log('Top tables/indexes (dbstat):')
+      for (const r of rows) {
+        console.log(`  ${fmtBytes(r.bytes).padStart(10)}  ${r.name}`)
+      }
+    } catch (e) {
+      console.log('dbstat failed:', e.message)
+    }
+  } else {
+    console.log('\nSkip full table scan (pass --sizes only if you can wait).')
   }
 
   const loanDataOpen = db.prepare(`PRAGMA table_info(Open_loans)`).all().some((c) => c.name === 'loan_data')
@@ -130,7 +119,8 @@ function report(db) {
 }
 
 function timesToDelete(db) {
-  const rows = db.prepare(`SELECT DISTINCT time FROM Open_loans`).all()
+  // PAR is tiny (one row per snapshot). Do not DISTINCT-scan Open_loans.
+  const rows = db.prepare(`SELECT time FROM PAR`).all()
   const now = Date.now()
   const fullMs = KEEP_FULL_DAYS * 864e5
   const dailyMs = KEEP_DAILY_DAYS * 864e5
@@ -204,7 +194,8 @@ if (!fs.existsSync(dbPath)) {
   process.exit(1)
 }
 
-const db = new Database(dbPath)
+const needWrite = PRUNE || VACUUM || CHECKPOINT
+const db = new Database(dbPath, { readonly: !needWrite, fileMustExist: true })
 try {
   report(db)
   if (PRUNE) prune(db, timesToDelete(db))
