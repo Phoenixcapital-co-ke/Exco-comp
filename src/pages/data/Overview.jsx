@@ -3338,7 +3338,7 @@ function DataOverview() {
                       onClick={sendWeeklyParEmail}
                       disabled={weeklyParEmailSending || weeklyParLoading}
                       className="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                      title="Email the selected country now (Kenya: DAILY_PAR_EMAIL_TO · Uganda: DAILY_PAR_EMAIL_TO_UGANDA). Cron auto-sends both Sat 20:00 EAT."
+                      title="Email the selected country now (Kenya: DAILY_PAR_EMAIL_TO · Uganda: DAILY_PAR_EMAIL_TO_UGANDA). Cron auto-sends both Sat 20:15 EAT."
                     >
                       {weeklyParEmailSending ? 'Sending…' : 'Send Email Now'}
                     </button>
@@ -3384,7 +3384,7 @@ function DataOverview() {
 
               <p className="text-xs text-gray-500 mb-4">
                 Week = <strong>Sunday 03:00 EAT</strong> → <strong>Saturday 20:00 EAT</strong>. Positive change = risk reduced.
-                Auto-emailed <strong>Saturday at 20:00 EAT</strong> to the same Daily PAR recipients.
+                Auto-emailed <strong>Saturday at 20:15 EAT</strong> to the same Daily PAR recipients.
               </p>
 
               {weeklyParEmailStatus && (

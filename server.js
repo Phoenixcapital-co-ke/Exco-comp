@@ -15209,9 +15209,9 @@ cron.schedule(
   },
 )
 
-// Weekly PAR email: Saturday 20:00 Africa/Nairobi (Kenya + Uganda when recipients set)
+// Weekly PAR email: Saturday 20:15 Africa/Nairobi (after Daily PAR at 20:00)
 cron.schedule(
-  '0 20 * * 6',
+  '15 20 * * 6',
   async () => {
     console.log(`[CRON] Running Weekly PAR email job at ${new Date().toISOString()}`)
     try {
@@ -15233,6 +15233,8 @@ cron.schedule('*/10 * * * *', () => {
   const env = {
     ...process.env,
     SKIP_BORROWERS: '1',
+    // Musoni export #20 currently 500s; keep last snapshot and do not retry every 10 min
+    SKIP_BODA_REPAYMENTS: '1',
   }
   const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), env, shell: true })
   proc.stdout.on('data', (chunk) => console.log(`[DATA-CRON-OUT] ${chunk.toString().trimEnd()}`))
