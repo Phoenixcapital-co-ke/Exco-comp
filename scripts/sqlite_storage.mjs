@@ -13,8 +13,9 @@ const PRUNE = args.has('--prune')
 const VACUUM = args.has('--vacuum')
 const CHECKPOINT = args.has('--checkpoint') || VACUUM || (PRUNE && APPLY)
 
-const KEEP_FULL_DAYS = Number(process.env.KEEP_FULL_DAYS || 7)
-const KEEP_DAILY_DAYS = Number(process.env.KEEP_DAILY_DAYS || 90)
+const KEEP_FULL_DAYS = Number(process.env.KEEP_FULL_DAYS || 2)
+// 0 or negative = keep SOD (~03:00) + EOD (~20:00) forever after the full window
+const KEEP_DAILY_DAYS = Number(process.env.KEEP_DAILY_DAYS ?? 0)
 
 function fmtBytes(n) {
   const x = Number(n) || 0
@@ -123,7 +124,8 @@ function timesToDelete(db) {
   const rows = db.prepare(`SELECT time FROM PAR`).all()
   const now = Date.now()
   const fullMs = KEEP_FULL_DAYS * 864e5
-  const dailyMs = KEEP_DAILY_DAYS * 864e5
+  const dailyCap = KEEP_DAILY_DAYS > 0
+  const dailyMs = dailyCap ? KEEP_DAILY_DAYS * 864e5 : Infinity
 
   const parsed = []
   for (const r of rows) {
@@ -141,7 +143,7 @@ function timesToDelete(db) {
       keep.add(p.time)
       continue
     }
-    if (p.age > dailyMs) continue
+    if (dailyCap && p.age > dailyMs) continue
     if (!byDay.has(p.day)) byDay.set(p.day, [])
     byDay.get(p.day).push(p)
   }
@@ -164,7 +166,10 @@ function prune(db, times) {
   console.log(
     `\nPrune plan: drop ${times.length} snapshot times from Open_loans + Past_Missed_repayment`,
   )
-  console.log(`  keep all snapshots < ${KEEP_FULL_DAYS}d, then SOD/EOD only through ${KEEP_DAILY_DAYS}d`)
+  console.log(
+    `  keep all snapshots < ${KEEP_FULL_DAYS}d, then SOD/EOD only` +
+      (KEEP_DAILY_DAYS > 0 ? ` through ${KEEP_DAILY_DAYS}d` : ' (no age cap)'),
+  )
   if (!times.length) {
     console.log('  nothing to delete')
     return

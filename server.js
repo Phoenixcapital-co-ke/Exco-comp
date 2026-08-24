@@ -15227,6 +15227,31 @@ cron.schedule(
   },
 )
 
+// Daily: drop extra 30-min loan snapshots (keep last 2 days in full, then SOD/EOD forever)
+cron.schedule(
+  '15 1 * * *',
+  () => {
+    console.log(`[CRON] Running PAR snapshot prune at ${new Date().toISOString()}`)
+    const proc = spawn('node', ['scripts/sqlite_storage.mjs', '--prune', '--apply'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        KEEP_FULL_DAYS: '2',
+        KEEP_DAILY_DAYS: '0',
+      },
+      shell: true,
+    })
+    proc.stdout.on('data', (chunk) => console.log(`[PAR-PRUNE-OUT] ${chunk.toString().trimEnd()}`))
+    proc.stderr.on('data', (chunk) => console.error(`[PAR-PRUNE-ERR] ${chunk.toString().trimEnd()}`))
+    proc.on('close', (code) => console.log(`[CRON] PAR snapshot prune completed with code ${code}`))
+    proc.on('error', (err) => console.error('[CRON] PAR snapshot prune failed to start:', err.message))
+  },
+  {
+    scheduled: true,
+    timezone: 'Africa/Nairobi',
+  },
+)
+
 // Every 10 minutes: run ingestion without borrowers (fast refresh)
 cron.schedule('*/10 * * * *', () => {
   console.log(`[CRON] Running scheduled data refresh (no borrowers) at ${new Date().toISOString()}`)
