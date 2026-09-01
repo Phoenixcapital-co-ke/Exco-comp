@@ -266,7 +266,7 @@ function LogbookPAR({ country }) {
     ? Number(history[0]?.Past_Arrears_missed || history[0]?.past_arrears_missed || 0)
     : null
   const latestOpenLoans = history.length ? Number(history[0]?.Open_loans || history[0]?.open_loans || 0) : null
-
+  
   const countryTotals = useMemo(() => {
     const open = branchData.reduce((sum, b) => sum + (Number(b.openLoans) || 0), 0)
     const missed = branchData.reduce((sum, b) => sum + (Number(b.pastMissed) || 0), 0)
@@ -505,7 +505,7 @@ function LogbookPAR({ country }) {
           <div className="min-w-0">
             <h1 className="text-base sm:text-lg font-bold truncate">Logbook PAR (Portfolio at Risk)</h1>
             <p className="text-xs text-gray-500 mt-0.5 hidden sm:block">Monitor loans that are past due and assess risk levels</p>
-          </div>
+      </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
           <span className="text-[11px] text-gray-500 whitespace-nowrap">Last refresh: {lastRefreshLabel}</span>
@@ -558,14 +558,14 @@ function LogbookPAR({ country }) {
               {progress.status === 'completed' && !progress.branch ? 'Snapshot completed' : `Processing${progress.branch ? `: ${progress.branch}` : '…'}`}
             </span>
             <span className="text-gray-600">
-              {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : '0%'}
+                {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : '0%'}
             </span>
-          </div>
+              </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
             <div
               className="h-2 rounded-full bg-[#E04B2A] transition-all"
-              style={{ width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : '0%' }}
-            />
+                style={{ width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : '0%' }}
+              />
           </div>
         </div>
       )}
@@ -611,8 +611,8 @@ function LogbookPAR({ country }) {
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
                 {parSummary.totalParRate.toFixed(1)}% Current
               </span>
-            )}
-          </div>
+              )}
+            </div>
           <div className="flex-1 min-h-[200px] w-full">
             {dailyParData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -629,7 +629,7 @@ function LogbookPAR({ country }) {
             )}
           </div>
         </div>
-
+        
         <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0 2xl:max-w-[340px] 2xl:mx-auto 2xl:w-full flex flex-col min-h-0 h-full">
           <h3 className="text-[13px] font-bold text-gray-900 mb-3 shrink-0">PAR Age Composition</h3>
           <div className="flex flex-col items-center flex-1 min-h-0">
@@ -671,7 +671,7 @@ function LogbookPAR({ country }) {
             </div>
           </div>
         </div>
-
+        
         <div className="bg-white rounded-[10px] shadow-sm border border-gray-200 p-4 sm:p-[18px] min-w-0 lg:col-span-2 2xl:col-span-1 flex flex-col min-h-0 h-full">
           <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
             <h3 className="text-[13px] font-bold text-gray-900">PAR % by Branch</h3>
@@ -724,17 +724,17 @@ function LogbookPAR({ country }) {
             </span>
           </div>
           <div className="overflow-x-auto">
-            {branchLoading ? (
+              {branchLoading ? (
               <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-gray-400" /></div>
-            ) : (
+              ) : (
               <table className="w-full min-w-[580px] text-[12px]">
-                <thead className="bg-gray-50">
-                  <tr>
+                  <thead className="bg-gray-50">
+                    <tr>
                     {['Branch', 'Open Loans', 'At-Risk', 'PAR', 'PAR 30', 'PAR 60', 'PAR 90+'].map((h, i) => (
                       <th key={h} className={`px-2.5 py-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>
                     ))}
-                  </tr>
-                </thead>
+                    </tr>
+                  </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredBranchData.map((branch) => {
                     const isExpanded = expandedBranchCode === branch.code
@@ -755,15 +755,15 @@ function LogbookPAR({ country }) {
                                 <p className="font-semibold text-gray-900">{branch.name}</p>
                                 <p className="text-[10px] text-gray-400">#{branch.code}</p>
                               </div>
-                            </div>
-                          </td>
+                          </div>
+                        </td>
                           <td className="px-2.5 py-2.5 text-right text-gray-700 whitespace-nowrap">{formatCompact(branch.openLoans)}</td>
                           <td className="px-2.5 py-2.5 text-right font-semibold text-red-600 whitespace-nowrap">{formatCompact(branch.pastMissed)}</td>
                           <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.parRate} /></td>
                           <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par30Rate} /></td>
                           <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par60Rate} /></td>
                           <td className="px-2.5 py-2.5 text-right"><ParPill rate={branch.par90PlusRate} /></td>
-                        </tr>
+                      </tr>
                         {isExpanded && (
                           <tr className="bg-gray-50">
                             <td colSpan={7} className="px-4 pb-3 pt-0">
@@ -789,18 +789,18 @@ function LogbookPAR({ country }) {
                                   <p className="text-[10px] text-gray-400 mt-0.5">{Number(branch.par90PlusRate || 0).toFixed(1)}% of portfolio</p>
                                 </div>
                               </div>
-                            </td>
-                          </tr>
+                        </td>
+                      </tr>
                         )}
                       </React.Fragment>
                     )
                   })}
                   {!filteredBranchData.length && (
                     <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No branch data. Trigger a snapshot.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            )}
+                    )}
+                  </tbody>
+                </table>
+              )}
           </div>
         </div>
 
@@ -810,15 +810,15 @@ function LogbookPAR({ country }) {
         >
           <div className="px-4 sm:px-[18px] py-3.5 border-b border-gray-100 flex items-center justify-between gap-2 shrink-0">
             <h3 className="text-[13px] font-bold text-gray-900">PAR per Loan Officer</h3>
-            <select
-              value={borrowerBranchFilter}
-              onChange={(e) => setBorrowerBranchFilter(e.target.value)}
+                <select
+                  value={borrowerBranchFilter}
+                  onChange={(e) => setBorrowerBranchFilter(e.target.value)}
               className="text-[11px] border border-gray-200 rounded-md px-2 py-1 text-gray-700 max-w-[140px] truncate"
             >
               {branchOptions.map((opt) => (
                 <option key={opt.code} value={opt.code}>{opt.name}</option>
-              ))}
-            </select>
+                  ))}
+                </select>
           </div>
           <div
             className={`flex-1 min-h-0 overflow-y-auto overflow-x-auto ${matchedPanelHeight ? '' : 'max-h-[50vh] xl:max-h-none'}`}

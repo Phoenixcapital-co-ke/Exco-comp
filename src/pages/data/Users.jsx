@@ -654,63 +654,63 @@ function UsersPage() {
               )}
 
               {showZidishaBranchSection && (
-                <div className="border-t border-gray-200 pt-5">
-                  <label className="block text-sm font-semibold text-gray-700 mb-3">
-                    Zidisha Branch Access <span className="text-red-500">*</span>
-                  </label>
+                  <div className="border-t border-gray-200 pt-5">
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">
+                      Zidisha Branch Access <span className="text-red-500">*</span>
+                    </label>
                   <p className="text-xs text-gray-500 mb-4">
                     {normalizedRole === 'zidisha'
                       ? 'Select which Zidisha branches this user can see on Zidisha pages.'
                       : 'Select which Zidisha branches this user can see'}
                   </p>
-                  <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
-                    {availableZidishaBranches.length === 0 ? (
-                      <p className="text-sm text-gray-500">Loading branches...</p>
-                    ) : (
-                      availableZidishaBranches.map((branch) => {
-                        const isChecked =
-                          Array.isArray(draft.allowedZidishaBranches) &&
-                          draft.allowedZidishaBranches.includes(branch)
-                        return (
-                          <label
-                            key={branch}
-                            className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                const current = Array.isArray(draft.allowedZidishaBranches)
-                                  ? draft.allowedZidishaBranches
-                                  : []
-                                if (e.target.checked) {
-                                  setDraft((prev) => ({
-                                    ...prev,
-                                    allowedZidishaBranches: [...current, branch],
-                                  }))
-                                } else {
-                                  setDraft((prev) => ({
-                                    ...prev,
-                                    allowedZidishaBranches: current.filter((b) => b !== branch),
-                                  }))
-                                }
-                              }}
-                              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                            />
-                            <span className="text-sm text-gray-700">{branch}</span>
-                          </label>
-                        )
-                      })
-                    )}
-                  </div>
+                    <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-4 space-y-2">
+                      {availableZidishaBranches.length === 0 ? (
+                        <p className="text-sm text-gray-500">Loading branches...</p>
+                      ) : (
+                        availableZidishaBranches.map((branch) => {
+                          const isChecked =
+                            Array.isArray(draft.allowedZidishaBranches) &&
+                            draft.allowedZidishaBranches.includes(branch)
+                          return (
+                            <label
+                              key={branch}
+                              className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const current = Array.isArray(draft.allowedZidishaBranches)
+                                    ? draft.allowedZidishaBranches
+                                    : []
+                                  if (e.target.checked) {
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      allowedZidishaBranches: [...current, branch],
+                                    }))
+                                  } else {
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      allowedZidishaBranches: current.filter((b) => b !== branch),
+                                    }))
+                                  }
+                                }}
+                                className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">{branch}</span>
+                            </label>
+                          )
+                        })
+                      )}
+                    </div>
                   {normalizedRole === 'zidisha' && (!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
                     <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha role users</p>
                   )}
                   {normalizedRole === 'custom' && (!Array.isArray(draft.allowedZidishaBranches) || draft.allowedZidishaBranches.length === 0) && (
-                    <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
-                  )}
-                </div>
-              )}
+                      <p className="text-xs text-red-600 mt-2">Select at least one branch for Zidisha access</p>
+                    )}
+                  </div>
+                )}
 
               {showBodaBranchSection && (
                 <div className="border-t border-gray-200 pt-5">

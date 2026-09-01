@@ -7592,6 +7592,15 @@ const normalizeZidishaBranchRow = (row) => {
   return name
 }
 
+/** Branches that must not appear on Zidisha target creation (bad/duplicate names in source data). */
+function isExcludedZidishaTargetBranch(name) {
+  const key = String(name || '').trim().toLowerCase()
+  if (!key) return true
+  if (key === 'advans branch') return true
+  if (key === 'kitengala' || key === 'kitengala branch') return true
+  return false
+}
+
 function findUserByUsernameOrEmail(loginId) {
   const trimmed = String(loginId || '').trim()
   if (!trimmed) return null
@@ -9946,17 +9955,25 @@ app.get('/api/targets/logbook-sales-person/performance', (req, res) => {
 // Zidisha branches for targets (all branches: from Zidisha_Targets + zidisha_data, no user filter)
 app.get('/api/zidisha/branches/all', (req, res) => {
   try {
-    const fromTargets = dbRW.prepare("SELECT DISTINCT TRIM(branch) AS name FROM Zidisha_Targets WHERE branch IS NOT NULL AND TRIM(branch) <> ''").all()
-    const fromData = db.prepare(`
+    const fromTargets = dbRW
+      .prepare(
+        "SELECT DISTINCT TRIM(branch) AS name FROM Zidisha_Targets WHERE branch IS NOT NULL AND TRIM(branch) <> ''",
+      )
+      .all()
+    const fromData = db
+      .prepare(
+        `
       SELECT DISTINCT TRIM("Branch Name") AS name
       FROM zidisha_data
       WHERE "Branch Name" IS NOT NULL AND TRIM("Branch Name") <> '' AND LOWER(TRIM("Branch Name")) <> 'advans branch'
-    `).all()
+    `,
+      )
+      .all()
     const seen = new Set()
     const names = []
     for (const row of [...fromTargets, ...fromData]) {
       const name = String(row?.name || '').trim()
-      if (!name || seen.has(name.toLowerCase())) continue
+      if (!name || seen.has(name.toLowerCase()) || isExcludedZidishaTargetBranch(name)) continue
       seen.add(name.toLowerCase())
       names.push(name)
     }
@@ -15232,12 +15249,15 @@ cron.schedule(
   '15 1 * * *',
   () => {
     console.log(`[CRON] Running PAR snapshot prune at ${new Date().toISOString()}`)
-    const proc = spawn('node', ['scripts/sqlite_storage.mjs', '--prune', '--apply'], {
+    // --online: small deletes + pauses so the live site is not locked for long
+    const proc = spawn('node', ['scripts/sqlite_storage.mjs', '--prune', '--apply', '--online'], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         KEEP_FULL_DAYS: '2',
         KEEP_DAILY_DAYS: '0',
+        PRUNE_BATCH_SIZE: '3',
+        PRUNE_SLEEP_MS: '1500',
       },
       shell: true,
     })

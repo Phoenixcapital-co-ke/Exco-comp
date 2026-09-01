@@ -1,8 +1,21 @@
-
+/**
+ * Inspect / reclaim SQLite space (PAR loan snapshots are the usual bulk).
+ *
+ *   node scripts/sqlite_storage.mjs
+ *   node scripts/sqlite_storage.mjs --prune
+ *   node scripts/sqlite_storage.mjs --prune --apply --online   # app can stay UP (slow, gentle)
+ *   node scripts/sqlite_storage.mjs --prune --apply            # FAST rebuild — stop app first
+ *   node scripts/sqlite_storage.mjs --vacuum                   # stop app first; needs free disk
+ *
+ * Keeps:
+ *   - last KEEP_FULL_DAYS of every 30-min snapshot (default 2)
+ *   - older: only ~03:00 and ~20:00 EAT (KEEP_DAILY_DAYS=0 = forever)
+ */
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { setTimeout as sleep } from 'timers/promises'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dbPath = path.join(__dirname, '..', 'data', 'app.db')
@@ -10,12 +23,15 @@ const dbPath = path.join(__dirname, '..', 'data', 'app.db')
 const args = new Set(process.argv.slice(2))
 const APPLY = args.has('--apply')
 const PRUNE = args.has('--prune')
+const ONLINE = args.has('--online')
 const VACUUM = args.has('--vacuum')
-const CHECKPOINT = args.has('--checkpoint') || VACUUM || (PRUNE && APPLY)
+const CHECKPOINT = args.has('--checkpoint') || VACUUM || (PRUNE && APPLY && !ONLINE)
 
 const KEEP_FULL_DAYS = Number(process.env.KEEP_FULL_DAYS || 2)
 // 0 or negative = keep SOD (~03:00) + EOD (~20:00) forever after the full window
 const KEEP_DAILY_DAYS = Number(process.env.KEEP_DAILY_DAYS ?? 0)
+const BATCH_SIZE = Math.max(1, Number(process.env.PRUNE_BATCH_SIZE || 1) || 1)
+const SLEEP_MS = Math.max(0, Number(process.env.PRUNE_SLEEP_MS || 2000) || 0)
 
 function fmtBytes(n) {
   const x = Number(n) || 0
@@ -120,7 +136,6 @@ function report(db) {
 }
 
 function timesToKeep(parsed) {
-  const now = Date.now()
   const fullMs = KEEP_FULL_DAYS * 864e5
   const dailyCap = KEEP_DAILY_DAYS > 0
   const dailyMs = dailyCap ? KEEP_DAILY_DAYS * 864e5 : Infinity
@@ -192,7 +207,45 @@ function rebuildTableKeepTimes(db, tableName, keepTimes) {
   console.log(`  ${tableName}: ${Number(left).toLocaleString()} rows kept`)
 }
 
-function prune(db, times) {
+async function pruneOnline(db, times) {
+  const delOpen = db.prepare(`DELETE FROM Open_loans WHERE time = ?`)
+  const delPast = db.prepare(`DELETE FROM Past_Missed_repayment WHERE time = ?`)
+  const delBatch = db.transaction((batch) => {
+    let n = 0
+    for (const t of batch) {
+      n += delOpen.run(t).changes
+      n += delPast.run(t).changes
+    }
+    return n
+  })
+
+  let deleted = 0
+  const started = Date.now()
+  for (let i = 0; i < times.length; i += BATCH_SIZE) {
+    const batch = times.slice(i, i + BATCH_SIZE)
+    let changes = 0
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        changes = delBatch(batch)
+        break
+      } catch (e) {
+        if (!/busy|locked/i.test(String(e.message || e)) || attempt === 7) throw e
+        await sleep(500 * (attempt + 1))
+      }
+    }
+    deleted += changes
+    const done = Math.min(i + BATCH_SIZE, times.length)
+    if (done === times.length || done % 25 === 0 || done <= BATCH_SIZE) {
+      const mins = ((Date.now() - started) / 60000).toFixed(1)
+      console.log(`  online: ${done}/${times.length} snapshots · ${deleted.toLocaleString()} rows · ${mins} min`)
+    }
+    if (SLEEP_MS > 0 && done < times.length) await sleep(SLEEP_MS)
+  }
+  console.log(`  online prune done: ${deleted.toLocaleString()} rows removed`)
+  console.log('  Note: app.db file size will not shrink until you VACUUM (stop app for that).')
+}
+
+async function prune(db, times) {
   const parsed = parseParTimes(db)
   const keep = timesToKeep(parsed)
   console.log(
@@ -209,12 +262,27 @@ function prune(db, times) {
   }
   if (!APPLY) {
     console.log('  dry-run (pass --apply to delete)')
+    if (ONLINE) {
+      console.log(`  mode: --online (batch=${BATCH_SIZE}, sleep=${SLEEP_MS}ms) — app can stay up`)
+      const estMin = Math.ceil((times.length / BATCH_SIZE) * (SLEEP_MS + 500) / 60000)
+      console.log(`  rough runtime: ~${estMin}–${estMin * 3} minutes (depends on row size / disk)`)
+    } else {
+      console.log('  mode: rebuild (FAST) — stop the app first (pm2 stop exco)')
+    }
     console.log('  sample times:', times.slice(0, 8).join(', '))
     return
   }
 
-  console.log('  Stop the website first (pm2 stop exco) or this will 502 users.')
-  db.pragma('busy_timeout = 60000')
+  db.pragma('busy_timeout = 30000')
+
+  if (ONLINE) {
+    console.log(`  ONLINE mode: app can stay up (batch=${BATCH_SIZE}, sleep=${SLEEP_MS}ms)`)
+    console.log('  Pages may feel slower while this runs; do not run VACUUM until finished.')
+    await pruneOnline(db, times)
+    return
+  }
+
+  console.log('  REBUILD mode: stop the website first (pm2 stop exco) or this will 502 users.')
   rebuildTableKeepTimes(db, 'Open_loans', keep)
   rebuildTableKeepTimes(db, 'Past_Missed_repayment', keep)
   console.log('  rebuild done')
@@ -229,7 +297,7 @@ const needWrite = PRUNE || VACUUM || CHECKPOINT
 const db = new Database(dbPath, { readonly: !needWrite, fileMustExist: true })
 try {
   report(db)
-  if (PRUNE) prune(db, timesToDelete(db))
+  if (PRUNE) await prune(db, timesToDelete(db))
   if (CHECKPOINT) {
     const r = db.pragma('wal_checkpoint(TRUNCATE)')
     console.log('\nWAL checkpoint:', r)

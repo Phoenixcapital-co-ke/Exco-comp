@@ -23,13 +23,17 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'
 const MONTH_NAMES = [null, 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function BodaDisbursement() {
+  const now = new Date()
+  const nowYear = now.getFullYear()
+  const nowMonth = now.getMonth() + 1
+
   const [rows, setRows] = useState([])
   const [targets, setTargets] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const [selectedYear, setSelectedYear] = useState(null)
-  const [selectedMonth, setSelectedMonth] = useState(null)
+  const [selectedYear, setSelectedYear] = useState(nowYear)
+  const [selectedMonth, setSelectedMonth] = useState(nowMonth)
   const [selectedDay, setSelectedDay] = useState(null)
   const [expandedBranch, setExpandedBranch] = useState(null)
 
@@ -77,8 +81,6 @@ function BodaDisbursement() {
     loadTargets()
   }, [])
 
-  const now = new Date()
-
   // Derive available years and months from disbursement dates
   const dateMeta = useMemo(() => {
     const yearToMonths = new Map()
@@ -96,58 +98,52 @@ function BodaDisbursement() {
     return { years, yearToMonths }
   }, [rows])
 
-  const availableYears = dateMeta.years
+  const availableYears = useMemo(() => {
+    const years = new Set(dateMeta.years)
+    years.add(nowYear)
+    return Array.from(years).sort((a, b) => a - b)
+  }, [dateMeta, nowYear])
 
   const availableMonths = useMemo(() => {
-    if (!selectedYear || !dateMeta.yearToMonths.has(selectedYear)) return []
-    return Array.from(dateMeta.yearToMonths.get(selectedYear)).sort((a, b) => a - b)
-  }, [selectedYear, dateMeta])
-
-  // Initialize / keep selected year & month aligned with data
-  useEffect(() => {
-    if (!rows.length) return
-
-    // Use the latest disbursement date as default year/month
-    let latest = null
-    for (const row of rows) {
-      const ds = row['Disbursed On Date'] || row.disbursed_on_date
-      if (!ds) continue
-      const d = new Date(ds)
-      if (isNaN(d.getTime())) continue
-      if (!latest || d > latest) latest = d
+    if (!selectedYear) return []
+    const fromData = dateMeta.yearToMonths.has(selectedYear)
+      ? Array.from(dateMeta.yearToMonths.get(selectedYear))
+      : []
+    const months = new Set(fromData)
+    if (selectedYear === nowYear) {
+      for (let m = 1; m <= nowMonth; m++) months.add(m)
     }
-    if (!latest) return
+    return Array.from(months).sort((a, b) => a - b)
+  }, [selectedYear, dateMeta, nowYear, nowMonth])
 
-    const y = latest.getFullYear()
-    const m = latest.getMonth() + 1
+  // Keep year/month valid when data loads or user changes year
+  useEffect(() => {
+    if (!availableYears.length) return
+    if (!selectedYear || !availableYears.includes(selectedYear)) {
+      setSelectedYear(availableYears.includes(nowYear) ? nowYear : availableYears[availableYears.length - 1])
+    }
+  }, [availableYears, selectedYear, nowYear])
 
-    setSelectedYear((prev) => prev ?? y)
-    setSelectedMonth((prev) => prev ?? m)
-    // Default day to "today" within that month (clamped to month length)
-    const today = new Date()
-    const todayDay = today.getDate()
-    const daysInMonth = new Date(y, m, 0).getDate()
-    setSelectedDay((prev) => prev ?? Math.min(todayDay, daysInMonth))
-  }, [rows])
-
-  // When year changes, ensure month is valid for that year
   useEffect(() => {
     if (!selectedYear) return
     if (!availableMonths.length) return
     let month = selectedMonth
     if (!month || !availableMonths.includes(month)) {
-      month = availableMonths[availableMonths.length - 1]
+      if (selectedYear === nowYear && availableMonths.includes(nowMonth)) {
+        month = nowMonth
+      } else {
+        month = availableMonths[availableMonths.length - 1]
+      }
       setSelectedMonth(month)
     }
-    const today = new Date()
-    const todayDay = today.getDate()
+    const todayDay = now.getDate()
     const daysInMonth = new Date(selectedYear, month, 0).getDate()
     // Default or clamp day within month
     setSelectedDay((prev) => {
       const base = prev == null ? todayDay : prev
       return Math.min(base, daysInMonth)
     })
-  }, [selectedYear, availableMonths, selectedMonth])
+  }, [selectedYear, availableMonths, selectedMonth, nowYear, nowMonth, now])
 
   const monthRows = useMemo(() => {
     if (!selectedYear || !selectedMonth) return []

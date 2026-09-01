@@ -973,7 +973,7 @@ function LogbookDisbursement({ country }) {
 
       {/* Branch Performance + Daily Disbursement */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Branch Performance</h3>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={branchChartData}>
@@ -1146,17 +1146,17 @@ function LogbookDisbursement({ country }) {
           )}
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Loan Officers (This Month)</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={officerData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Loan Officers (This Month)</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={officerData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" />
+            <YAxis />
               <Tooltip formatter={(value) => [formatMoney(value), 'Amount']} />
-              <Bar dataKey="amount" fill="#10b981" />
-            </BarChart>
-          </ResponsiveContainer>
+            <Bar dataKey="amount" fill="#10b981" />
+          </BarChart>
+        </ResponsiveContainer>
         </div>
       )}
 
