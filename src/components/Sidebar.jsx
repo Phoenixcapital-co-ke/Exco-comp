@@ -26,7 +26,8 @@ import {
   CalendarCheck,
   GraduationCap,
   RefreshCw,
-  WalletCards
+  WalletCards,
+  CreditCard
 } from 'lucide-react'
 import phoenixLogo from '../assets/phoenix-logo.png'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -161,6 +162,7 @@ function Sidebar({ isOpen, onToggle, onNavigate, showUserInfo = false, fullHeigh
       items: [
         { path: '/data/overview', label: 'Overview', icon: BarChart3 },
         { path: '/data/users', label: 'Users', icon: Users },
+        { path: '/data/payments', label: 'Payments', icon: CreditCard },
         {
           type: 'subsection',
           id: 'logbook-data',

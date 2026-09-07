@@ -45,6 +45,7 @@ import LogbookTargets from './pages/data/LogbookTargets.jsx'
 import ROTargets from './pages/data/ROTargets.jsx'
 import SalesPersonTargets from './pages/data/SalesPersonTargets.jsx'
 import ZidishaTargets from './pages/data/ZidishaTargets.jsx'
+import DataPayments from './pages/data/Payments.jsx'
 import SignIn from './pages/auth/SignIn.jsx'
 import SuperuserSignIn from './pages/auth/SuperuserSignIn.jsx'
 import ForgotPassword from './pages/auth/ForgotPassword.jsx'
@@ -229,6 +230,7 @@ function Routes() {
       <Route path="/data/logbook/ro-targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><ROTargets /></RequireAuth>} />
       {/* Zidisha Data routes */}
       <Route path="/data/zidisha/targets" element={<RequireAuth allowedRoles={ADMIN_ONLY}><ZidishaTargets /></RequireAuth>} />
+      <Route path="/data/payments" element={<RequireAuth allowedRoles={ADMIN_ONLY}><DataPayments /></RequireAuth>} />
     </RouterRoutes>
   )
 }

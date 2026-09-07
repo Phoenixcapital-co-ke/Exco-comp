@@ -200,15 +200,13 @@ function ZidishaTargets() {
           </h1>
           <p className="text-gray-600 mt-2">Manage disbursement and collection targets for Zidisha branches.</p>
         </div>
-        {!showForm && (
-          <button
-            onClick={handleCreateClick}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white font-semibold hover:bg-primary-700 transition-colors duration-200 shadow-sm hover:shadow-md"
-          >
-            <Plus size={18} />
-            Add Target
-          </button>
-        )}
+        <button
+          onClick={handleCreateClick}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white font-semibold hover:bg-primary-700 transition-colors duration-200 shadow-sm hover:shadow-md"
+        >
+          <Plus size={18} />
+          Add Target
+        </button>
       </div>
 
       {error && (
@@ -221,159 +219,177 @@ function ZidishaTargets() {
       )}
 
       {showForm && (
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-md border border-gray-200 p-6 space-y-5">
-          <div className="flex items-center justify-between border-b border-gray-200 pb-4">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-                <Plus size={20} className="text-primary-600" />
-                {editTargetId ? 'Edit Target' : 'Add Monthly Targets (All Branches)'}
-              </h2>
-              <p className="text-sm text-gray-500 mt-1">
-                {editTargetId ? 'Update the selected branch target.' : 'Enter disbursement and new clients targets for every branch in one submission.'}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={resetForm}
-              className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-              title="Close form"
-            >
-              <X size={18} />
-            </button>
-          </div>
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/40" onClick={resetForm} />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-4xl bg-white shadow-2xl border border-gray-200 rounded-2xl overflow-hidden">
+              <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[85vh] overflow-y-auto">
+                <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+                  <div>
+                    <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                      {editTargetId ? (
+                        <>
+                          <Edit2 size={20} className="text-primary-600" />
+                          Edit Target
+                        </>
+                      ) : (
+                        <>
+                          <Plus size={20} className="text-primary-600" />
+                          Add Monthly Targets (All Branches)
+                        </>
+                      )}
+                    </h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {editTargetId
+                        ? 'Update the selected branch target.'
+                        : 'Enter disbursement and new clients targets for every branch in one submission.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                    title="Close form"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Month <span className="text-red-500">*</span>
-              </label>
-              <select
-                value={draft.month}
-                onChange={(e) => setDraft((prev) => ({ ...prev, month: e.target.value }))}
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
-                required
-              >
-                <option value="">Select month</option>
-                {months.map((month, idx) => (
-                  <option key={idx} value={String(idx + 1)}>{month}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Year <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                value={draft.year}
-                onChange={(e) => setDraft((prev) => ({ ...prev, year: parseInt(e.target.value) || new Date().getFullYear() }))}
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
-                min="2020"
-                max="2100"
-                required
-              />
-            </div>
-            <div className="flex items-center">
-              <div className="flex items-center space-x-3 mt-8">
-                <input
-                  id="target-active"
-                  type="checkbox"
-                  className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                  checked={draft.active}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
-                />
-                <label htmlFor="target-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
-                  Active Targets
-                </label>
-              </div>
-            </div>
-          </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Month <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={draft.month}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, month: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white"
+                      required
+                    >
+                      <option value="">Select month</option>
+                      {months.map((month, idx) => (
+                        <option key={idx} value={String(idx + 1)}>{month}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Year <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={draft.year}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, year: parseInt(e.target.value) || new Date().getFullYear() }))}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      min="2020"
+                      max="2100"
+                      required
+                    />
+                  </div>
+                  <div className="flex items-center">
+                    <div className="flex items-center space-x-3 mt-8">
+                      <input
+                        id="target-active"
+                        type="checkbox"
+                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        checked={draft.active}
+                        onChange={(e) => setDraft((prev) => ({ ...prev, active: e.target.checked }))}
+                      />
+                      <label htmlFor="target-active" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                        Active Targets
+                      </label>
+                    </div>
+                  </div>
+                </div>
 
-          <div className="mt-6">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200 text-sm">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
-                    <th className="px-4 py-2 text-right font-semibold text-gray-600">Disbursement Target (KES)</th>
-                    <th className="px-4 py-2 text-right font-semibold text-gray-600">New Clients Amount / Month--- (KES)</th>
-                    <th className="px-4 py-2 text-center font-semibold text-gray-600">Active</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-100">
-                  {branchTargets.map((bt, idx) => (
-                    <tr key={bt.branch || idx} className="hover:bg-gray-50">
-                      <td className="px-4 py-2 font-semibold text-gray-900">{bt.branch}</td>
-                      <td className="px-4 py-2 text-right">
-                        <input
-                          type="number"
-                          className="w-full rounded border border-gray-300 px-2 py-1 text-right"
-                          min="0"
-                          step="0.01"
-                          value={bt.disbursementTarget}
-                          onChange={(e) => setBranchTargets((prev) => {
-                            const next = [...prev]
-                            next[idx] = { ...next[idx], disbursementTarget: parseFloat(e.target.value) || 0 }
-                            return next
-                          })}
-                        />
-                      </td>
-                      <td className="px-4 py-2 text-right">
-                        <input
-                          type="number"
-                          className="w-full rounded border border-gray-300 px-2 py-1 text-right"
-                          min="0"
-                          step="0.01"
-                          value={bt.newClientsAmountPerMonth}
-                          onChange={(e) => setBranchTargets((prev) => {
-                            const next = [...prev]
-                            next[idx] = { ...next[idx], newClientsAmountPerMonth: parseFloat(e.target.value) || 0 }
-                            return next
-                          })}
-                        />
-                      </td>
-                      <td className="px-4 py-2 text-center">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 text-primary-600 border-gray-300 rounded"
-                          checked={bt.active}
-                          onChange={(e) => setBranchTargets((prev) => {
-                            const next = [...prev]
-                            next[idx] = { ...next[idx], active: e.target.checked }
-                            return next
-                          })}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                  {!branchTargets.length && (
-                    <tr>
-                      <td className="px-4 py-4 text-center text-gray-500" colSpan={4}>No branches available.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                <div className="mt-2">
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-semibold text-gray-600">Branch</th>
+                          <th className="px-4 py-2 text-right font-semibold text-gray-600">Disbursement Target (KES)</th>
+                          <th className="px-4 py-2 text-right font-semibold text-gray-600">New Clients Amount / Month (KES)</th>
+                          <th className="px-4 py-2 text-center font-semibold text-gray-600">Active</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-100">
+                        {branchTargets.map((bt, idx) => (
+                          <tr key={bt.branch || idx} className="hover:bg-gray-50">
+                            <td className="px-4 py-2 font-semibold text-gray-900">{bt.branch}</td>
+                            <td className="px-4 py-2 text-right">
+                              <input
+                                type="number"
+                                className="w-full rounded border border-gray-300 px-2 py-1 text-right"
+                                min="0"
+                                step="0.01"
+                                value={bt.disbursementTarget}
+                                onChange={(e) => setBranchTargets((prev) => {
+                                  const next = [...prev]
+                                  next[idx] = { ...next[idx], disbursementTarget: parseFloat(e.target.value) || 0 }
+                                  return next
+                                })}
+                              />
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              <input
+                                type="number"
+                                className="w-full rounded border border-gray-300 px-2 py-1 text-right"
+                                min="0"
+                                step="0.01"
+                                value={bt.newClientsAmountPerMonth}
+                                onChange={(e) => setBranchTargets((prev) => {
+                                  const next = [...prev]
+                                  next[idx] = { ...next[idx], newClientsAmountPerMonth: parseFloat(e.target.value) || 0 }
+                                  return next
+                                })}
+                              />
+                            </td>
+                            <td className="px-4 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded"
+                                checked={bt.active}
+                                onChange={(e) => setBranchTargets((prev) => {
+                                  const next = [...prev]
+                                  next[idx] = { ...next[idx], active: e.target.checked }
+                                  return next
+                                })}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                        {!branchTargets.length && (
+                          <tr>
+                            <td className="px-4 py-4 text-center text-gray-500" colSpan={4}>No branches available.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+                  >
+                    <Save size={16} />
+                    {saving ? 'Saving...' : editTargetId ? 'Save Changes' : 'Create Targets'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
-
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={resetForm}
-              className="inline-flex items-center px-5 py-2.5 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
-            >
-              <Save size={16} />
-              {saving ? 'Saving...' : 'Create Targets'}
-            </button>
-          </div>
-        </form>
+        </div>
       )}
 
       <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">

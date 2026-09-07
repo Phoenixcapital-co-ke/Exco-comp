@@ -164,6 +164,14 @@ export const API_URLS = {
   data: {
     lastRefresh: `${API_BASE}/api/data/last-refresh`,
   },
+  payments: {
+    list: `${API_BASE}/api/payments`,
+    create: `${API_BASE}/api/payments`,
+    update: (id) => `${API_BASE}/api/payments/${id}`,
+    delete: (id) => `${API_BASE}/api/payments/${id}`,
+    monthStatus: (id) => `${API_BASE}/api/payments/${id}/month-status`,
+    sendReminders: `${API_BASE}/api/payments/reminders/send`,
+  },
   audit: {
     logs: `${API_BASE}/api/audit/logs`,
   },

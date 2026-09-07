@@ -2154,6 +2154,76 @@ dbRW.exec(`
   );
 `);
 
+// Recurring vendor / SaaS payment obligations (Data → Payments)
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Payment_Obligations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    due_day INTEGER,
+    amount_display TEXT,
+    amount_value REAL,
+    currency TEXT,
+    notes TEXT,
+    reminder_days_before INTEGER NOT NULL DEFAULT 3,
+    reminder_email TEXT NOT NULL DEFAULT 'gregory@phoenixcapital.co.ke',
+    active INTEGER NOT NULL DEFAULT 1,
+    last_reminded_period TEXT,
+    last_reminded_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`)
+
+dbRW.exec(`
+  CREATE TABLE IF NOT EXISTS Payment_Obligation_Months (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    obligation_id INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    paid INTEGER NOT NULL DEFAULT 0,
+    paid_at TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(obligation_id, year, month),
+    FOREIGN KEY (obligation_id) REFERENCES Payment_Obligations(id) ON DELETE CASCADE
+  );
+`)
+
+try {
+  const paymentCount = dbRW.prepare('SELECT COUNT(*) AS c FROM Payment_Obligations').get()?.c || 0
+  if (paymentCount === 0) {
+    const seedPayments = [
+      { name: 'Loandisk', due_day: 30, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'Google Email - Uganda', due_day: 30, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'Google Email - Kajea', due_day: 30, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'Onfon USSD', due_day: null, amount_display: 'Varies', amount_value: null, currency: null, notes: 'Due day not set — add a day to enable reminders' },
+      { name: 'Google Email - Kenya', due_day: 30, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'Zoho', due_day: 25, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'Wingubox Plus (Paid twice)', due_day: null, amount_display: null, amount_value: null, currency: null, notes: 'Paid twice; due day not set' },
+      { name: 'Claude AI subscription monthly & top up', due_day: 25, amount_display: '$435', amount_value: 435, currency: 'USD', notes: null },
+      { name: 'Musoni', due_day: 30, amount_display: null, amount_value: null, currency: null, notes: null },
+      { name: 'Onfon', due_day: 30, amount_display: 'Varies', amount_value: null, currency: null, notes: null },
+      { name: 'ChatGPT', due_day: 30, amount_display: '$20', amount_value: 20, currency: 'USD', notes: null },
+      { name: 'Cursor', due_day: 30, amount_display: '$20', amount_value: 20, currency: 'USD', notes: null },
+      { name: 'Quickbooks', due_day: 16, amount_display: null, amount_value: null, currency: null, notes: null },
+    ]
+    const insertPayment = dbRW.prepare(`
+      INSERT INTO Payment_Obligations
+        (name, due_day, amount_display, amount_value, currency, notes, reminder_days_before, reminder_email, active)
+      VALUES
+        (@name, @due_day, @amount_display, @amount_value, @currency, @notes, 3, 'gregory@phoenixcapital.co.ke', 1)
+    `)
+    const seedTx = dbRW.transaction((rows) => {
+      for (const row of rows) insertPayment.run(row)
+    })
+    seedTx(seedPayments)
+    console.log(`Seeded ${seedPayments.length} payment obligations`)
+  }
+} catch (err) {
+  console.error('Unable to seed payment obligations:', err)
+}
+
 const hashPassword = (plainText) =>
   crypto.createHash('sha256').update(String(plainText ?? '')).digest('hex')
 
@@ -9146,6 +9216,7 @@ app.get('/api/pages', (req, res) => {
       { path: '/data/logbook/targets', label: 'Logbook Data - Targets', category: 'Data' },
       // Zidisha Data pages
       { path: '/data/zidisha/targets', label: 'Zidisha Data - Targets', category: 'Data' },
+      { path: '/data/payments', label: 'Data - Payments', category: 'Data' },
     ]
     res.json(pages)
   } catch (e) {
@@ -10088,6 +10159,424 @@ app.delete('/api/targets/zidisha/:id', (req, res) => {
     const result = dbRW.prepare('DELETE FROM Zidisha_Targets WHERE id = ?').run(id)
     if (result.changes === 0) return res.status(404).json({ error: 'Target not found' })
     res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// --- Payment obligations (vendor / SaaS recurring bills) ---
+const DEFAULT_PAYMENT_REMINDER_EMAIL = 'gregory@phoenixcapital.co.ke'
+
+const mapPaymentObligationRow = (row) => ({
+  id: row.id,
+  name: row.name,
+  dueDay: row.due_day == null ? null : Number(row.due_day),
+  amountDisplay: row.amount_display || '',
+  amountValue: row.amount_value == null ? null : Number(row.amount_value),
+  currency: row.currency || '',
+  notes: row.notes || '',
+  reminderDaysBefore: Number(row.reminder_days_before) || 3,
+  reminderEmail: row.reminder_email || DEFAULT_PAYMENT_REMINDER_EMAIL,
+  active: !!row.active,
+  lastRemindedPeriod: row.last_reminded_period || null,
+  lastRemindedAt: row.last_reminded_at || null,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+})
+
+function paymentDueDateForMonth(year, month, dueDay) {
+  if (!Number.isInteger(dueDay) || dueDay < 1) return null
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const day = Math.min(dueDay, daysInMonth)
+  return { year, month, day }
+}
+
+function daysBetweenNairobiDates(a, b) {
+  const utcA = Date.UTC(a.year, a.month - 1, a.day)
+  const utcB = Date.UTC(b.year, b.month - 1, b.day)
+  return Math.round((utcB - utcA) / 86400000)
+}
+
+function enrichPaymentObligation(row, todayParts = nairobiDateParts()) {
+  const mapped = mapPaymentObligationRow(row)
+  const dueDay = mapped.dueDay
+  if (!dueDay) {
+    return { ...mapped, nextDueDate: null, daysUntilDue: null, inReminderWindow: false }
+  }
+  let due = paymentDueDateForMonth(todayParts.year, todayParts.month, dueDay)
+  let daysUntil = daysBetweenNairobiDates(todayParts, due)
+  if (daysUntil < 0) {
+    let y = todayParts.year
+    let m = todayParts.month + 1
+    if (m > 12) {
+      m = 1
+      y += 1
+    }
+    due = paymentDueDateForMonth(y, m, dueDay)
+    daysUntil = daysBetweenNairobiDates(todayParts, due)
+  }
+  const nextDueDate = due
+    ? `${due.year}-${String(due.month).padStart(2, '0')}-${String(due.day).padStart(2, '0')}`
+    : null
+  const reminderDays = mapped.reminderDaysBefore > 0 ? mapped.reminderDaysBefore : 3
+  const inReminderWindow = daysUntil != null && daysUntil >= 0 && daysUntil <= reminderDays
+  return { ...mapped, nextDueDate, daysUntilDue: daysUntil, inReminderWindow }
+}
+
+function formatPaymentAmountLabel(item) {
+  if (item.amountDisplay) return item.amountDisplay
+  if (item.amountValue != null && Number.isFinite(item.amountValue)) {
+    const cur = item.currency ? `${item.currency} ` : ''
+    return `${cur}${Number(item.amountValue).toLocaleString('en-US')}`
+  }
+  return '—'
+}
+
+async function sendPaymentObligationReminders({ force = false } = {}) {
+  const enabled = String(process.env.PAYMENT_REMINDER_EMAIL_ENABLED ?? 'true').toLowerCase()
+  if (!force && (enabled === 'false' || enabled === '0' || enabled === 'off')) {
+    return { ok: false, skipped: true, reason: 'PAYMENT_REMINDER_EMAIL_ENABLED is off' }
+  }
+
+  const today = nairobiDateParts()
+  const paidForPeriod = dbRW.prepare(
+    `SELECT 1 AS ok FROM Payment_Obligation_Months
+     WHERE obligation_id = ? AND year = ? AND month = ? AND paid = 1 LIMIT 1`,
+  )
+  const rows = dbRW
+    .prepare(`SELECT * FROM Payment_Obligations WHERE active = 1 ORDER BY due_day IS NULL, due_day, name COLLATE NOCASE`)
+    .all()
+    .map((r) => enrichPaymentObligation(r, today))
+    .filter((r) => {
+      if (!r.nextDueDate) return true
+      const [y, m] = r.nextDueDate.split('-').map(Number)
+      return !paidForPeriod.get(r.id, y, m)
+    })
+
+  const dueSoon = rows.filter((r) => r.dueDay && r.inReminderWindow)
+  if (!dueSoon.length) {
+    return { ok: true, sent: 0, skipped: true, reason: 'No unpaid payments in reminder window', checked: rows.length }
+  }
+
+  const defaultTo =
+    String(process.env.PAYMENT_REMINDER_EMAIL_TO || DEFAULT_PAYMENT_REMINDER_EMAIL).trim() ||
+    DEFAULT_PAYMENT_REMINDER_EMAIL
+
+  // Group by reminder email
+  const byEmail = new Map()
+  for (const item of dueSoon) {
+    const to = String(item.reminderEmail || defaultTo).trim() || defaultTo
+    const period = item.nextDueDate ? item.nextDueDate.slice(0, 7) : `${today.year}-${String(today.month).padStart(2, '0')}`
+    if (!force && item.lastRemindedPeriod === period) continue
+    if (!byEmail.has(to)) byEmail.set(to, [])
+    byEmail.get(to).push({ ...item, period })
+  }
+
+  if (![...byEmail.values()].some((list) => list.length)) {
+    return { ok: true, sent: 0, skipped: true, reason: 'Already reminded this period', dueSoon: dueSoon.length }
+  }
+
+  const markStmt = dbRW.prepare(`
+    UPDATE Payment_Obligations
+    SET last_reminded_period = @period, last_reminded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+  `)
+
+  let emailsSent = 0
+  const results = []
+  for (const [to, items] of byEmail.entries()) {
+    if (!items.length) continue
+    const lines = items
+      .sort((a, b) => (a.daysUntilDue ?? 99) - (b.daysUntilDue ?? 99))
+      .map((item) => {
+        const when =
+          item.daysUntilDue === 0
+            ? 'due TODAY'
+            : item.daysUntilDue === 1
+              ? 'due tomorrow'
+              : `due in ${item.daysUntilDue} days`
+        return `• ${item.name} — ${when} (${item.nextDueDate}) — ${formatPaymentAmountLabel(item)}`
+      })
+    const subject = `Payment reminder: ${items.length} bill(s) due soon`
+    const text =
+      `Hi Gregory,\n\n` +
+      `The following recurring payments are approaching their deadline:\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `Please arrange payment before the due date.\n\n` +
+      `— EXCO Payments tracker\n`
+    const html = `
+      <p>Hi Gregory,</p>
+      <p>The following recurring payments are approaching their deadline:</p>
+      <ul>
+        ${items
+          .sort((a, b) => (a.daysUntilDue ?? 99) - (b.daysUntilDue ?? 99))
+          .map(
+            (item) =>
+              `<li><strong>${item.name}</strong> — ${
+                item.daysUntilDue === 0
+                  ? 'due <strong>TODAY</strong>'
+                  : item.daysUntilDue === 1
+                    ? 'due tomorrow'
+                    : `due in ${item.daysUntilDue} days`
+              } (${item.nextDueDate}) — ${formatPaymentAmountLabel(item)}</li>`,
+          )
+          .join('')}
+      </ul>
+      <p>Please arrange payment before the due date.</p>
+      <p style="color:#666;font-size:12px">— EXCO Payments tracker</p>
+    `
+    const sendResult = await sendEmail({ to, subject, text, html })
+    results.push({ to, count: items.length, ...sendResult })
+    if (sendResult.ok || sendResult.skipped) {
+      // Mark even when SMTP skipped (dev) so we don't spam logs every minute in tests with force=false
+      if (sendResult.ok || force) {
+        for (const item of items) markStmt.run({ id: item.id, period: item.period })
+      } else if (sendResult.skipped) {
+        for (const item of items) markStmt.run({ id: item.id, period: item.period })
+      }
+      emailsSent += 1
+    }
+  }
+
+  return { ok: true, sent: emailsSent, results, dueSoon: dueSoon.length }
+}
+
+app.get('/api/payments', requireAuth, (req, res) => {
+  try {
+    const includeInactive = String(req.query.includeInactive || '') === '1'
+    const today = nairobiDateParts()
+    let monthVal = Number(req.query.month)
+    let yearVal = Number(req.query.year)
+    if (!Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12) monthVal = today.month
+    if (!Number.isInteger(yearVal) || yearVal < 2000) yearVal = today.year
+
+    const sql = includeInactive
+      ? `SELECT * FROM Payment_Obligations ORDER BY due_day IS NULL, due_day, name COLLATE NOCASE`
+      : `SELECT * FROM Payment_Obligations WHERE active = 1 ORDER BY due_day IS NULL, due_day, name COLLATE NOCASE`
+
+    const paidRows = dbRW
+      .prepare(
+        `SELECT obligation_id, paid, paid_at, notes
+         FROM Payment_Obligation_Months
+         WHERE year = ? AND month = ?`,
+      )
+      .all(yearVal, monthVal)
+    const paidById = new Map(paidRows.map((r) => [r.obligation_id, r]))
+
+    const rows = dbRW.prepare(sql).all().map((r) => {
+      const enriched = enrichPaymentObligation(r, today)
+      const paidRow = paidById.get(r.id)
+      return {
+        ...enriched,
+        paid: !!(paidRow && paidRow.paid),
+        paidAt: paidRow?.paid_at || null,
+        monthNotes: paidRow?.notes || '',
+        trackingMonth: monthVal,
+        trackingYear: yearVal,
+      }
+    })
+    res.json({
+      items: rows,
+      month: monthVal,
+      year: yearVal,
+      reminderEmailDefault: process.env.PAYMENT_REMINDER_EMAIL_TO || DEFAULT_PAYMENT_REMINDER_EMAIL,
+      asOf: `${today.year}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}`,
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/payments', requireAuth, (req, res) => {
+  try {
+    const body = req.body || {}
+    const name = String(body.name || '').trim()
+    if (!name) return res.status(400).json({ error: 'name is required' })
+    let dueDay = body.dueDay == null || body.dueDay === '' ? null : Number(body.dueDay)
+    if (dueDay != null && (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31)) {
+      return res.status(400).json({ error: 'dueDay must be 1–31 or empty' })
+    }
+    const reminderDaysBefore = Number(body.reminderDaysBefore)
+    const reminderEmail =
+      String(body.reminderEmail || process.env.PAYMENT_REMINDER_EMAIL_TO || DEFAULT_PAYMENT_REMINDER_EMAIL).trim() ||
+      DEFAULT_PAYMENT_REMINDER_EMAIL
+    const result = dbRW
+      .prepare(
+        `INSERT INTO Payment_Obligations
+          (name, due_day, amount_display, amount_value, currency, notes, reminder_days_before, reminder_email, active)
+         VALUES
+          (@name, @due_day, @amount_display, @amount_value, @currency, @notes, @reminder_days_before, @reminder_email, @active)`,
+      )
+      .run({
+        name,
+        due_day: dueDay,
+        amount_display: String(body.amountDisplay || '').trim() || null,
+        amount_value:
+          body.amountValue === '' || body.amountValue == null ? null : Number(body.amountValue),
+        currency: String(body.currency || '').trim() || null,
+        notes: String(body.notes || '').trim() || null,
+        reminder_days_before:
+          Number.isInteger(reminderDaysBefore) && reminderDaysBefore >= 0 ? reminderDaysBefore : 3,
+        reminder_email: reminderEmail,
+        active: body.active === false || body.active === 0 ? 0 : 1,
+      })
+    const row = dbRW.prepare('SELECT * FROM Payment_Obligations WHERE id = ?').get(result.lastInsertRowid)
+    res.json(enrichPaymentObligation(row))
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/payments/:id', requireAuth, (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT * FROM Payment_Obligations WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Payment not found' })
+    const body = req.body || {}
+    const name = body.name != null ? String(body.name).trim() : existing.name
+    if (!name) return res.status(400).json({ error: 'name is required' })
+    let dueDay =
+      body.dueDay === undefined
+        ? existing.due_day
+        : body.dueDay === '' || body.dueDay == null
+          ? null
+          : Number(body.dueDay)
+    if (dueDay != null && (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31)) {
+      return res.status(400).json({ error: 'dueDay must be 1–31 or empty' })
+    }
+    const reminderDaysBefore =
+      body.reminderDaysBefore != null ? Number(body.reminderDaysBefore) : existing.reminder_days_before
+    dbRW
+      .prepare(
+        `UPDATE Payment_Obligations SET
+          name = @name,
+          due_day = @due_day,
+          amount_display = @amount_display,
+          amount_value = @amount_value,
+          currency = @currency,
+          notes = @notes,
+          reminder_days_before = @reminder_days_before,
+          reminder_email = @reminder_email,
+          active = @active,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        name,
+        due_day: dueDay,
+        amount_display:
+          body.amountDisplay !== undefined
+            ? String(body.amountDisplay || '').trim() || null
+            : existing.amount_display,
+        amount_value:
+          body.amountValue !== undefined
+            ? body.amountValue === '' || body.amountValue == null
+              ? null
+              : Number(body.amountValue)
+            : existing.amount_value,
+        currency:
+          body.currency !== undefined ? String(body.currency || '').trim() || null : existing.currency,
+        notes: body.notes !== undefined ? String(body.notes || '').trim() || null : existing.notes,
+        reminder_days_before:
+          Number.isInteger(reminderDaysBefore) && reminderDaysBefore >= 0
+            ? reminderDaysBefore
+            : existing.reminder_days_before,
+        reminder_email:
+          body.reminderEmail !== undefined
+            ? String(body.reminderEmail || '').trim() || DEFAULT_PAYMENT_REMINDER_EMAIL
+            : existing.reminder_email,
+        active:
+          body.active !== undefined
+            ? body.active === false || body.active === 0
+              ? 0
+              : 1
+            : existing.active,
+      })
+    const row = dbRW.prepare('SELECT * FROM Payment_Obligations WHERE id = ?').get(id)
+    res.json(enrichPaymentObligation(row))
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/payments/:id', requireAuth, (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    dbRW.prepare('DELETE FROM Payment_Obligation_Months WHERE obligation_id = ?').run(id)
+    const result = dbRW.prepare('DELETE FROM Payment_Obligations WHERE id = ?').run(id)
+    if (result.changes === 0) return res.status(404).json({ error: 'Payment not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/payments/:id/month-status', requireAuth, (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+    const existing = dbRW.prepare('SELECT id FROM Payment_Obligations WHERE id = ?').get(id)
+    if (!existing) return res.status(404).json({ error: 'Payment not found' })
+
+    const today = nairobiDateParts()
+    const body = req.body || {}
+    let monthVal = Number(body.month)
+    let yearVal = Number(body.year)
+    if (!Number.isInteger(monthVal) || monthVal < 1 || monthVal > 12) monthVal = today.month
+    if (!Number.isInteger(yearVal) || yearVal < 2000) yearVal = today.year
+    const paid = body.paid === true || body.paid === 1 || body.paid === '1'
+    const notes = body.notes != null ? String(body.notes).trim() || null : null
+
+    dbRW
+      .prepare(
+        `INSERT INTO Payment_Obligation_Months
+          (obligation_id, year, month, paid, paid_at, notes, updated_at)
+         VALUES
+          (@obligation_id, @year, @month, @paid, @paid_at, @notes, CURRENT_TIMESTAMP)
+         ON CONFLICT(obligation_id, year, month) DO UPDATE SET
+           paid = excluded.paid,
+           paid_at = excluded.paid_at,
+           notes = COALESCE(excluded.notes, Payment_Obligation_Months.notes),
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .run({
+        obligation_id: id,
+        year: yearVal,
+        month: monthVal,
+        paid: paid ? 1 : 0,
+        paid_at: paid ? new Date().toISOString() : null,
+        notes,
+      })
+
+    const row = dbRW
+      .prepare(
+        `SELECT paid, paid_at, notes FROM Payment_Obligation_Months
+         WHERE obligation_id = ? AND year = ? AND month = ?`,
+      )
+      .get(id, yearVal, monthVal)
+
+    res.json({
+      ok: true,
+      obligationId: id,
+      year: yearVal,
+      month: monthVal,
+      paid: !!(row && row.paid),
+      paidAt: row?.paid_at || null,
+      notes: row?.notes || '',
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/payments/reminders/send', requireAuth, async (req, res) => {
+  try {
+    const force = !!(req.body && req.body.force)
+    const result = await sendPaymentObligationReminders({ force })
+    res.json(result)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -15236,6 +15725,24 @@ cron.schedule(
       console.log('[CRON] Weekly PAR email result:', result)
     } catch (e) {
       console.error('[CRON] Weekly PAR email failed:', e.message)
+    }
+  },
+  {
+    scheduled: true,
+    timezone: 'Africa/Nairobi',
+  },
+)
+
+// Payment obligations reminder: daily 08:00 Africa/Nairobi → gregory@phoenixcapital.co.ke (before due dates)
+cron.schedule(
+  '0 8 * * *',
+  async () => {
+    console.log(`[CRON] Running payment obligation reminders at ${new Date().toISOString()}`)
+    try {
+      const result = await sendPaymentObligationReminders({})
+      console.log('[CRON] Payment reminder result:', result)
+    } catch (e) {
+      console.error('[CRON] Payment reminder failed:', e.message)
     }
   },
   {
