@@ -37,6 +37,17 @@ const app = express()
 const PORT = process.env.PORT || 3001
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+/** Spawn a node script without opening a Windows console window (PM2/IIS-safe). */
+function spawnNodeScript(scriptRelativePath, { args = [], env = process.env, cwd = process.cwd() } = {}) {
+  return spawn(process.execPath, [scriptRelativePath, ...args], {
+    cwd,
+    env,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
 const isProduction = process.env.NODE_ENV === 'production'
 const JWT_SECRET = process.env.JWT_SECRET || 'please-change-me-in-production'
 const JWT_TTL_HOURS = Number(process.env.AUTH_TOKEN_TTL_HOURS || 24)
@@ -7390,7 +7401,7 @@ app.get('/api/ingest', (req, res) => {
     SKIP_BORROWERS: '1',
   }
 
-  const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), shell: true, env })
+  const proc = spawnNodeScript('scripts/fetch_disbursments.mjs', { env })
   const send = (data) => {
     res.write(`data: ${data.replace(/\r?\n/g, '\ndata: ')}\n\n`)
   }
@@ -15757,8 +15768,8 @@ cron.schedule(
   () => {
     console.log(`[CRON] Running PAR snapshot prune at ${new Date().toISOString()}`)
     // --online: small deletes + pauses so the live site is not locked for long
-    const proc = spawn('node', ['scripts/sqlite_storage.mjs', '--prune', '--apply', '--online'], {
-      cwd: process.cwd(),
+    const proc = spawnNodeScript('scripts/sqlite_storage.mjs', {
+      args: ['--prune', '--apply', '--online'],
       env: {
         ...process.env,
         KEEP_FULL_DAYS: '2',
@@ -15766,7 +15777,6 @@ cron.schedule(
         PRUNE_BATCH_SIZE: '3',
         PRUNE_SLEEP_MS: '1500',
       },
-      shell: true,
     })
     proc.stdout.on('data', (chunk) => console.log(`[PAR-PRUNE-OUT] ${chunk.toString().trimEnd()}`))
     proc.stderr.on('data', (chunk) => console.error(`[PAR-PRUNE-ERR] ${chunk.toString().trimEnd()}`))
@@ -15788,7 +15798,7 @@ cron.schedule('*/10 * * * *', () => {
     // Musoni export #20 currently 500s; keep last snapshot and do not retry every 10 min
     SKIP_BODA_REPAYMENTS: '1',
   }
-  const proc = spawn('npm run ingest:disbursements', [], { cwd: process.cwd(), env, shell: true })
+  const proc = spawnNodeScript('scripts/fetch_disbursments.mjs', { env })
   proc.stdout.on('data', (chunk) => console.log(`[DATA-CRON-OUT] ${chunk.toString().trimEnd()}`))
   proc.stderr.on('data', (chunk) => console.error(`[DATA-CRON-ERR] ${chunk.toString().trimEnd()}`))
   proc.on('close', (code) => {
@@ -15920,7 +15930,7 @@ cron.schedule('0 0 * * *', () => {
     SKIP_ZIDISHA: '1',
     SKIP_BORROWERS: '0',
   }
-  const proc = spawn('node', ['scripts/fetch_disbursments.mjs'], { cwd: process.cwd(), env, shell: true })
+  const proc = spawnNodeScript('scripts/fetch_disbursments.mjs', { env })
   proc.stdout.on('data', (chunk) => {
     console.log(`[BORROWERS-CRON-OUT] ${chunk.toString().trimEnd()}`)
   })
@@ -15975,7 +15985,7 @@ cron.schedule('0 23 * * *', async () => {
 // Every 30 minutes: fetch GPSIoT clients and assets
 cron.schedule('*/30 * * * *', () => {
   console.log(`[CRON] Running scheduled GPSIoT clients/assets fetch at ${new Date().toISOString()}`)
-  const proc = spawn('node', ['scripts/fetch_gpsiot_clients.mjs'], { cwd: process.cwd(), shell: true })
+  const proc = spawnNodeScript('scripts/fetch_gpsiot_clients.mjs')
   proc.stdout.on('data', (chunk) => {
     console.log(`[GPSIOT-CRON-OUT] ${chunk.toString().trimEnd()}`)
   })
@@ -15997,10 +16007,12 @@ cron.schedule('*/30 * * * *', () => {
 // Cron job: Fetch Wingubox employees every 30 minutes
 cron.schedule('*/30 * * * *', () => {
   console.log('[CRON] Starting Wingubox employees fetch...')
-  const proc = spawn('node', ['scripts/fetch_wingubox_employees.mjs'], {
-    cwd: __dirname,
-    stdio: 'inherit',
-    shell: true
+  const proc = spawnNodeScript('scripts/fetch_wingubox_employees.mjs', { cwd: __dirname })
+  proc.stdout.on('data', (chunk) => {
+    console.log(`[WINGUBOX-CRON-OUT] ${chunk.toString().trimEnd()}`)
+  })
+  proc.stderr.on('data', (chunk) => {
+    console.error(`[WINGUBOX-CRON-ERR] ${chunk.toString().trimEnd()}`)
   })
   proc.on('close', (code) => {
     console.log(`[CRON] Wingubox employees fetch completed with code ${code}`)
