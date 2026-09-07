@@ -137,15 +137,18 @@ export function renderDailyParReportHTML(payload) {
   const watchItems = narrative.watching || []
   const cleanItems = narrative.clean || []
 
-  const rowsHtml = branches
-    .map((b) => {
-      const vs = b.vsYesterdayEod
-      const riskReducedAmt = vs ? -(Number(vs.parAmt) || 0) : null
-      const riskReducedPct = vs ? -(Number(vs.parPctPp) || 0) : null
-      const yestPar = Number(b.eodYesterday?.par) || 0
-      const changeTone = changeCellTone(riskReducedAmt, riskReducedPct, yestPar)
-      const eodPctTone = eodParCellTone(b.eod?.parPct)
-      return `<tr>
+  const officers = Array.isArray(payload?.officers) ? payload.officers : []
+
+  const renderMovementRows = (rows) =>
+    rows
+      .map((b) => {
+        const vs = b.vsYesterdayEod
+        const riskReducedAmt = vs ? -(Number(vs.parAmt) || 0) : null
+        const riskReducedPct = vs ? -(Number(vs.parPctPp) || 0) : null
+        const yestPar = Number(b.eodYesterday?.par) || 0
+        const changeTone = changeCellTone(riskReducedAmt, riskReducedPct, yestPar)
+        const eodPctTone = eodParCellTone(b.eod?.parPct)
+        return `<tr>
         <td><span class="branch-name">${escapeHtml(b.name)}</span></td>
         <td>${b.hasYest === false ? '—' : formatPct(b.eodYesterday?.parPct)}</td>
         <td class="amt">${b.hasYest === false ? '—' : formatCompact(b.eodYesterday?.par)}</td>
@@ -162,8 +165,11 @@ export function renderDailyParReportHTML(payload) {
             : '—'
         }</td>
       </tr>`
-    })
-    .join('')
+      })
+      .join('')
+
+  const rowsHtml = renderMovementRows(branches)
+  const officerRowsHtml = renderMovementRows(officers)
 
   const eodHour = String(slots.eod?.targetHour ?? 20).padStart(2, '0')
 
@@ -681,6 +687,35 @@ export function renderDailyParReportHTML(payload) {
     </table>
   </div>
 
+  <div class="section-title" style="margin-top:18px">Relationship Officer Movement</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="col-group-header first" style="width:22%">Relationship Officer</th>
+          <th class="col-group-header" colspan="2">EOD Yesterday</th>
+          <th class="col-group-header" colspan="2">EOD Today</th>
+          <th class="col-group-header" colspan="2">vs Yesterday</th>
+        </tr>
+        <tr>
+          <th style="text-align:left">Relationship Officer</th>
+          <th>%</th>
+          <th>Amount</th>
+          <th>%</th>
+          <th>Amount</th>
+          <th>Amount</th>
+          <th>%</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${
+          officerRowsHtml ||
+          '<tr><td colspan="7" style="text-align:center;color:#a0aec0;padding:20px">No relationship officer PAR snapshots found for this date.</td></tr>'
+        }
+      </tbody>
+    </table>
+  </div>
+
   <div class="legend">
     <span><span class="swatch" style="background:#f0fff4;border:1px solid var(--green-mid)"></span> EOD % &lt; 8% · or material reduction (≥100K and ≥2% of yesterday PAR, or ≥0.3%)</span>
     <span><span class="swatch" style="background:#fffbeb;border:1px solid var(--amber-mid)"></span> Noise / non-material change</span>
@@ -735,7 +770,7 @@ export function renderDailyParReportHTML(payload) {
   </div>
 
   <div class="footer">
-    Closest PAR snapshots to ~${escapeHtml(eodHour)}:00 Africa/Nairobi (yesterday vs today) · Single-page A4 portrait
+    Closest PAR snapshots to ~${escapeHtml(eodHour)}:00 Africa/Nairobi (yesterday vs today) · A4 portrait
   </div>
 
 </div>

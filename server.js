@@ -2412,6 +2412,42 @@ try {
   console.error('Unable to seed loan officers:', err)
 }
 
+/** Relationship Officers included in Daily PAR report (temporary fixed roster). */
+const DAILY_PAR_RELATIONSHIP_OFFICERS = [
+  { borrower_access_id: '23914', name: 'Edward Magero' },
+  { borrower_access_id: '117924', name: 'Leonida Gesare' },
+  { borrower_access_id: '40280', name: 'Anne Nekesa' },
+  { borrower_access_id: '70406', name: 'Magdalene Amolo' },
+  { borrower_access_id: '89478', name: 'Linet Nyanya' },
+  { borrower_access_id: '77749', name: 'Richard Litunya' },
+  { borrower_access_id: '39172', name: 'Samson Namale' },
+  { borrower_access_id: '97555', name: 'Vincent Odede' },
+  { borrower_access_id: '91476', name: 'Victor Kedogo' },
+  { borrower_access_id: '117388', name: 'Linet Kabuga' },
+  { borrower_access_id: '108687', name: 'Jared Omae' },
+]
+const DAILY_PAR_RO_IDS = new Set(DAILY_PAR_RELATIONSHIP_OFFICERS.map((o) => o.borrower_access_id))
+const DAILY_PAR_RO_NAME_BY_ID = new Map(
+  DAILY_PAR_RELATIONSHIP_OFFICERS.map((o) => [o.borrower_access_id, o.name]),
+)
+
+try {
+  const stmt = dbRW.prepare(`
+    INSERT INTO LOs (borrower_access_id, name, active)
+    VALUES (@borrower_access_id, @name, 1)
+    ON CONFLICT(borrower_access_id) DO UPDATE
+      SET name = excluded.name,
+          active = 1,
+          updated_at = CURRENT_TIMESTAMP
+  `)
+  const seedTx = dbRW.transaction((rows) => {
+    for (const row of rows) stmt.run(row)
+  })
+  seedTx(DAILY_PAR_RELATIONSHIP_OFFICERS)
+} catch (err) {
+  console.error('Unable to ensure Daily PAR relationship officers:', err)
+}
+
 // Seed Logbook_Branches from existing data if empty
 try {
   const existingCount = dbRW.prepare('SELECT COUNT(*) as c FROM Logbook_Branches').get().c
@@ -11400,6 +11436,99 @@ function buildParBranchRowsForSnapshot(snapshotTime, { countryParam = '', effect
   return branchData
 }
 
+/** Relationship officer (borrower_access_id) PAR rows for a single snapshot — same metrics as branch rows. */
+function buildParOfficerRowsForSnapshot(
+  snapshotTime,
+  { countryParam = '', effectiveBranches = [], officerIds = null } = {},
+) {
+  if (!snapshotTime) return []
+
+  let openLoansRows = db
+    .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Open_loans WHERE time = ?`)
+    .all(snapshotTime)
+  let pastMissedRows = db
+    .prepare(`SELECT ${LOANDISK_LOAN_SELECT_SQL} FROM Past_Missed_repayment WHERE time = ?`)
+    .all(snapshotTime)
+
+  let branchFilter = null
+  if (effectiveBranches.length > 0) {
+    branchFilter = new Set(effectiveBranches.map((c) => String(c).trim()).filter(Boolean))
+  } else if (countryParam) {
+    const codes = dbRW
+      .prepare('SELECT code FROM Logbook_Branches WHERE active = 1 AND country = ?')
+      .all(countryParam)
+      .map((r) => String(r.code ?? '').trim())
+      .filter(Boolean)
+    branchFilter = new Set(codes)
+  }
+  if (branchFilter) {
+    openLoansRows = openLoansRows.filter((r) => branchFilter.has(String(r.branch_code ?? '').trim()))
+    pastMissedRows = pastMissedRows.filter((r) => branchFilter.has(String(r.branch_code ?? '').trim()))
+  }
+
+  const officerIdFilter =
+    officerIds instanceof Set
+      ? officerIds
+      : Array.isArray(officerIds) && officerIds.length
+        ? new Set(officerIds.map((id) => String(id).trim()).filter(Boolean))
+        : null
+
+  const loNameById = new Map()
+  try {
+    for (const row of dbRW.prepare('SELECT borrower_access_id, name FROM LOs').all()) {
+      const id = String(row.borrower_access_id ?? '').trim()
+      if (id) loNameById.set(id, String(row.name || '').trim() || id)
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const officerMap = new Map()
+  const accumulate = (rows, kind) => {
+    for (const row of rows) {
+      try {
+        const loan = parseLoandiskLoanRecord(row)
+        if (!loan) continue
+        const borrowerAccessIds = Array.isArray(loan.borrower_access_ids) ? loan.borrower_access_ids : []
+        if (!borrowerAccessIds.length) continue
+        const principal = parseParLoanPrincipal(loan)
+        if (principal === 0) continue
+        for (const officerId of borrowerAccessIds) {
+          const officerKey = String(officerId || '').trim()
+          if (!officerKey) continue
+          if (officerIdFilter && !officerIdFilter.has(officerKey)) continue
+          if (!officerMap.has(officerKey)) {
+            officerMap.set(officerKey, {
+              officerId: officerKey,
+              ...createParTotals(),
+            })
+          }
+          const entry = officerMap.get(officerKey)
+          if (kind === 'open') addParOpenLoan(entry, principal)
+          else addParDelinquentLoan(entry, loan, row)
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+  accumulate(openLoansRows, 'open')
+  accumulate(pastMissedRows, 'delinquent')
+
+  return Array.from(officerMap.values()).map((entry) => {
+    const agg = finalizeParTotals(entry)
+    return {
+      code: entry.officerId,
+      name:
+        DAILY_PAR_RO_NAME_BY_ID.get(entry.officerId) ||
+        loNameById.get(entry.officerId) ||
+        entry.officerId,
+      openLoans: Math.round(agg.openLoans || 0),
+      pastMissed: Math.round(agg.pastMissed || 0),
+    }
+  })
+}
+
 /** loan_id → branch_code for loans that were in Past_Missed at opening snapshot. */
 function loadOpeningParLoanBranchMap(snapshotTime) {
   const map = new Map()
@@ -11760,6 +11889,46 @@ async function buildDailyParReportPayload({
       })
       .sort((a, b) => (Number(b.eod?.par) || 0) - (Number(a.eod?.par) || 0))
 
+    const officerOpts = { ...opts, officerIds: DAILY_PAR_RO_IDS }
+    const eodOfficerRows = eodTime ? buildParOfficerRowsForSnapshot(eodTime, officerOpts) : []
+    const yestOfficerRows = eodYestTime ? buildParOfficerRowsForSnapshot(eodYestTime, officerOpts) : []
+    const eodOfficerBy = new Map(eodOfficerRows.map((o) => [o.code, o]))
+    const yestOfficerBy = new Map(yestOfficerRows.map((o) => [o.code, o]))
+
+    // Fixed Relationship Officer roster for Daily PAR (for now)
+    const officers = DAILY_PAR_RELATIONSHIP_OFFICERS.map((ro) => {
+      const code = ro.borrower_access_id
+      const eod = eodOfficerBy.get(code)
+      const yest = yestOfficerBy.get(code)
+      const name = DAILY_PAR_RO_NAME_BY_ID.get(code) || eod?.name || yest?.name || code
+
+      const eodOpen = Number(eod?.openLoans) || 0
+      const eodPar = Number(eod?.pastMissed) || 0
+      const yestOpen = Number(yest?.openLoans) || 0
+      const yestPar = Number(yest?.pastMissed) || 0
+
+      const eodPct = rate(eodOpen, eodPar)
+      const yestPct = rate(yestOpen, yestPar)
+      const hasEod = !!eod && eodOpen > 0
+      const hasYest = !!yest && yestOpen > 0
+
+      return {
+        code,
+        name,
+        hasEod,
+        hasYest,
+        eodYesterday: { openLoans: yestOpen, par: yestPar, parPct: Number(yestPct.toFixed(2)) },
+        eod: { openLoans: eodOpen, par: eodPar, parPct: Number(eodPct.toFixed(2)) },
+        vsYesterdayEod:
+          hasYest && hasEod
+            ? {
+                parAmt: eodPar - yestPar,
+                parPctPp: Number((eodPct - yestPct).toFixed(2)),
+              }
+            : null,
+      }
+    }).sort((a, b) => (Number(b.eod?.par) || 0) - (Number(a.eod?.par) || 0))
+
     const sum = (rows, keyPath) =>
       rows.reduce((acc, r) => {
         const [a, b] = keyPath.split('.')
@@ -11969,6 +12138,7 @@ async function buildDailyParReportPayload({
       },
       overall,
       branches,
+      officers,
       narrative: {
         topPerformers,
         holdingSteady,
