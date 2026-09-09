@@ -755,11 +755,29 @@ function LogbookCollection({ country }) {
     const matchLoAccessIdForRoName = (roName) => {
       const roNorm = normalizeOfficerName(roName)
       if (!roNorm) return ''
+      const nameTokens = (v) =>
+        normalizeOfficerName(v)
+          .replace(/['']/g, '')
+          .split(/[^a-z0-9]+/)
+          .filter((t) => t.length > 1)
+      const tokensMatch = (a, b) => {
+        const ta = nameTokens(a)
+        const tb = nameTokens(b)
+        if (!ta.length || !tb.length) return false
+        const [shorter, longer] = ta.length <= tb.length ? [ta, tb] : [tb, ta]
+        return shorter.every((t) => longer.includes(t))
+      }
       for (const lo of loanOfficers) {
         const id = String(lo.borrowerAccessId ?? '').trim()
         if (!id) continue
         const loNorm = normalizeOfficerName(lo.name)
         if (loNorm === roNorm || roNorm.includes(loNorm) || loNorm.includes(roNorm)) return id
+      }
+      for (const lo of loanOfficers) {
+        const id = String(lo.borrowerAccessId ?? '').trim()
+        if (!id) continue
+        const loNorm = normalizeOfficerName(lo.name)
+        if (tokensMatch(roNorm, loNorm)) return id
       }
       return ''
     }

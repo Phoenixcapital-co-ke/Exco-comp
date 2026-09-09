@@ -6877,12 +6877,30 @@ app.get('/api/logbook/collector-performance', (req, res) => {
       }
     }
 
+    const nameTokens = (v) =>
+      normalizeName(v)
+        .replace(/['']/g, '')
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length > 1)
+
+    const tokensMatch = (a, b) => {
+      const ta = nameTokens(a)
+      const tb = nameTokens(b)
+      if (!ta.length || !tb.length) return false
+      const [shorter, longer] = ta.length <= tb.length ? [ta, tb] : [tb, ta]
+      return shorter.every((t) => longer.includes(t))
+    }
+
     const findLoForRoName = (roName) => {
       const norm = normalizeName(roName);
       if (!norm) return null;
       if (loNameMap.has(norm)) return loNameMap.get(norm);
       for (const [loNorm, lo] of loNameMap.entries()) {
         if (norm.includes(loNorm) || loNorm.includes(norm)) return lo;
+      }
+      // First+last without middle name (e.g. MARTIN KURUI vs MARTIN KIPCHUMBA KURUI)
+      for (const [loNorm, lo] of loNameMap.entries()) {
+        if (tokensMatch(norm, loNorm)) return lo;
       }
       return null;
     };
