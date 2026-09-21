@@ -152,7 +152,14 @@ export class LogbookDataProcessor {
       const baseUrl = API_URLS.logbook.disbursements
       const url = this.country ? `${baseUrl}?country=${encodeURIComponent(this.country)}` : baseUrl
       const response = await fetch(url, { credentials: 'include' })
-      this.disbursementsData = await response.json()
+      const rows = await response.json()
+      // Defensive: exclude Loandisk "Not Taken Up" even if API misses them
+      this.disbursementsData = Array.isArray(rows)
+        ? rows.filter((loan) => {
+            const s = String(loan?.status ?? loan?.Status ?? '').trim().toLowerCase()
+            return s !== 'not taken up' && s !== 'not_taken_up'
+          })
+        : []
       return this.disbursementsData
     } catch (error) {
       console.error('Error loading disbursements data:', error)

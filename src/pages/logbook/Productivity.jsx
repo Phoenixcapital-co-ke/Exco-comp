@@ -173,7 +173,13 @@ function LogbookProductivity({ country }) {
         const disbursementRes = await fetch(disbUrl, { credentials: 'include' })
         if (disbursementRes.ok) {
           const data = await disbursementRes.json()
-          setDisbursementData(Array.isArray(data) ? data : [])
+          const rows = Array.isArray(data) ? data : []
+          setDisbursementData(
+            rows.filter((loan) => {
+              const s = String(loan?.status ?? loan?.Status ?? '').trim().toLowerCase()
+              return s !== 'not taken up' && s !== 'not_taken_up'
+            }),
+          )
         }
       } catch (e) {
         console.error('Error loading disbursement data:', e)

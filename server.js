@@ -3644,6 +3644,22 @@ function parseLogbookDirectorDMY(str) {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+/** Loandisk "Not Taken Up" loans must not count in Logbook disbursement metrics. */
+const LOGBOOK_DISB_TAKEN_UP_SQL = `LOWER(TRIM(COALESCE(status, ''))) NOT IN ('not taken up', 'not_taken_up')`
+const LOGBOOK_DISB_TAKEN_UP_SQL_D = `LOWER(TRIM(COALESCE(d.status, ''))) NOT IN ('not taken up', 'not_taken_up')`
+
+function isLogbookDisbursementTakenUp(row) {
+  const s = String(row?.status ?? row?.Status ?? '')
+    .trim()
+    .toLowerCase()
+  return s !== 'not taken up' && s !== 'not_taken_up'
+}
+
+function filterLogbookDisbursementsTakenUp(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows.filter(isLogbookDisbursementTakenUp)
+}
+
 function listActiveLogbookBranchesForCountry(country) {
   return db
     .prepare('SELECT code, name, country FROM Logbook_Branches WHERE active = 1 AND country = ? ORDER BY name COLLATE NOCASE')
@@ -3704,7 +3720,9 @@ function aggregateLogbookDirectorMtd(year, monthNum, asAtDate, country) {
   const end = new Date(asAtDate)
   end.setHours(23, 59, 59, 999)
 
-  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  const disbRows = db
+    .prepare(`SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement WHERE ${LOGBOOK_DISB_TAKEN_UP_SQL}`)
+    .all()
   const colRows = db.prepare('SELECT branch, repayment_collected_date, repayment_amount FROM Logbook_collection').all()
 
   let salesMtd = 0
@@ -3922,7 +3940,9 @@ function aggregateLogbookBranchesPerformance(country, year, monthNum, asAtDate) 
     })
   }
 
-  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  const disbRows = db
+    .prepare(`SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement WHERE ${LOGBOOK_DISB_TAKEN_UP_SQL}`)
+    .all()
   for (const r of disbRows) {
     const code = resolver.resolve(r.branch)
     if (!byCode.has(code)) continue
@@ -6550,13 +6570,17 @@ app.get('/api/logbook/disbursements', (req, res) => {
   let rows
   if (effective.length > 0) {
     const placeholders = effective.map(() => '?').join(', ')
-    rows = db.prepare(`SELECT * FROM Logbook_Disbursement WHERE branch IN (${placeholders})`).all(...effective)
+    rows = db
+      .prepare(
+        `SELECT * FROM Logbook_Disbursement WHERE branch IN (${placeholders}) AND ${LOGBOOK_DISB_TAKEN_UP_SQL}`,
+      )
+      .all(...effective)
   } else if (req.query && req.query.country != null && String(req.query.country).trim()) {
     rows = [] // country filter but no branches in that country
   } else {
-    rows = db.prepare('SELECT * FROM Logbook_Disbursement').all()
+    rows = db.prepare(`SELECT * FROM Logbook_Disbursement WHERE ${LOGBOOK_DISB_TAKEN_UP_SQL}`).all()
   }
-  res.json(rows)
+  res.json(filterLogbookDisbursementsTakenUp(rows))
 });
 
 app.get('/api/logbook/collections', (req, res) => {
@@ -7347,6 +7371,7 @@ app.get('/api/logbook/productivity-sales', (req, res) => {
       WHERE disbursed_date IS NOT NULL AND TRIM(disbursed_date) <> ''
         AND (borrower_no IS NOT NULL AND TRIM(borrower_no) <> '')
         AND disbursed IS NOT NULL
+        AND ${LOGBOOK_DISB_TAKEN_UP_SQL}
     `).all()
 
     if (hasBranchRestrictions) {
@@ -8652,6 +8677,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                FROM Logbook_Disbursement
                WHERE branch IS NOT NULL AND TRIM(branch) <> ''
                  AND branch IN (${Array.from(branchNameByCode.keys()).map(() => '?').join(', ')})
+                 AND ${LOGBOOK_DISB_TAKEN_UP_SQL}
                  AND (
                    (date >= ? AND date < ?) OR
                    (substr(date, 1, 7) = ?)
@@ -9590,7 +9616,8 @@ app.get('/api/logbook/sales-persons', (req, res) => {
           `SELECT DISTINCT TRIM(sales_person) AS name
            FROM Logbook_Disbursement
            WHERE TRIM(country) = ?
-             AND sales_person IS NOT NULL AND TRIM(sales_person) <> ''`,
+             AND sales_person IS NOT NULL AND TRIM(sales_person) <> ''
+             AND ${LOGBOOK_DISB_TAKEN_UP_SQL}`,
         )
         .all(country)
     } catch {
@@ -9927,6 +9954,7 @@ app.get('/api/targets/logbook-sales-person/performance', (req, res) => {
          FROM Logbook_Disbursement
          WHERE TRIM(country) = ?
            AND (disbursed_date LIKE ? OR disbursed_date LIKE ?)
+           AND ${LOGBOOK_DISB_TAKEN_UP_SQL}
          GROUP BY COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown'), TRIM(branch)`,
       )
       .all(country, likeDmy, likeIso)
@@ -9941,6 +9969,7 @@ app.get('/api/targets/logbook-sales-person/performance', (req, res) => {
          FROM Logbook_Disbursement
          WHERE TRIM(country) = ?
            AND sales_person IS NOT NULL AND TRIM(sales_person) <> ''
+           AND ${LOGBOOK_DISB_TAKEN_UP_SQL}
          GROUP BY COALESCE(NULLIF(TRIM(sales_person), ''), 'Unknown'), TRIM(branch)`,
       )
       .all(country)
@@ -11618,7 +11647,9 @@ app.get('/api/par/branches/month-end-compare', (req, res) => {
     const resolver = buildLogbookBranchResolver(activeBranchesForResolver)
 
     const disbursedByBranch = new Map()
-    const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+    const disbRows = db
+      .prepare(`SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement WHERE ${LOGBOOK_DISB_TAKEN_UP_SQL}`)
+      .all()
     for (const r of disbRows) {
       const code = resolver.resolve(r.branch)
       if (!codes.has(code)) continue
@@ -12525,7 +12556,9 @@ function buildDailyDisbursementReportPayload({
   const monthStart = new Date(year, month - 1, 1)
   const reportEnd = new Date(year, month - 1, day, 23, 59, 59, 999)
 
-  const disbRows = db.prepare('SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement').all()
+  const disbRows = db
+    .prepare(`SELECT branch, disbursed_date, disbursed FROM Logbook_Disbursement WHERE ${LOGBOOK_DISB_TAKEN_UP_SQL}`)
+    .all()
   for (const r of disbRows) {
     const code = resolver.resolve(r.branch)
     if (!byCode.has(code)) continue
@@ -15015,6 +15048,7 @@ app.get('/api/hr/sales-force', (req, res) => {
           WHERE substr(disbursed_date, 4, 2) = ?
             AND substr(disbursed_date, 7, 4) = ?
             AND COALESCE(NULLIF(TRIM(sales_person), ''), NULLIF(TRIM(loan_officer), '')) IS NOT NULL
+            AND ${LOGBOOK_DISB_TAKEN_UP_SQL}
           GROUP BY person, branch, product
         `)
         .all(monthText, String(year)),
@@ -15153,6 +15187,7 @@ app.get('/api/hr/sales-force', (req, res) => {
           ON TRIM(CAST(b.code AS TEXT)) = TRIM(CAST(d.branch AS TEXT))
         WHERE substr(d.disbursed_date, 4, 2) = ?
           AND substr(d.disbursed_date, 7, 4) = ?
+          AND ${LOGBOOK_DISB_TAKEN_UP_SQL_D}
         GROUP BY 1
       `)
       .all(monthText, String(year))
