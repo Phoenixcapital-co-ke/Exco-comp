@@ -8853,7 +8853,10 @@ app.get('/api/users', (req, res) => {
   try {
     const rows = dbRW
       .prepare(
-        'SELECT id, username, full_name, email, phone, role, active, email_verified, phone_verified, must_change_password, created_at, updated_at FROM Users ORDER BY username COLLATE NOCASE',
+        `SELECT id, username, full_name, email, phone, role, active, email_verified, phone_verified, must_change_password, created_at, updated_at
+         FROM Users
+         WHERE lower(role) <> 'superuser'
+         ORDER BY username COLLATE NOCASE`,
       )
       .all()
       .map(mapUserRow)

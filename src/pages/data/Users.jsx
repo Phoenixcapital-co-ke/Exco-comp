@@ -41,12 +41,10 @@ function UsersPage() {
       if (!res.ok) throw new Error(`Failed to load users (${res.status})`)
       const data = await res.json()
       const list = Array.isArray(data) ? data : []
-      const currentRole = String(currentUser?.role || '').toLowerCase()
-      // Admins should not see superuser accounts in the list
-      const filtered =
-        currentRole === 'admin'
-          ? list.filter((u) => String(u.role || '').toLowerCase() !== 'superuser')
-          : list
+      // Never show superuser accounts in the Users list
+      const filtered = list.filter(
+        (u) => String(u.role || '').toLowerCase() !== 'superuser',
+      )
       setUsers(filtered)
     } catch (e) {
       setError(e.message)
