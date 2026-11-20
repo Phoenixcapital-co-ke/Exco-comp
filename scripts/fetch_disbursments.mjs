@@ -7,10 +7,17 @@
 //   SKIP_ZIDISHA=1           -> skip Zidisha ingestion
 //   SKIP_ZIDISHA_DAILY=1     -> skip Zidisha Daily Expected vs Repayed ingestion
 //   SKIP_BODA_REPAYMENTS=1   -> skip boda_repayments ingestion
+//   SKIP_MUSONI=1            -> never call Musoni (skips all four Musoni exports). Put it in a local,
+//                               git-ignored .env so a dev machine never fetches; production leaves it unset.
 // Dedicated staged import:
 //   node scripts/fetch_disbursments.mjs --boda-repayments-only --from=2024-06-01 --to=2025-06-30
 // The --from/--to range must match the date filter configured on Musoni export #20.
 // Optional: DISBURSEMENTS_LOOKBACK_DAYS (default 60), COLLECTIONS_LOOKBACK_DAYS (default 90)
+// Collections (Loandisk is only SEARCHED — never written to or edited):
+//   COLLECTIONS_RECENT_DAYS  -> every run re-searches at least this many recent days so payments
+//                               entered late (with an earlier collected date) are picked up (default 7)
+//   COLLECTIONS_CATCHUP=1    -> re-search the last COLLECTIONS_LOOKBACK_DAYS days instead (add/update only)
+//                               and log a report of local rows Loandisk no longer returns (nothing is removed)
 // Musoni pacing / resilience (export downloads only):
 //   MUSONI_FETCH_DELAY_MS    -> wait this many ms before each Musoni GET (default 0). Try 3000–8000 if the API returns 5xx under load.
 //   MUSONI_RETRY_COUNT       -> extra attempts after the first failure for retryable HTTP statuses (429, 5xx); default 3 (4 tries total).
@@ -20,6 +27,9 @@
 import Database from 'better-sqlite3'
 import fetch from 'node-fetch'
 import * as fs from 'fs'
+import dotenv from 'dotenv'
+// Same .env as server.js, so flags like SKIP_MUSONI also apply when this script is run directly.
+dotenv.config({ quiet: true })
 const PAPAPARSE = (() => { try { return require('papaparse') } catch { return null } })()
 
 const LOANDISK_URL = 'https://api-main.loandisk.com/7125/55886/disbursement_report'
@@ -40,9 +50,12 @@ function buildBorrowersUrl(branchCode){
 const SKIP_DISBURSEMENTS = process.env.SKIP_DISBURSEMENTS === '1'
 const SKIP_COLLECTIONS = process.env.SKIP_COLLECTIONS === '1'
 const SKIP_BORROWERS = process.env.SKIP_BORROWERS === '1'
-const SKIP_ZIDISHA = process.env.SKIP_ZIDISHA === '1'
-const SKIP_ZIDISHA_DAILY = process.env.SKIP_ZIDISHA_DAILY === '1'
-const SKIP_BODA_REPAYMENTS = process.env.SKIP_BODA_REPAYMENTS === '1'
+// SKIP_MUSONI=1 turns off every Musoni export (local/dev machines).
+const SKIP_MUSONI = process.env.SKIP_MUSONI === '1'
+const musoniSkipReason = (flag) => (SKIP_MUSONI ? 'SKIP_MUSONI=1' : `${flag}=1`)
+const SKIP_ZIDISHA = SKIP_MUSONI || process.env.SKIP_ZIDISHA === '1'
+const SKIP_ZIDISHA_DAILY = SKIP_MUSONI || process.env.SKIP_ZIDISHA_DAILY === '1'
+const SKIP_BODA_REPAYMENTS = SKIP_MUSONI || process.env.SKIP_BODA_REPAYMENTS === '1'
 const BODA_REPAYMENTS_ONLY = process.argv.includes('--boda-repayments-only')
 const cliValue = (name) => {
   const prefix = `--${name}=`
@@ -69,6 +82,11 @@ const DISBURSEMENTS_LOOKBACK_DAYS = Number(process.env.DISBURSEMENTS_LOOKBACK_DA
 // Rolling lookback for collections (recommended longer than disbursements: 60–120 days).
 // Default 90 days; overridable via COLLECTIONS_LOOKBACK_DAYS env var.
 const COLLECTIONS_LOOKBACK_DAYS = Number(process.env.COLLECTIONS_LOOKBACK_DAYS || 90)
+
+// Every collections run re-searches at least the last N days (late-entered payments). Default 7.
+const COLLECTIONS_RECENT_DAYS = Number(process.env.COLLECTIONS_RECENT_DAYS || 7)
+// Nightly catch-up mode: re-search the full COLLECTIONS_LOOKBACK_DAYS window (add/update only).
+const COLLECTIONS_CATCHUP = process.env.COLLECTIONS_CATCHUP === '1'
 
 // Base payload (pagination handled by from/count) - branches_select will be set after loading branches from DB
 const basePayload = {
@@ -619,8 +637,28 @@ async function fetchAllBorrowers(db) {
   }
 }
 
+// Loandisk is READ-ONLY for this dashboard. Collections may only use the repayment SEARCH endpoint,
+// with search parameters only; anything else is refused before any request is sent.
+const LOANDISK_REPAYMENT_SEARCH_URL = /^https:\/\/api-main\.loandisk\.com\/\d+\/\d+\/advanced_search_repayments$/
+const LOANDISK_REPAYMENT_SEARCH_KEYS = new Set(['from', 'count', 'repayment_search_from_date', 'repayment_search_to_date'])
+// Loandisk caps repayment searches at 500 rows per page; asking for more silently returns 500.
+const LOANDISK_REPAYMENT_PAGE_SIZE = 500
+function assertLoandiskRepaymentSearch(url, payload) {
+  if (!LOANDISK_REPAYMENT_SEARCH_URL.test(String(url))) {
+    throw new Error(`Refused Loandisk request (repayment search only): ${url}`)
+  }
+  for (const key of Object.keys(payload || {})) {
+    if (!LOANDISK_REPAYMENT_SEARCH_KEYS.has(key)) {
+      throw new Error(`Refused Loandisk request: non-search parameter "${key}"`)
+    }
+  }
+}
+
 async function fetchCollectionsOnce(branchCode, payload) {
-  const res = await fetch(buildCollectionsUrl(branchCode), {
+  const url = buildCollectionsUrl(branchCode)
+  assertLoandiskRepaymentSearch(url, payload)
+  // Loandisk's search API takes its filters as a POST body; this only reads repayments.
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': AUTH,
@@ -642,8 +680,24 @@ async function fetchCollectionsOnce(branchCode, payload) {
 async function fetchAllCollections(db) {
   const all = []
   let grandTotal = 0
-  const count = 100
+  // Loandisk returns at most 500 repayments per search page (larger requests are cut to 500),
+  // so page by 500. One page normally covers a branch's recent days (~1 call per branch per run).
+  const count = LOANDISK_REPAYMENT_PAGE_SIZE
   const today = getTodayDMY()
+  // Always re-search at least the last COLLECTIONS_RECENT_DAYS days: payments are often entered
+  // in Loandisk days after their collected date, and the incremental start alone skipped them.
+  const recentStart = (() => {
+    const d = new Date()
+    d.setDate(d.getDate() - COLLECTIONS_RECENT_DAYS)
+    return formatDMY(d)
+  })()
+  const earlierDMY = (a, b) => {
+    const da = parseDMY(a)
+    const dbDate = parseDMY(b)
+    if (!da) return b
+    if (!dbDate) return a
+    return da <= dbDate ? a : b
+  }
   
   // helper to parse loandisk_system_date: "DD/MM/YYYY HH:MMam|pm"
   const parseLoandiskDate = (s) => {
@@ -672,7 +726,8 @@ async function fetchAllCollections(db) {
 
   const branchList = getActiveBranches(db).map(b => b.code)
   for (const branchCode of branchList) {
-    const startDate = getBranchIncrementalStart(db, branchCode)
+    // Earlier of: the incremental start (01/01/2024 for an empty branch) and today − recent days
+    const startDate = earlierDMY(getBranchIncrementalStart(db, branchCode), recentStart)
     console.info(`[Collections] Fetching repayments for branch ${branchCode} (from ${startDate} to ${today})`)
     let branchInserted = 0
     let page = 1
@@ -695,6 +750,9 @@ async function fetchAllCollections(db) {
       if (!pageSize || results.length < pageSize) break
     }
     console.info(`[Collections] Branch ${branchCode} fetched ${branchInserted}${total != null ? ` / ${total}` : ''} records`)
+    if (total != null && branchInserted < total) {
+      console.warn(`[Collections] WARNING branch ${branchCode}: search incomplete (${branchInserted}/${total}); the next run will retry`)
+    }
     if (total != null) grandTotal += total
   }
   return { total: grandTotal || null, results: all }
@@ -703,7 +761,7 @@ async function fetchAllCollections(db) {
 async function fetchAllCollectionsWithDb(db) {
   const all = []
   let grandTotal = 0
-  const count = 1000
+  const count = LOANDISK_REPAYMENT_PAGE_SIZE
   const today = getTodayDMY()
   const latestDMY = getLatestCollectionDate(db)
   let startDate = DEFAULT_COLLECTION_START_DATE
@@ -721,6 +779,7 @@ async function fetchAllCollectionsWithDb(db) {
   // No delete: we upsert by repayment_id, so re-fetching the window overwrites/inserts correctly
   console.info(`[Collections] Rolling window: fetching from ${startDate} to ${today} (lookback ${COLLECTIONS_LOOKBACK_DAYS} days)`)
 
+  const branchStats = []
   const branchList = getActiveBranches(db).map(b => b.code)
   for (const branchCode of branchList) {
     console.info(`[Collections] Fetching repayments for branch ${branchCode} (from ${startDate} to ${today})`)
@@ -746,8 +805,44 @@ async function fetchAllCollectionsWithDb(db) {
     }
     console.info(`[Collections] Branch ${branchCode} fetched ${branchInserted}${total != null ? ` / ${total}` : ''} records`)
     if (total != null) grandTotal += total
+    branchStats.push({ code: branchCode, fetched: branchInserted, total })
   }
-  return { total: grandTotal || null, results: all }
+  return { total: grandTotal || null, results: all, window: { startDate, today }, branches: branchStats }
+}
+
+// Catch-up REPORT only: local rows in the searched window that Loandisk's search no longer returns
+// (deleted or re-dated in Loandisk). Nothing is removed — not locally and never in Loandisk.
+function reportStaleCollections(db, window, branches, results) {
+  if (!window || !Array.isArray(branches)) return
+  const fromKey = dmyToSortKey(window.startDate)
+  const toKey = dmyToSortKey(window.today)
+  if (!fromKey || !toKey) return
+  const fetchedIds = new Set(results.map((r) => String(r?.repayment_id ?? '')))
+  const stmt = db.prepare(`
+    SELECT repayment_id, repayment_collected_date, repayment_amount
+    FROM ${COLLECTIONS_TABLE}
+    WHERE branch = ?
+      AND (substr(repayment_collected_date,7,4) || substr(repayment_collected_date,4,2) || substr(repayment_collected_date,1,2)) BETWEEN ? AND ?
+  `)
+  let staleTotal = 0
+  for (const b of branches) {
+    if (b.total != null && b.fetched !== b.total) {
+      console.log(`[Collections catch-up] Branch ${b.code}: search incomplete (${b.fetched}/${b.total}), no stale-row report`)
+      continue
+    }
+    const stale = stmt.all(b.code, fromKey, toKey).filter((r) => !fetchedIds.has(String(r.repayment_id)))
+    if (!stale.length) continue
+    staleTotal += stale.length
+    const amount = stale.reduce((sum, r) => sum + (Number(r.repayment_amount) || 0), 0)
+    const ids = stale.slice(0, 50).map((r) => `${r.repayment_id}@${r.repayment_collected_date}`).join(', ')
+    console.log(
+      `[Collections catch-up] Branch ${b.code}: ${stale.length} local payment(s), amount ${Math.round(amount)}, ` +
+        `in ${window.startDate}–${window.today} no longer returned by Loandisk: ${ids}${stale.length > 50 ? ', …' : ''}`,
+    )
+  }
+  console.log(
+    `[Collections catch-up] Report: ${staleTotal} local payment(s) in ${window.startDate}–${window.today} are not in Loandisk. Nothing was removed.`,
+  )
 }
 
 function upsertCollection(db, r) {
@@ -912,6 +1007,9 @@ const ZIDISHA_HEADERS = {
 
 /** Single GET for Musoni data-export URLs: optional delay, then retries on 429 / 5xx. */
 async function fetchMusoniGET(url, label) {
+  if (SKIP_MUSONI) {
+    throw new Error(`${label}: Musoni is turned off on this machine (SKIP_MUSONI=1); no request sent`)
+  }
   if (MUSONI_FETCH_DELAY_MS > 0) {
     await new Promise((r) => setTimeout(r, MUSONI_FETCH_DELAY_MS))
   }
@@ -1648,6 +1746,11 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
 (async () => {
   try {
     if (BODA_REPAYMENTS_ONLY) {
+      if (SKIP_MUSONI) {
+        console.error('Boda repayments import refused: Musoni is turned off on this machine (SKIP_MUSONI=1 in .env).')
+        process.exitCode = 1
+        return
+      }
       await ingestBodaRepaymentsChunk()
       return
     }
@@ -1715,13 +1818,24 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
     // === Collections ingestion ===
     if (!SKIP_COLLECTIONS) {
       initCollectionsTable(db)
-      const { total: collTotal, results: collResults } = await fetchAllCollections(db)
+      // Catch-up mode re-searches the full lookback window; normal runs re-search the recent days.
+      // Either way Loandisk is only searched, and rows are only added/updated here (upsert).
+      if (COLLECTIONS_CATCHUP) {
+        console.log(`[Collections] Catch-up run: re-searching the last ${COLLECTIONS_LOOKBACK_DAYS} days (add/update only)`)
+      }
+      const {
+        total: collTotal,
+        results: collResults,
+        window: catchUpWindow,
+        branches: catchUpBranches,
+      } = COLLECTIONS_CATCHUP ? await fetchAllCollectionsWithDb(db) : await fetchAllCollections(db)
       const tx2 = db.transaction((rows) => {
         for (const r of rows) upsertCollection(db, r)
       })
       tx2(collResults)
       const collCount = db.prepare(`SELECT COUNT(*) as c FROM ${COLLECTIONS_TABLE}`).get().c
       console.log(`Saved ${collResults.length} rows into ${COLLECTIONS_TABLE} (of total ${collTotal ?? 'unknown'}). Table now has ${collCount} rows.`)
+      if (COLLECTIONS_CATCHUP) reportStaleCollections(db, catchUpWindow, catchUpBranches, collResults)
     } else {
       console.log('Skipping collections ingestion due to SKIP_COLLECTIONS=1')
     }
@@ -1750,7 +1864,7 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
         console.log(`${ZIDISHA_TABLE} unchanged (${zidishaCount} rows).`)
       }
     } else {
-      console.log('Skipping Zidisha ingestion due to SKIP_ZIDISHA=1')
+      console.log(`Skipping Zidisha ingestion due to ${musoniSkipReason('SKIP_ZIDISHA')}`)
     }
 
     // Musoni export sections are isolated: one export failing (e.g. HTTP 500) must not
@@ -1771,11 +1885,11 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
         )
       }
     } else {
-      console.log('Skipping boda_repayments ingestion due to SKIP_BODA_REPAYMENTS=1')
+      console.log(`Skipping boda_repayments ingestion due to ${musoniSkipReason('SKIP_BODA_REPAYMENTS')}`)
     }
 
     // === Boda schedule ingestion (Musoni export id 30) ===
-    const SKIP_BODA_SCHEDULE = String(process.env.SKIP_BODA_SCHEDULE || '').trim() === '1'
+    const SKIP_BODA_SCHEDULE = SKIP_MUSONI || String(process.env.SKIP_BODA_SCHEDULE || '').trim() === '1'
     if (!SKIP_BODA_SCHEDULE) {
       try {
         const dbBS = initDb()
@@ -1793,7 +1907,7 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
         console.error(`[Musoni] boda_Schedule failed — keeping previous snapshot. ${e.message}`)
       }
     } else {
-      console.log('Skipping boda_Schedule ingestion due to SKIP_BODA_SCHEDULE=1')
+      console.log(`Skipping boda_Schedule ingestion due to ${musoniSkipReason('SKIP_BODA_SCHEDULE')}`)
     }
 
     // === Zidisha Daily / Expected vs Repayed ingestion (Musoni export id 22) ===
@@ -1853,7 +1967,7 @@ function insertZidishaDaily(db, row, columns, tableName = ZIDISHA_DAILY_TABLE) {
         console.error(`[Musoni] Zidisha Daily failed — keeping previous snapshot. ${e.message}`)
       }
     } else {
-      console.log('Skipping Zidisha Daily ingestion due to SKIP_ZIDISHA_DAILY=1')
+      console.log(`Skipping Zidisha Daily ingestion due to ${musoniSkipReason('SKIP_ZIDISHA_DAILY')}`)
     }
 
     db.close()

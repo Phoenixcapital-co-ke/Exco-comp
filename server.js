@@ -6855,6 +6855,173 @@ app.get('/api/logbook/collection/daily-open-loans', (req, res) => {
   }
 })
 
+/**
+ * Clients Paid list: client name, phone, loan number and officer for every loan with a
+ * Logbook (Loandisk) repayment collected on a calendar day. Local DB only — no Loandisk API calls.
+ * Names come from Logbook_Disbursement, then the newest Open_loans (PAR snapshot) row for the loan.
+ * Scoped like /api/logbook/collections so branch-restricted users only see their branches' clients.
+ */
+app.get('/api/logbook/collection/daily-clients', (req, res) => {
+  try {
+    const month = parseInt(req.query.month, 10)
+    const year = parseInt(req.query.year, 10)
+    const day = parseInt(req.query.day, 10)
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: 'month (1-12) is required' })
+    }
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({ error: 'valid year is required' })
+    }
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      return res.status(400).json({ error: 'day (1-31) is required' })
+    }
+    // Stored repayment dates are exact, zero-padded DD/MM/YYYY strings
+    const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`
+
+    const effectiveBranches = getEffectiveLogbookBranches(req)
+    const countryParam = req.query && req.query.country != null && String(req.query.country).trim()
+    if (countryParam && effectiveBranches.length === 0) {
+      return res.json({ date: dateLabel, payments: 0, clients: {}, meta: { loans: 0, fromLoans: 0, fromPar: 0, fromRestructured: 0, unknown: 0 } })
+    }
+
+    const params = [dateLabel]
+    let branchSql = ''
+    if (effectiveBranches.length > 0) {
+      branchSql = ` AND c.branch IN (${effectiveBranches.map(() => '?').join(', ')})`
+      params.push(...effectiveBranches)
+    }
+    // Logbook_Disbursement.loan_id is TEXT (indexed); Logbook_collection.loan_id is INTEGER
+    const rows = db
+      .prepare(`
+        SELECT c.loan_id, c.borrower_access_ids, d.name, d.mobile, d.loan_number, d.loan_officer
+        FROM Logbook_collection c
+        LEFT JOIN Logbook_Disbursement d ON d.loan_id = CAST(c.loan_id AS TEXT)
+        WHERE c.repayment_collected_date = ?${branchSql}
+      `)
+      .all(...params)
+
+    const loNameByCode = new Map()
+    try {
+      for (const lo of dbRW.prepare('SELECT borrower_access_id, name FROM LOs').all()) {
+        const id = String(lo.borrower_access_id || '').trim()
+        if (id) loNameByCode.set(id, String(lo.name || id).trim() || id)
+      }
+    } catch (e) {
+      console.error('daily-clients LOs lookup:', e.message)
+    }
+    const officerFromAccessIds = (raw) => {
+      if (!raw) return null
+      let ids = []
+      try {
+        const parsed = JSON.parse(String(raw))
+        ids = Array.isArray(parsed) ? parsed : [parsed]
+      } catch {
+        ids = [raw]
+      }
+      for (const id of ids) {
+        const name = loNameByCode.get(String(id ?? '').trim())
+        if (name) return name
+      }
+      return null
+    }
+    const text = (value) => {
+      const s = value == null ? '' : String(value).trim()
+      return s || null
+    }
+
+    const clients = {}
+    const missing = []
+    for (const r of rows) {
+      const loanId = String(r.loan_id ?? '').trim()
+      if (!loanId || clients[loanId]) continue
+      const name = text(r.name)
+      clients[loanId] = {
+        clientName: name,
+        phone: name ? text(r.mobile) : null,
+        loanNumber: text(r.loan_number),
+        officer: text(r.loan_officer) || officerFromAccessIds(r.borrower_access_ids),
+        source: name ? 'loan' : null,
+      }
+      if (!name) missing.push(loanId)
+    }
+
+    // Fallback: newest PAR snapshot row for loans that are not in Logbook_Disbursement
+    if (missing.length) {
+      const openRows = db
+        .prepare(`
+          SELECT loan_id, borrower_firstname, borrower_lastname, borrower_business_name, borrower_mobile, borrower_access_ids
+          FROM Open_loans
+          WHERE loan_id IN (${missing.map(() => '?').join(', ')})
+          ORDER BY time DESC
+        `)
+        .all(...missing)
+      const seen = new Set()
+      for (const o of openRows) {
+        const loanId = String(o.loan_id ?? '').trim()
+        if (!loanId || seen.has(loanId) || !clients[loanId]) continue
+        seen.add(loanId)
+        const person = [text(o.borrower_firstname), text(o.borrower_lastname)].filter(Boolean).join(' ')
+        const name = person || text(o.borrower_business_name)
+        if (!name) continue
+        const entry = clients[loanId]
+        entry.clientName = name
+        entry.phone = text(o.borrower_mobile)
+        entry.officer = entry.officer || officerFromAccessIds(o.borrower_access_ids)
+        entry.source = 'par'
+      }
+    }
+
+    // Fallback: restructured loans. The loan sync leaves restructured loans out of Logbook_Disbursement,
+    // and once restructured the old loan is closed (so not in Open_loans). The open loan that replaced it
+    // lists the old loan id in its restructured_loan_history and carries the client's name and phone.
+    const stillUnnamed = Object.keys(clients).filter((loanId) => !clients[loanId].clientName)
+    if (stillUnnamed.length) {
+      const restructuredRows = db
+        .prepare(`
+          SELECT CAST(json_extract(h.value, '$.loan_id') AS TEXT) AS old_loan_id, o.loan_id AS new_loan_id,
+                 o.borrower_firstname, o.borrower_lastname, o.borrower_business_name, o.borrower_mobile, o.borrower_access_ids
+          FROM Open_loans o,
+               json_each(CASE WHEN json_valid(o.restructured_loan_history) THEN o.restructured_loan_history ELSE '[]' END) h
+          WHERE CAST(json_extract(h.value, '$.loan_id') AS TEXT) IN (${stillUnnamed.map(() => '?').join(', ')})
+          ORDER BY o.time DESC
+        `)
+        .all(...stillUnnamed)
+      const seenOld = new Set()
+      for (const o of restructuredRows) {
+        const oldId = String(o.old_loan_id ?? '').trim()
+        if (!oldId || seenOld.has(oldId) || !clients[oldId] || clients[oldId].clientName) continue
+        seenOld.add(oldId)
+        const person = [text(o.borrower_firstname), text(o.borrower_lastname)].filter(Boolean).join(' ')
+        const name = person || text(o.borrower_business_name)
+        if (!name) continue
+        const entry = clients[oldId]
+        entry.clientName = name
+        entry.phone = text(o.borrower_mobile)
+        entry.officer = entry.officer || officerFromAccessIds(o.borrower_access_ids)
+        entry.source = 'restructured'
+        entry.restructuredInto = text(o.new_loan_id)
+      }
+    }
+
+    const entries = Object.values(clients)
+    res.json({
+      date: dateLabel,
+      payments: rows.length,
+      clients,
+      meta: {
+        loans: entries.length,
+        fromLoans: entries.filter((c) => c.source === 'loan').length,
+        fromPar: entries.filter((c) => c.source === 'par').length,
+        fromRestructured: entries.filter((c) => c.source === 'restructured').length,
+        unknown: entries.filter((c) => !c.source).length,
+      },
+    })
+  } catch (e) {
+    console.error('daily-clients error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/api/logbook/collector-performance', (req, res) => {
   try {
     const { month, year } = req.query;
@@ -16018,11 +16185,24 @@ cron.schedule(
 // Every 10 minutes: run ingestion without borrowers (fast refresh)
 cron.schedule('*/10 * * * *', () => {
   console.log(`[CRON] Running scheduled data refresh (no borrowers) at ${new Date().toISOString()}`)
+  // Once a night (the 02:30 Nairobi run) Logbook collections re-search the last 90 days to catch
+  // payments entered late in Loandisk. Add/update only; Loandisk is only searched, never changed.
+  const nairobiTime = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date())
+  const nairobiHour = Number(nairobiTime.find((p) => p.type === 'hour')?.value)
+  const nairobiMinute = Number(nairobiTime.find((p) => p.type === 'minute')?.value)
+  const collectionsCatchUp = nairobiHour === 2 && nairobiMinute >= 30 && nairobiMinute < 40
+  if (collectionsCatchUp) console.log('[CRON] Nightly Logbook collections catch-up (90-day re-search, add/update only)')
   const env = {
     ...process.env,
     SKIP_BORROWERS: '1',
     // Musoni export #20 currently 500s; keep last snapshot and do not retry every 10 min
     SKIP_BODA_REPAYMENTS: '1',
+    ...(collectionsCatchUp ? { COLLECTIONS_CATCHUP: '1' } : {}),
   }
   const proc = spawnNodeScript('scripts/fetch_disbursments.mjs', { env })
   proc.stdout.on('data', (chunk) => console.log(`[DATA-CRON-OUT] ${chunk.toString().trimEnd()}`))
