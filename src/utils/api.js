@@ -46,6 +46,15 @@ export const API_URLS = {
       if (branch) params.set('branch', String(branch))
       return `${API_BASE}/api/logbook/collection/daily-open-loans?${params.toString()}`
     },
+    // Client name / phone / loan # / officer for loans with a repayment on a calendar day
+    dailyClients: (month, year, day) => {
+      const params = new URLSearchParams({
+        month: String(month),
+        year: String(year),
+        day: String(day),
+      })
+      return `${API_BASE}/api/logbook/collection/daily-clients?${params.toString()}`
+    },
   },
   zidisha: {
     data: `${API_BASE}/api/zidisha/data`,

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react'
-import { TrendingUp, Clock, CheckCircle, AlertCircle, DollarSign, Users, ChevronDown, ChevronRight, User, FileText } from 'lucide-react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { TrendingUp, Clock, CheckCircle, AlertCircle, DollarSign, Users, ChevronDown, ChevronRight, ChevronLeft, User, FileText, Search, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { 
   BarChart, 
   Bar, 
@@ -36,8 +37,18 @@ function parseBorrowerAccessIds(raw) {
   return []
 }
 
+// Default selected day for a period: today (current month), month-end (past month), 1 (future month)
+function defaultDayForPeriod(month, year) {
+  const now = new Date()
+  const nowYear = now.getFullYear()
+  const nowMonth = now.getMonth() + 1
+  if (year === nowYear && month === nowMonth) return now.getDate()
+  if (year < nowYear || (year === nowYear && month < nowMonth)) return new Date(year, month, 0).getDate()
+  return 1
+}
+
 function LogbookCollection({ country }) {
-  const { formatMoney } = useLogbookCurrency()
+  const { formatMoney, sourceCurrency } = useLogbookCurrency()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -60,6 +71,21 @@ function LogbookCollection({ country }) {
     matched: 0,
   })
   const [dailyOpenLoansLoading, setDailyOpenLoansLoading] = useState(false)
+  // Identifies the day the open-loans list belongs to, so late responses for another day are dropped
+  const dailyOpenLoansKeyRef = useRef('')
+  // Clients Paid card: client names for the selected day's repayments (loan id -> client info)
+  const [dayClientMap, setDayClientMap] = useState({})
+  const [dayClientServerPayments, setDayClientServerPayments] = useState(null)
+  const [dayClientsLoading, setDayClientsLoading] = useState(false)
+  const [dayClientsError, setDayClientsError] = useState(null)
+  const [clientSearch, setClientSearch] = useState('')
+  const [clientBranchFilter, setClientBranchFilter] = useState('')
+  const clientsCardRef = useRef(null)
+  // The Clients Paid list scrolls inside its own box (~20 rows); start at row 1 whenever the list changes
+  const clientsScrollRef = useRef(null)
+  useEffect(() => {
+    if (clientsScrollRef.current) clientsScrollRef.current.scrollTop = 0
+  }, [selectedYear, selectedMonth, selectedDay, clientBranchFilter, clientSearch])
 
   useEffect(() => {
     const loadData = async () => {
@@ -155,18 +181,25 @@ function LogbookCollection({ country }) {
 
   useEffect(() => {
     if (loading) return
+    dailyOpenLoansKeyRef.current = `${country || ''}|${selectedYear}-${selectedMonth}-${selectedDay}`
+    const controller = new AbortController()
+    // Drop the previous day's list right away so it never shows under the new day
+    setDailyOpenLoansBranches([])
+    setDailyOpenLoansMeta({ snapshotTime: null, date: null, scanned: 0, matched: 0 })
+    setDailyOpenLoansLoading(true)
     const loadDailyOpenLoans = async () => {
-      setDailyOpenLoansLoading(true)
       try {
         const base = API_URLS.logbook.dailyOpenLoans(selectedMonth, selectedYear, selectedDay)
         const url = country ? `${base}&country=${encodeURIComponent(country)}` : base
-        const res = await fetch(url, { credentials: 'include' })
+        const res = await fetch(url, { credentials: 'include', signal: controller.signal })
+        if (controller.signal.aborted) return
         if (!res.ok) {
           setDailyOpenLoansBranches([])
           setDailyOpenLoansMeta({ snapshotTime: null, date: null, scanned: 0, matched: 0 })
           return
         }
         const data = await res.json()
+        if (controller.signal.aborted) return
         setDailyOpenLoansBranches(Array.isArray(data.branches) ? data.branches : [])
         setDailyOpenLoansMeta({
           snapshotTime: data.snapshotTime || null,
@@ -175,14 +208,56 @@ function LogbookCollection({ country }) {
           matched: Number(data.meta?.matched) || 0,
         })
       } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) return
         console.error('Failed to load daily open loans', e)
         setDailyOpenLoansBranches([])
         setDailyOpenLoansMeta({ snapshotTime: null, date: null, scanned: 0, matched: 0 })
       } finally {
-        setDailyOpenLoansLoading(false)
+        if (!controller.signal.aborted) setDailyOpenLoansLoading(false)
       }
     }
-    loadDailyOpenLoans()
+    // Debounce so quick day-stepping only fetches the day the user lands on
+    const timer = setTimeout(loadDailyOpenLoans, 250)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [loading, selectedMonth, selectedYear, selectedDay, country])
+
+  // Clients Paid: fetch client names for the selected day (local DB on the server, no Loandisk API calls)
+  useEffect(() => {
+    if (loading) return
+    const controller = new AbortController()
+    setDayClientMap({})
+    setDayClientServerPayments(null)
+    setDayClientsError(null)
+    setDayClientsLoading(true)
+    const loadDayClients = async () => {
+      try {
+        const base = API_URLS.logbook.dailyClients(selectedMonth, selectedYear, selectedDay)
+        const url = country ? `${base}&country=${encodeURIComponent(country)}` : base
+        const res = await fetch(url, { credentials: 'include', signal: controller.signal })
+        if (controller.signal.aborted) return
+        if (!res.ok) throw new Error(`server returned ${res.status}`)
+        const payload = await res.json()
+        if (controller.signal.aborted) return
+        setDayClientMap(payload && payload.clients && typeof payload.clients === 'object' ? payload.clients : {})
+        const serverPayments = Number(payload?.payments)
+        setDayClientServerPayments(Number.isFinite(serverPayments) ? serverPayments : null)
+      } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) return
+        console.error('Failed to load clients paid', e)
+        setDayClientsError(e?.message || 'unknown error')
+      } finally {
+        if (!controller.signal.aborted) setDayClientsLoading(false)
+      }
+    }
+    // Debounce so quick day-stepping only fetches the day the user lands on
+    const timer = setTimeout(loadDayClients, 250)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
   }, [loading, selectedMonth, selectedYear, selectedDay, country])
 
   const mergeDailyOpenLoansBranch = (branchPayload) => {
@@ -200,12 +275,15 @@ function LogbookCollection({ country }) {
   const loadDailyOpenLoansForBranch = async (branchCode) => {
     const code = String(branchCode || '').trim()
     if (!code) return
+    const requestKey = dailyOpenLoansKeyRef.current
     try {
       const base = API_URLS.logbook.dailyOpenLoans(selectedMonth, selectedYear, selectedDay, code)
       const url = country ? `${base}&country=${encodeURIComponent(country)}` : base
       const res = await fetch(url, { credentials: 'include' })
       if (!res.ok) return
       const data = await res.json()
+      // The day changed while this was loading: don't merge another day's loans
+      if (dailyOpenLoansKeyRef.current !== requestKey) return
       const branch = (data.branches || []).find((b) => String(b.code).trim() === code)
       if (branch) mergeDailyOpenLoansBranch(branch)
       if (data.meta) {
@@ -232,24 +310,51 @@ function LogbookCollection({ country }) {
       const existing = dailyOpenLoansBranches.find((b) => String(b.code).trim() === code)
       const existingLoans = Array.isArray(existing?.loans) ? existing.loans : []
       if (!existingLoans.length) {
+        const requestKey = dailyOpenLoansKeyRef.current
         setDailyOpenLoansLoading(true)
         await loadDailyOpenLoansForBranch(code)
-        setDailyOpenLoansLoading(false)
+        // Leave the flag alone if a newer day's fetch now owns it
+        if (dailyOpenLoansKeyRef.current === requestKey) setDailyOpenLoansLoading(false)
       }
     }
+  }
+
+  // Change month/year and the shared day together (one render, one open-loans fetch).
+  // Without an explicit day: today for the current month, month-end for past months.
+  const changePeriod = (month, year, day) => {
+    setSelectedMonth(month)
+    setSelectedYear(year)
+    setSelectedDay(day ?? defaultDayForPeriod(month, year))
   }
 
   // Listen to global month/year changes from header
   useEffect(() => {
     const onGlobalChange = (e) => {
       if (!e || !e.detail) return
-      const { month, year } = e.detail
-      if (typeof month === 'number') setSelectedMonth(month)
-      if (typeof year === 'number') setSelectedYear(year)
+      const month = typeof e.detail.month === 'number' ? e.detail.month : selectedMonth
+      const year = typeof e.detail.year === 'number' ? e.detail.year : selectedYear
+      if (month === selectedMonth && year === selectedYear) return
+      changePeriod(month, year)
     }
     window.addEventListener('global_month_year_changed', onGlobalChange)
     return () => window.removeEventListener('global_month_year_changed', onGlobalChange)
-  }, [])
+  }, [selectedMonth, selectedYear])
+
+  // Repayments grouped by collection month (key: year * 100 + month), built once per data load.
+  // The month-scoped calculations below loop over one month instead of every repayment.
+  const repaymentsByMonth = useMemo(() => {
+    const proc = data?.processor
+    const map = new Map()
+    if (!proc || !Array.isArray(proc.repaymentsData)) return map
+    for (const r of proc.repaymentsData) {
+      const d = proc.parseDMY(r.repayment_collected_date)
+      if (!d || Number.isNaN(d.getTime())) continue
+      const key = d.getFullYear() * 100 + (d.getMonth() + 1)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(r)
+    }
+    return map
+  }, [data])
 
   if (loading) {
     return (
@@ -288,6 +393,8 @@ function LogbookCollection({ country }) {
     return selectedYear < ny || (selectedYear === ny && selectedMonth < nm)
   })()
   const daysInSelectedMonth = new Date(selectedYear, selectedMonth, 0).getDate()
+  // Repayment rows collected in a given month (see repaymentsByMonth)
+  const rowsForMonth = (y, m) => repaymentsByMonth.get(Number(y) * 100 + Number(m)) || []
 
   // Current-month principal and interest collected (DB fields)
   const selectedMonthPrincipal = (() => {
@@ -296,7 +403,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -312,7 +419,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -330,7 +437,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -384,7 +491,14 @@ function LogbookCollection({ country }) {
     const proc = data.processor
     if (!proc || !proc.repaymentsData) return 0
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    // The week can span two months
+    const monRows = rowsForMonth(thisMon.getFullYear(), thisMon.getMonth() + 1)
+    const weekSpansMonths =
+      thisMon.getFullYear() !== thisSun.getFullYear() || thisMon.getMonth() !== thisSun.getMonth()
+    const weekRows = weekSpansMonths
+      ? [...monRows, ...rowsForMonth(thisSun.getFullYear(), thisSun.getMonth() + 1)]
+      : monRows
+    for (const r of weekRows) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -398,7 +512,7 @@ function LogbookCollection({ country }) {
     const proc = data.processor
     if (!proc || !proc.repaymentsData) return 0
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(todayY, todayM)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -416,7 +530,7 @@ function LogbookCollection({ country }) {
     const y = now.getFullYear()
     const m = now.getMonth() + 1
     const set = new Set()
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -434,7 +548,7 @@ function LogbookCollection({ country }) {
     const m = selectedMonth
     const day = isPastMonth ? daysInSelectedMonth : new Date().getDate()
     let count = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -450,7 +564,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let count = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -464,7 +578,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     const set = new Set()
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -489,7 +603,7 @@ function LogbookCollection({ country }) {
     if (!proc || !proc.repaymentsData) return 0
     const { py, pm } = prevYM
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(py, pm)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -504,7 +618,7 @@ function LogbookCollection({ country }) {
     if (!proc || !proc.repaymentsData) return 0
     const { py, pm } = prevYM
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(py, pm)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -551,7 +665,7 @@ function LogbookCollection({ country }) {
     const sumByDay = Array(daysInMonth + 1).fill(0)
 
     // actual collections by day
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -587,94 +701,20 @@ function LogbookCollection({ country }) {
     return rows
   })()
 
-  // MTD Collection vs Target by Branch (for bar chart)
-  const branchMTDData = (() => {
-    const proc = data.processor
-    if (!proc || !proc.repaymentsData) return []
-    const y = selectedYear
-    const m = selectedMonth
-    const normalizeName = (name) => String(name || '').replace(/\s*branch$/i, '').trim()
-
-    // Build target map
-    const targetMap = new Map()
-    targets
-      .filter((t) => t.active && Number(t.year) === y && Number(t.month) === m)
-      .forEach((t) => {
-        const key = normalizeName(t.branch)
-        targetMap.set(key, {
-          collectionTarget: Number(t.collectionTarget) || 0,
-          workingDays: Number(t.workingDays) || 0,
-          holidays: Array.isArray(t.holidays) ? t.holidays : [],
-        })
-      })
-
-    // Determine elapsed working days up to today (or full month if past month)
-    const workingDaysElapsed = (month, year, totalWorkingDays, holidays = []) => {
-      const today = new Date()
-      const isFuture =
-        year > today.getFullYear() ||
-        (year === today.getFullYear() && month > today.getMonth() + 1)
-      if (isFuture) return 0
-      const cutoffDay =
-        year === today.getFullYear() && month === today.getMonth() + 1
-          ? today.getDate()
-          : new Date(year, month, 0).getDate()
-      const holidaySet = new Set((Array.isArray(holidays) ? holidays : []).map((d) => new Date(d).toDateString()))
-      let count = 0
-      for (let day = 1; day <= cutoffDay; day++) {
-        const dt = new Date(year, month - 1, day)
-        if (dt.getDay() === 0) continue // Sundays non-working
-        if (holidaySet.has(dt.toDateString())) continue
-        count++
-      }
-      if (totalWorkingDays && totalWorkingDays > 0) {
-        return Math.min(count, totalWorkingDays)
-      }
-      return count
-    }
-
-    // Aggregate actual collections up to cutoff day
-    const cutoffDay =
-      (() => {
-        const today = new Date()
-        if (today.getFullYear() === y && today.getMonth() + 1 === m) return today.getDate()
-        return new Date(y, m, 0).getDate()
-      })()
-
-    const agg = new Map()
-    for (const r of proc.repaymentsData) {
-      const s = r.repayment_collected_date || ''
-      const [dd, mm, yyyy] = String(s).split('/')
-      if (!yyyy || !mm || !dd) continue
-      const yy = Number(yyyy)
-      const mmNum = Number(mm)
-      const ddNum = Number(dd)
-      if (yy !== y || mmNum !== m || ddNum > cutoffDay) continue
-      const code = r.branch || r.Branch
-      if (!code) continue
-      const name = normalizeName(proc.getBranchName ? proc.getBranchName(code) : code)
-      agg.set(name, (agg.get(name) || 0) + (Number(r.repayment_amount) || 0))
-    }
-
-    // Combine targets and actuals
-    const names = new Set([...agg.keys(), ...targetMap.keys()])
-    const rows = []
-    for (const name of names) {
-      const targetInfo = targetMap.get(name) || { collectionTarget: 0, workingDays: 0, holidays: [] }
-      const elapsed = workingDaysElapsed(m, y, targetInfo.workingDays, targetInfo.holidays)
-      const targetMTD =
-        targetInfo.workingDays > 0 ? (targetInfo.collectionTarget / targetInfo.workingDays) * elapsed : 0
-      const actual = agg.get(name) || 0
-      const pct = targetMTD > 0 ? (actual / targetMTD) * 100 : 0
-      rows.push({ name, actual, target: targetMTD, percent: pct })
-    }
-    return rows.sort((a, b) => b.actual - a.actual)
-  })()
-
   const branchCollectionTables = (() => {
     const proc = data.processor
     if (!proc || !Array.isArray(proc.repaymentsData)) {
-      return { monthly: [], mtd: [], daily: [], cutoffDay: 0, selectedDay: 1 }
+      return {
+        monthly: [],
+        mtd: [],
+        daily: [],
+        cutoffDay: 0,
+        selectedDay: 1,
+        asOfDay: 0,
+        isFutureDay: false,
+        hasTargets: false,
+        totals: null,
+      }
     }
 
     const y = selectedYear
@@ -685,6 +725,9 @@ function LogbookCollection({ country }) {
     const isCurrentMonth = y === now.getFullYear() && m === now.getMonth() + 1
     const isFutureMonth = y > now.getFullYear() || (y === now.getFullYear() && m > now.getMonth() + 1)
     const cutoffDay = isFutureMonth ? 0 : isCurrentMonth ? Math.min(now.getDate(), daysInMonth) : daysInMonth
+    // MTD is a snapshot "as of" the selected day, but never runs past today
+    const asOfDay = Math.min(day, cutoffDay)
+    const isFutureDay = day > cutoffDay
 
     const normalizeBranch = (value) =>
       String(value || '')
@@ -811,8 +854,8 @@ function LogbookCollection({ country }) {
           name,
           branchCode: branchCode || '',
           monthCollected: 0,
-          mtdCollected: 0,
-          dailyCollected: 0,
+          // Amount collected on each day of the month (index = day of month)
+          byDay: Array(daysInMonth + 1).fill(0),
         })
       } else if (branchCode && !actualMap.get(key).branchCode) {
         actualMap.get(key).branchCode = branchCode
@@ -820,7 +863,7 @@ function LogbookCollection({ country }) {
       return actualMap.get(key)
     }
 
-    for (const repayment of proc.repaymentsData) {
+    for (const repayment of rowsForMonth(y, m)) {
       const date = proc.parseDMY(repayment.repayment_collected_date)
       if (!date || date.getFullYear() !== y || date.getMonth() + 1 !== m) continue
       const code = String(repayment.branch || repayment.Branch || '').trim()
@@ -831,8 +874,7 @@ function LogbookCollection({ country }) {
       const row = ensureActual(key, name, code)
       const amount = Number(repayment.repayment_amount) || 0
       row.monthCollected += amount
-      if (date.getDate() <= cutoffDay) row.mtdCollected += amount
-      if (date.getDate() === day) row.dailyCollected += amount
+      row.byDay[date.getDate()] += amount
 
       const borrowerIds = parseBorrowerAccessIds(repayment.borrower_access_ids)
       if (borrowerIds.length) {
@@ -860,10 +902,16 @@ function LogbookCollection({ country }) {
       return workingDays > 0 ? targetInfo.target / workingDays : 0
     }
 
-    const mtdTarget = (targetInfo) => {
+    // [startDay, endDay] window helpers shared by the Day and MTD columns
+    const sumDays = (values, startDay, endDay) => {
+      let total = 0
+      for (let d = Math.max(1, startDay); d <= Math.min(endDay, daysInMonth); d++) total += values?.[d] || 0
+      return total
+    }
+    const expectedForRange = (targetInfo, startDay, endDay) => {
       let expected = 0
-      for (let currentDay = 1; currentDay <= cutoffDay; currentDay++) {
-        expected += targetForDay(targetInfo, currentDay)
+      for (let d = Math.max(1, startDay); d <= Math.min(endDay, daysInMonth); d++) {
+        expected += targetForDay(targetInfo, d)
       }
       return expected
     }
@@ -936,10 +984,10 @@ function LogbookCollection({ country }) {
         branchCodeByKey.get(key) || actual?.branchCode || targetInfo?.branchCode || ''
       const expected = targetInfo?.target || 0
       const collected = actual?.monthCollected || 0
-      const mtdExpected = mtdTarget(targetInfo)
-      const mtdCollected = actual?.mtdCollected || 0
+      const mtdExpected = expectedForRange(targetInfo, 1, asOfDay)
+      const mtdCollected = sumDays(actual?.byDay, 1, asOfDay)
       const dailyExpected = targetForDay(targetInfo, day)
-      const dailyCollected = actual?.dailyCollected || 0
+      const dailyCollected = sumDays(actual?.byDay, day, day)
       return {
         name,
         branchCode,
@@ -953,20 +1001,164 @@ function LogbookCollection({ country }) {
         dailyExpected,
         dailyCollected,
         dailyRate: dailyExpected > 0 ? (dailyCollected / dailyExpected) * 100 : null,
+        // MTD through today: a sort key that doesn't change while stepping through days
+        mtdToDateCollected: sumDays(actual?.byDay, 1, cutoffDay),
         officers: buildOfficersForBranch(key, branchCode, expected),
       }
     })
 
+    // Totals: rates only count branches that have an expected amount, so untargeted
+    // branches don't inflate them; Gap is the sum of the Gap column.
+    const totalFor = (expectedKey, collectedKey) => {
+      let expected = 0
+      let collected = 0
+      let collectedWithTarget = 0
+      for (const row of rows) {
+        expected += row[expectedKey]
+        collected += row[collectedKey]
+        if (row[expectedKey] > 0) collectedWithTarget += row[collectedKey]
+      }
+      return { expected, collected, rate: expected > 0 ? (collectedWithTarget / expected) * 100 : null }
+    }
+    const totals = {
+      daily: totalFor('dailyExpected', 'dailyCollected'),
+      mtd: {
+        ...totalFor('mtdExpected', 'mtdCollected'),
+        gap: rows.reduce((sum, row) => sum + row.mtdGap, 0),
+      },
+    }
+
     return {
       monthly: [...rows].sort((a, b) => b.collected - a.collected),
-      mtd: [...rows].sort((a, b) => b.mtdCollected - a.mtdCollected),
+      mtd: [...rows].sort((a, b) => b.mtdToDateCollected - a.mtdToDateCollected),
       daily: [...rows]
         .filter((row) => row.dailyExpected > 0 || row.dailyCollected > 0)
         .sort((a, b) => b.dailyCollected - a.dailyCollected),
       cutoffDay,
       selectedDay: day,
+      asOfDay,
+      isFutureDay,
+      hasTargets: targetMap.size > 0,
+      totals,
     }
   })()
+
+  // MTD Collection vs Target by Branch (bar chart): same rows and as-of day as the table
+  const branchMTDData = branchCollectionTables.mtd
+    .filter((row) => row.mtdCollected > 0 || row.mtdExpected > 0)
+    .map((row) => ({
+      name: row.name,
+      actual: row.mtdCollected,
+      target: row.mtdExpected,
+      percent: row.mtdRate ?? 0,
+    }))
+
+  // Clients Paid list: the same repayment rows the branch table counts for the selected day,
+  // joined to the client names fetched for that day (dayClientMap, keyed by loan id).
+  const dayClientsList = (() => {
+    const proc = data.processor
+    const day = branchCollectionTables.selectedDay
+    const all = []
+    if (proc) {
+      for (const r of rowsForMonth(selectedYear, selectedMonth)) {
+        const date = proc.parseDMY(r.repayment_collected_date)
+        if (!date || date.getFullYear() !== selectedYear || date.getMonth() + 1 !== selectedMonth || date.getDate() !== day) continue
+        const branchCode = String(r.branch || r.Branch || '').trim()
+        if (!branchCode) continue
+        const loanId = String(r.loan_id ?? '').trim()
+        const info = dayClientMap[loanId] || null
+        all.push({
+          repaymentId: r.repayment_id,
+          loanId,
+          branchCode,
+          branchName: proc.getBranchName ? proc.getBranchName(branchCode) : branchCode,
+          amount: Number(r.repayment_amount) || 0,
+          clientName: info?.clientName || null,
+          phone: info?.phone || null,
+          loanNumber: info?.loanNumber || null,
+          officer: info?.officer || null,
+          // Set when the client was found through the loan this one was restructured into
+          restructuredInto: info?.restructuredInto || null,
+        })
+      }
+    }
+
+    const branchOptions = Array.from(new Map(all.map((r) => [r.branchCode, r.branchName])).entries()).sort((a, b) =>
+      String(a[1]).localeCompare(String(b[1])),
+    )
+    const query = clientSearch.trim().toLowerCase()
+    const filtered = all
+      .filter((r) => !clientBranchFilter || r.branchCode === clientBranchFilter)
+      .filter(
+        (r) =>
+          !query ||
+          [r.clientName, r.phone, r.loanNumber, r.loanId, r.officer, r.restructuredInto].some(
+            (value) => value && String(value).toLowerCase().includes(query),
+          ),
+      )
+      .sort((a, b) => b.amount - a.amount)
+
+    // A client with several loans counts once (same phone, else same name); unknown clients by loan
+    const clientKey = (r) => {
+      const digits = String(r.phone || '').replace(/\D/g, '')
+      if (digits) return `p:${digits}`
+      if (r.clientName) return `n:${r.clientName.toLowerCase()}`
+      return `l:${r.loanId}`
+    }
+    const totals = {
+      payments: filtered.length,
+      clients: new Set(filtered.map(clientKey)).size,
+      amount: filtered.reduce((sum, r) => sum + r.amount, 0),
+    }
+    // The server sees payments synced after this page loaded; the page lists what it loaded
+    const newerOnServer =
+      dayClientServerPayments != null && dayClientServerPayments > all.length ? dayClientServerPayments - all.length : 0
+
+    return { all, filtered, branchOptions, totals, newerOnServer }
+  })()
+
+  // Branch name click in the Daily & MTD table: filter the Clients Paid list and scroll to it
+  const showClientsForBranch = (branchCode) => {
+    setClientBranchFilter(String(branchCode || ''))
+    setClientSearch('')
+    window.requestAnimationFrame(() => {
+      clientsCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
+  // Excel download of the Clients Paid list as currently filtered
+  const downloadDayClientsExcel = () => {
+    const { filtered, totals } = dayClientsList
+    if (!filtered.length) return
+    const day = branchCollectionTables.selectedDay
+    const dd = String(day).padStart(2, '0')
+    const mm = String(selectedMonth).padStart(2, '0')
+    const amountHeader = `Amount (${sourceCurrency || 'KES'})`
+    const sheetRows = filtered.map((r, index) => ({
+      '#': index + 1,
+      Date: `${dd}/${mm}/${selectedYear}`,
+      Client: r.clientName || 'Unknown client',
+      Phone: r.phone || '',
+      'Loan #': r.loanNumber || r.loanId,
+      Branch: r.branchName,
+      'Loan officer': r.officer || '',
+      [amountHeader]: r.amount,
+      'Loan ID': r.loanId,
+      'Repayment ID': r.repaymentId ?? '',
+      Note: r.restructuredInto ? `Restructured into loan ${r.restructuredInto}` : '',
+    }))
+    sheetRows.push({ Client: `TOTAL (${totals.payments} payments, ${totals.clients} clients)`, [amountHeader]: totals.amount })
+    const sheet = XLSX.utils.json_to_sheet(sheetRows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Clients Paid')
+    const branchSuffix = clientBranchFilter
+      ? `-${String(data.processor?.getBranchName?.(clientBranchFilter) || clientBranchFilter)
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '')}`
+      : ''
+    XLSX.writeFile(workbook, `logbook-clients-paid-${selectedYear}-${mm}-${dd}${branchSuffix}.xlsx`)
+  }
 
   const normalizeBranchKey = (value) =>
     String(value || '')
@@ -1027,7 +1219,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -1041,7 +1233,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let sum = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -1055,7 +1247,7 @@ function LogbookCollection({ country }) {
     const y = selectedYear
     const m = selectedMonth
     let count = 0
-    for (const r of proc.repaymentsData) {
+    for (const r of rowsForMonth(y, m)) {
       const s = r.repayment_collected_date || ''
       const [dd, mm, yyyy] = String(s).split('/')
       if (!yyyy || !mm || !dd) continue
@@ -1074,7 +1266,7 @@ function LogbookCollection({ country }) {
         <div className="flex items-end space-x-3">
           <div>
             <label className="block text-xs text-gray-600 mb-1">Month</label>
-            <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedMonth} onChange={e => setSelectedMonth(Number(e.target.value))}>
+            <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedMonth} onChange={e => changePeriod(Number(e.target.value), selectedYear)}>
               {[1,2,3,4,5,6,7,8,9,10,11,12].map(m => (
                 <option key={m} value={m}>{new Date(2000, m-1, 1).toLocaleString('en-US', { month: 'long' })}</option>
               ))}
@@ -1082,7 +1274,7 @@ function LogbookCollection({ country }) {
           </div>
           <div>
             <label className="block text-xs text-gray-600 mb-1">Year</label>
-            <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}>
+            <select className="border border-gray-300 rounded px-2 py-1 text-sm" value={selectedYear} onChange={e => changePeriod(selectedMonth, Number(e.target.value))}>
               {[selectedYear-1, selectedYear, selectedYear+1].map(y => (
                 <option key={y} value={y}>{y}</option>
               ))}
@@ -1241,54 +1433,6 @@ function LogbookCollection({ country }) {
           </div>
         </div>
       )}
-
-      {/* Branch collection breakdowns */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex flex-col gap-1 mb-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">MTD Collection by Branch</h3>
-            <p className="text-xs text-gray-500">
-              Collected through day {branchCollectionTables.cutoffDay}; Expected MTD uses each branch’s MTD collection target.
-            </p>
-          </div>
-          <span className="text-xs font-medium text-gray-500">{country || 'All countries'}</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">Expected MTD</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">Collected MTD</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">Gap</th>
-                <th className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-100">
-              {branchCollectionTables.mtd.map((row) => (
-                <tr key={row.name} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 font-medium text-gray-900">{row.name}</td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdExpected)}</td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdCollected)}</td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row.mtdGap)}</td>
-                  <td className={`px-3 py-2 text-right font-semibold ${
-                    row.mtdRate == null ? 'text-gray-500' : row.mtdRate >= 100 ? 'text-green-600' : 'text-orange-600'
-                  }`}>
-                    {row.mtdRate == null ? '—' : `${row.mtdRate.toFixed(1)}%`}
-                  </td>
-                </tr>
-              ))}
-              {!branchCollectionTables.mtd.length && (
-                <tr>
-                  <td className="px-3 py-6 text-center text-gray-500" colSpan={5}>
-                    No branch data for the selected period.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -1612,7 +1756,7 @@ function LogbookCollection({ country }) {
                 .forEach(t => targetMap.set(normalizeName(t.branch), Number(t.collectionTarget) || 0))
 
               const agg = {}
-              for (const r of proc.repaymentsData) {
+              for (const r of rowsForMonth(y, m)) {
                 const s = r.repayment_collected_date || ''
                 const [dd, mm, yyyy] = String(s).split('/')
                 const code = r.branch || r.Branch
@@ -1681,7 +1825,14 @@ function LogbookCollection({ country }) {
           </ResponsiveContainer>
           {branchMTDData.length > 0 && (
             <div className="mt-6">
-              <h4 className="text-md font-semibold text-gray-900 mb-3">MTD Collection vs Target by Branch</h4>
+              <h4 className="text-md font-semibold text-gray-900 mb-3">
+                MTD Collection vs Target by Branch
+                {branchCollectionTables.asOfDay > 0 && (
+                  <span className="ml-2 text-xs font-normal text-gray-500">
+                    {`(1–${branchCollectionTables.asOfDay} ${new Date(selectedYear, selectedMonth - 1, 1).toLocaleDateString('en-GB', { month: 'short' })})`}
+                  </span>
+                )}
+              </h4>
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={branchMTDData}>
                   <CartesianGrid strokeDasharray="3 3" />
@@ -1753,68 +1904,405 @@ function LogbookCollection({ country }) {
         </div>
       </div>
 
-      {/* Recent Collections */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Recent Collections</h3>
-            <p className="text-xs text-gray-500 mt-1">Latest repayment activity</p>
-          </div>
-          <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2.5 py-1 rounded-full">
-            {data.recentCollections?.length || 0} records
-          </span>
-        </div>
+      {/* Branch collection: selected day + MTD as of the selected day */}
+      {(() => {
+        const {
+          mtd: rows,
+          totals,
+          selectedDay: day,
+          cutoffDay: maxDay,
+          asOfDay,
+          isFutureDay,
+          hasTargets,
+        } = branchCollectionTables
+        const selectedDate = new Date(selectedYear, selectedMonth - 1, day)
+        const todayStart = new Date(todayY, todayM - 1, todayD)
+        const yesterday = new Date(todayY, todayM - 1, todayD - 1)
+        const nextDate = new Date(selectedYear, selectedMonth - 1, day + 1)
+        // From a future day, "previous" goes back to today
+        const prevDate =
+          selectedDate > todayStart ? todayStart : new Date(selectedYear, selectedMonth - 1, day - 1)
+        const isSameDate = (a, b) =>
+          a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+        const goToDate = (date) => changePeriod(date.getMonth() + 1, date.getFullYear(), date.getDate())
+        const isTodaySelected = isSameDate(selectedDate, todayStart)
+        const isYesterdaySelected = isSameDate(selectedDate, yesterday)
+        const isSundaySelected = selectedDate.getDay() === 0
+        const dayLabel = selectedDate.toLocaleDateString('en-GB', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })
+        const monthShort = new Date(selectedYear, selectedMonth - 1, 1).toLocaleDateString('en-GB', { month: 'short' })
+        const monthLong = new Date(selectedYear, selectedMonth - 1, 1).toLocaleDateString('en-GB', {
+          month: 'long',
+          year: 'numeric',
+        })
+        const rateClass = (rate) =>
+          rate == null ? 'text-gray-500' : rate >= 100 ? 'text-green-600' : 'text-orange-600'
+        const rateText = (rate) => (rate == null ? '—' : `${rate.toFixed(1)}%`)
+        // A working day with nothing collected stands out in red
+        const dayCollectedClass = (amount) =>
+          !isFutureDay && !isSundaySelected && !(amount > 0) ? 'text-red-600' : 'text-gray-900'
+        const quickButtonClass = (active) =>
+          `px-2.5 py-1 rounded-md border text-xs font-semibold transition-colors ${
+            active
+              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+              : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+          }`
+        const arrowButtonClass =
+          'p-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed'
 
-        {!data.recentCollections?.length ? (
-          <p className="text-sm text-gray-500 text-center py-8">No recent collections found.</p>
-        ) : (
-          <div
-            className="rounded-lg border border-gray-200 overflow-hidden max-h-[min(28rem,60vh)] overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]"
-            style={{ scrollbarWidth: 'thin' }}
-          >
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                <tr>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loan ID</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Principal</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interest</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fees</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Collector</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-100">
-                {data.recentCollections.map((repayment, index) => (
-                  <tr key={repayment.repayment_id || repayment.loan_id || index} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-900">
-                      #{repayment.loan_id}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-900">
-                      {formatMoney(repayment.repayment_amount)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                      {formatMoney(repayment.principal_repayment_amount)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                      {formatMoney(repayment.interest_repayment_amount)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                      {formatMoney(repayment.fees_repayment_amount)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                      {repayment.repayment_collected_date}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-600">
-                      {repayment.collector_id || '—'}
-                    </td>
+        return (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex flex-col gap-3 mb-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Daily &amp; MTD Collection by Branch</h3>
+                <p className="text-xs text-gray-500">
+                  Day columns show collections on {dayLabel}
+                  {asOfDay > 0
+                    ? `; MTD columns run from 1 to ${asOfDay} ${monthShort}.`
+                    : '; no MTD collections yet for this month.'}{' '}
+                  Expected uses each branch’s collection target ÷ working days (Sundays and holidays excluded).
+                </p>
+                {!hasTargets && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    No collection targets are set for {monthLong}, so Expected, Gap and Rate show 0 / —.
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-gray-500 mr-1">{country || 'All countries'}</span>
+                <button
+                  type="button"
+                  className={arrowButtonClass}
+                  onClick={() => goToDate(prevDate)}
+                  aria-label="Previous day"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <select
+                  className="border border-gray-300 rounded px-2 py-1 text-sm"
+                  value={day}
+                  onChange={(event) => setSelectedDay(Number(event.target.value))}
+                  disabled={maxDay < 1}
+                  aria-label="Collection day"
+                >
+                  {Array.from({ length: daysInSelectedMonth }, (_, index) => index + 1).map((d) => (
+                    <option key={d} value={d} disabled={d > maxDay}>
+                      {new Date(selectedYear, selectedMonth - 1, d).toLocaleDateString('en-GB', {
+                        weekday: 'short',
+                        day: 'numeric',
+                      })}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className={arrowButtonClass}
+                  onClick={() => goToDate(nextDate)}
+                  disabled={nextDate > todayStart}
+                  aria-label="Next day"
+                >
+                  <ChevronRight size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={quickButtonClass(isTodaySelected)}
+                  aria-pressed={isTodaySelected}
+                  onClick={() => goToDate(todayStart)}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  className={quickButtonClass(isYesterdaySelected)}
+                  aria-pressed={isYesterdaySelected}
+                  onClick={() => goToDate(yesterday)}
+                >
+                  Yesterday
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 text-sm whitespace-nowrap">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th
+                      rowSpan={2}
+                      scope="col"
+                      className="px-3 py-2 text-left align-bottom font-medium text-gray-600 sticky left-0 z-10 bg-gray-50"
+                    >
+                      Branch
+                    </th>
+                    <th
+                      colSpan={3}
+                      scope="colgroup"
+                      className="px-3 pt-2 pb-1 text-center text-xs font-semibold text-indigo-700 bg-indigo-50 border-l border-gray-200"
+                    >
+                      {dayLabel}
+                      {isFutureDay ? ' · upcoming' : ''}
+                    </th>
+                    <th
+                      colSpan={4}
+                      scope="colgroup"
+                      className="px-3 pt-2 pb-1 text-center text-xs font-semibold text-gray-700 border-l border-gray-200"
+                    >
+                      {asOfDay > 0 ? `Month to date · 1–${asOfDay} ${monthShort}` : 'Month to date'}
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                  <tr>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600 bg-indigo-50 border-l border-gray-200">Expected</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600 bg-indigo-50">Collected</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600 bg-indigo-50">Rate</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600 border-l border-gray-200">Expected MTD</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600">Collected MTD</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600">Gap</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600">Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {rows.map((row) => (
+                    <tr key={row.name} className="hover:bg-gray-50">
+                      <th scope="row" className="px-3 py-2 text-left font-medium text-gray-900 sticky left-0 z-10 bg-white">
+                        <button
+                          type="button"
+                          onClick={() => showClientsForBranch(row.branchCode)}
+                          className="text-left hover:text-indigo-700 hover:underline focus:outline-none focus-visible:underline"
+                          title={`Show clients who paid at ${row.name} on this day`}
+                        >
+                          {row.name}
+                        </button>
+                      </th>
+                      <td className="px-3 py-2 text-right border-l border-gray-100">{formatMoney(row.dailyExpected)}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${dayCollectedClass(row.dailyCollected)}`}>
+                        {isFutureDay ? '—' : formatMoney(row.dailyCollected)}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-semibold ${isFutureDay ? 'text-gray-500' : rateClass(row.dailyRate)}`}>
+                        {isFutureDay ? '—' : rateText(row.dailyRate)}
+                      </td>
+                      <td className="px-3 py-2 text-right border-l border-gray-100">{formatMoney(row.mtdExpected)}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(row.mtdCollected)}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(row.mtdGap)}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${rateClass(row.mtdRate)}`}>{rateText(row.mtdRate)}</td>
+                    </tr>
+                  ))}
+                  {!rows.length && (
+                    <tr>
+                      <td className="px-3 py-6 text-center text-gray-500" colSpan={8}>
+                        No branch data for the selected period.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                {rows.length > 0 && totals && (
+                  <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                    <tr className="font-semibold text-gray-900">
+                      <th scope="row" className="px-3 py-2 text-left sticky left-0 z-10 bg-gray-50">TOTAL</th>
+                      <td className="px-3 py-2 text-right border-l border-gray-200">{formatMoney(totals.daily.expected)}</td>
+                      <td className="px-3 py-2 text-right">{isFutureDay ? '—' : formatMoney(totals.daily.collected)}</td>
+                      <td className={`px-3 py-2 text-right ${isFutureDay ? 'text-gray-500' : rateClass(totals.daily.rate)}`}>
+                        {isFutureDay ? '—' : rateText(totals.daily.rate)}
+                      </td>
+                      <td className="px-3 py-2 text-right border-l border-gray-200">{formatMoney(totals.mtd.expected)}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(totals.mtd.collected)}</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(totals.mtd.gap)}</td>
+                      <td className={`px-3 py-2 text-right ${rateClass(totals.mtd.rate)}`}>{rateText(totals.mtd.rate)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
           </div>
-        )}
-      </div>
+        )
+      })()}
+
+      {/* Clients Paid: Loandisk repayments collected on the selected day, with client names */}
+      {(() => {
+        const { all, filtered, branchOptions, totals, newerOnServer } = dayClientsList
+        const day = branchCollectionTables.selectedDay
+        const dayLabel = new Date(selectedYear, selectedMonth - 1, day).toLocaleDateString('en-GB', {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })
+        const activeBranchName = clientBranchFilter
+          ? data.processor?.getBranchName?.(clientBranchFilter) || clientBranchFilter
+          : null
+        const filterIsListed = branchOptions.some(([code]) => code === clientBranchFilter)
+        const emptyMessage = all.length
+          ? activeBranchName && !filterIsListed
+            ? `No payments at ${activeBranchName} on this day.`
+            : 'No payments match the search.'
+          : branchCollectionTables.isFutureDay
+            ? 'This day is still to come.'
+            : 'No payments on this day.'
+
+        return (
+          <div ref={clientsCardRef} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 scroll-mt-4">
+            <div className="flex flex-col gap-3 mb-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Clients Paid — {dayLabel}</h3>
+                <p className="text-xs text-gray-500">
+                  Loandisk repayments collected on this day{activeBranchName ? ` at ${activeBranchName}` : ''}. Change the
+                  day with the picker on the branch table above; click a branch name there to list its clients.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-2 text-xs">
+                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 font-medium">
+                    {totals.payments} {totals.payments === 1 ? 'payment' : 'payments'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 font-medium">
+                    {totals.clients} {totals.clients === 1 ? 'client' : 'clients'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-semibold">
+                    {formatMoney(totals.amount)}
+                  </span>
+                  {dayClientsLoading && <span className="px-2 py-0.5 text-gray-500">Loading client names…</span>}
+                </div>
+                {newerOnServer > 0 && (
+                  <p className="text-xs text-amber-700 mt-2">
+                    {newerOnServer} newer {newerOnServer === 1 ? 'payment was' : 'payments were'} synced for this day
+                    since the page loaded. Reload the page to include {newerOnServer === 1 ? 'it' : 'them'}.
+                  </p>
+                )}
+                {dayClientsError && (
+                  <p className="text-xs text-red-600 mt-2">
+                    Client names couldn’t be loaded ({dayClientsError}). Payments are still listed.
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                  <input
+                    type="search"
+                    value={clientSearch}
+                    onChange={(event) => setClientSearch(event.target.value)}
+                    placeholder="Search client, phone, loan #"
+                    aria-label="Search clients"
+                    className="border border-gray-300 rounded pl-7 pr-2 py-1 text-sm w-56"
+                  />
+                </div>
+                <select
+                  value={clientBranchFilter}
+                  onChange={(event) => setClientBranchFilter(event.target.value)}
+                  aria-label="Filter clients by branch"
+                  className="border border-gray-300 rounded px-2 py-1 text-sm"
+                >
+                  <option value="">All branches</option>
+                  {branchOptions.map(([code, name]) => (
+                    <option key={code} value={code}>
+                      {name}
+                    </option>
+                  ))}
+                  {clientBranchFilter && !filterIsListed && <option value={clientBranchFilter}>{activeBranchName}</option>}
+                </select>
+                {clientBranchFilter && (
+                  <button
+                    type="button"
+                    className="text-xs text-indigo-600 hover:underline"
+                    onClick={() => setClientBranchFilter('')}
+                  >
+                    Clear filter
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={downloadDayClientsExcel}
+                  disabled={!filtered.length}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Download size={14} />
+                  Excel
+                </button>
+              </div>
+            </div>
+            {/* Scroll box: header 36px + 20 rows × 37px + TOTAL ≈ 51rem; capped at 90% of the screen height */}
+            <div
+              ref={clientsScrollRef}
+              className="rounded-lg border border-gray-200 overflow-auto max-h-[min(51rem,90vh)] overscroll-contain [scrollbar-gutter:stable]"
+              style={{ scrollbarWidth: 'thin' }}
+            >
+              <table className="min-w-full divide-y divide-gray-200 text-sm whitespace-nowrap">
+                <thead className="bg-gray-50 sticky top-0 z-20 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                  <tr>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600 w-10">#</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-gray-600 sticky left-0 z-10 bg-gray-50">Client</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-gray-600">Phone</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-gray-600">Loan #</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-gray-600">Branch</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-gray-600">Loan officer</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-gray-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {filtered.map((r, index) => (
+                    <tr key={r.repaymentId ?? `${r.loanId}-${index}`} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 text-right text-gray-400">{index + 1}</td>
+                      <th scope="row" className="px-3 py-2 text-left font-medium sticky left-0 z-10 bg-white">
+                        {r.clientName ? (
+                          <>
+                            <span className="text-gray-900">{r.clientName}</span>
+                            {r.restructuredInto && (
+                              <span
+                                className="block text-xs font-normal text-gray-400"
+                                title="This loan was restructured; the client was found through the new loan"
+                              >
+                                restructured → loan {r.restructuredInto}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-400 italic font-normal">
+                            {dayClientsLoading ? 'Loading…' : 'Unknown client'}
+                          </span>
+                        )}
+                      </th>
+                      <td className="px-3 py-2 text-gray-700">
+                        {r.phone ? (
+                          <a href={`tel:${r.phone}`} className="text-indigo-700 hover:underline">
+                            {r.phone}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">{r.loanNumber || r.loanId || '—'}</td>
+                      <td className="px-3 py-2 text-gray-700">{r.branchName}</td>
+                      <td className="px-3 py-2 text-gray-700">{r.officer || '—'}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${r.amount < 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                        {formatMoney(r.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!filtered.length && (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-6 text-center text-gray-500">
+                        {emptyMessage}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                {filtered.length > 0 && (
+                  <tfoot className="bg-gray-50 border-t-2 border-gray-200 sticky bottom-0 z-20 shadow-[0_-1px_0_0_rgb(229,231,235)]">
+                    <tr className="font-semibold text-gray-900">
+                      <td className="px-3 py-2" />
+                      <th scope="row" className="px-3 py-2 text-left sticky left-0 z-10 bg-gray-50">TOTAL</th>
+                      <td colSpan={4} className="px-3 py-2 text-gray-500 font-normal">
+                        {totals.payments} {totals.payments === 1 ? 'payment' : 'payments'} · {totals.clients}{' '}
+                        {totals.clients === 1 ? 'client' : 'clients'}
+                      </td>
+                      <td className="px-3 py-2 text-right">{formatMoney(totals.amount)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
